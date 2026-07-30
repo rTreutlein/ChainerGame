@@ -40,4 +40,3 @@ def generate_incidents(config: Config) -> list[Incident]:
         alarm = rng.random() < (config.sensitivity if leak else config.false_positive_rate)
         result.append(Incident(f"current-{i:03}", cohort, alarm))
     return result
-

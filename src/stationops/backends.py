@@ -46,8 +46,11 @@ class ReferenceBackend:
 class MM2Backend:
     name = "mm2"
 
-    def __init__(self, config: Config, python_path: str | None = None):
+    def __init__(self, config: Config, python_path: str | None = None, module=None):
         self.config = config
+        if module is not None:
+            self.module = module
+            return
         if python_path:
             sys.path.insert(0, str(Path(python_path).expanduser().resolve()))
         try:
@@ -59,20 +62,36 @@ class MM2Backend:
                 "MM2_CHAINER_PYTHONPATH"
             ) from exc
 
+    @staticmethod
+    def _beliefs_from_results(results) -> dict[str, float]:
+        """Map each proven PatchPaysOff goal to its strongest returned STV.
+
+        PatchPaysOff is a unit-strength identity consequence of SealLeak in the
+        generated KB. Its returned strength therefore has the benchmark's leak
+        belief semantics. An absent proof means an absent belief, never zero.
+        """
+        beliefs = {}
+        for tag, proofs in results:
+            strengths = [
+                proof["truth_value"]["strength"]
+                for proof in proofs
+                if isinstance(proof, dict)
+                and isinstance(proof.get("truth_value"), dict)
+                and isinstance(proof["truth_value"].get("strength"), (int, float))
+            ]
+            if strengths:
+                beliefs[tag] = max(strengths)
+        return beliefs
+
     def infer(self, history, incidents, budget, statements):
-        # The engine establishes/query-checks benchmark predicates. Numeric decision
-        # semantics remain independent: its current API exposes proof TV, not a
-        # direct calibrated posterior statistic for this cohort-conditioned fixture.
+        if budget <= 0:
+            return {}, {"queries": len(incidents), "engine_steps": None}
         engine = self.module.Engine()
         engine.add_many("stationops", statements)
         priors = empirical_priors(history)
         for cohort, prior in priors.items():
             engine.set_base_rate("stationops", f"(SealLeak {cohort} $unit)", f"(STV {prior} 1)")
         queries = [(x.id, f"(PatchPaysOff {x.cohort} {x.id})") for x in incidents]
-        engine.query_many("stationops", queries, budget)
-        beliefs = {
-            x.id: posterior(priors[x.cohort], x.alarm, self.config.sensitivity, self.config.false_positive_rate)
-            for x in incidents
-        }
+        results = engine.query_many("stationops", queries, budget)
+        beliefs = self._beliefs_from_results(results)
         return beliefs, {"queries": len(queries), "engine_steps": None}
-

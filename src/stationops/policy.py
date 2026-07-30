@@ -14,4 +14,3 @@ def allocate(incidents: list[Incident], beliefs: dict[str, float], config: Confi
     )
     repaired = {case_id for _, case_id in candidates[: config.repair_slots]}
     return {x.id: ("repair" if x.id in repaired else "defer") for x in incidents}
-

@@ -14,4 +14,3 @@ class Incident:
     id: str
     cohort: str
     alarm: bool
-

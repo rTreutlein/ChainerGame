@@ -24,4 +24,3 @@ class Config:
 
     def to_dict(self) -> dict:
         return asdict(self) | {"repair_threshold": self.repair_threshold}
-

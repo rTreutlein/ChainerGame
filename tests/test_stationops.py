@@ -1,8 +1,7 @@
 import json
 import os
-import subprocess
-import sys
 import unittest
+from types import SimpleNamespace
 
 from stationops.backends import BackendUnavailable, MM2Backend
 from stationops.config import Config
@@ -74,10 +73,80 @@ class BenchmarkTests(unittest.TestCase):
         result = run_episode(Config(repair_slots=100), "mm2", 100, path)
         old_alarm = next(x for x in generate_incidents(Config(repair_slots=100)) if x.cohort == "old" and x.alarm)
         new_alarm = next(x for x in generate_incidents(Config(repair_slots=100)) if x.cohort == "new" and x.alarm)
+        self.assertAlmostEqual(
+            result["beliefs"][old_alarm.id],
+            posterior(.05, True, .9, .12),
+            places=6,
+        )
+        self.assertAlmostEqual(
+            result["beliefs"][new_alarm.id],
+            posterior(.005, True, .9, .12),
+            places=6,
+        )
         self.assertGreater(result["beliefs"][old_alarm.id], Config().repair_threshold)
         self.assertLess(result["beliefs"][new_alarm.id], Config().repair_threshold)
         self.assertEqual(result["chosen_actions"][old_alarm.id], "repair")
         self.assertEqual(result["chosen_actions"][new_alarm.id], "defer")
+
+    def test_mm2_beliefs_are_derived_from_engine_results(self):
+        class Engine:
+            def add_many(self, *args):
+                pass
+
+            def set_base_rate(self, *args):
+                pass
+
+            def query_many(self, kb, queries, budget):
+                if budget < 2:
+                    return [(tag, []) for tag, _ in queries]
+                values = {"old-alarm": .8, "new-alarm": .01}
+                return [
+                    (tag, [{"truth_value": {"strength": values[tag], "confidence": 1.0}}])
+                    for tag, _ in queries
+                ]
+
+        cfg = Config(repair_slots=2)
+        backend = MM2Backend(cfg, module=SimpleNamespace(Engine=Engine))
+        history = generate_history(cfg)
+        incidents = [
+            Incident("old-alarm", "old", True),
+            Incident("new-alarm", "new", True),
+        ]
+        beliefs, _ = backend.infer(history, incidents, 2, "")
+        self.assertEqual(beliefs, {"old-alarm": .8, "new-alarm": .01})
+        self.assertEqual(
+            allocate(incidents, beliefs, cfg),
+            {"old-alarm": "repair", "new-alarm": "defer"},
+        )
+        missing, _ = backend.infer(history, incidents, 1, "")
+        self.assertEqual(missing, {})
+        self.assertEqual(
+            allocate(incidents, missing, cfg),
+            {"old-alarm": "defer", "new-alarm": "defer"},
+        )
+        zero, _ = backend.infer(history, incidents, 0, "")
+        self.assertEqual(zero, {})
+
+    def test_mm2_wrong_results_change_decisions(self):
+        class Engine:
+            def add_many(self, *args):
+                pass
+
+            def set_base_rate(self, *args):
+                pass
+
+            def query_many(self, kb, queries, budget):
+                return [
+                    (tag, [{"truth_value": {"strength": .01, "confidence": 1.0}}])
+                    for tag, _ in queries
+                ]
+
+        cfg = Config(repair_slots=1)
+        incident = Incident("old-alarm", "old", True)
+        backend = MM2Backend(cfg, module=SimpleNamespace(Engine=Engine))
+        beliefs, _ = backend.infer(generate_history(cfg), [incident], 100, "")
+        self.assertEqual(beliefs, {"old-alarm": .01})
+        self.assertEqual(allocate([incident], beliefs, cfg), {"old-alarm": "defer"})
 
 
 if __name__ == "__main__":

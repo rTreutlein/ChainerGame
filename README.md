@@ -51,13 +51,16 @@ MM2_CHAINER_PYTHONPATH=/path/to/site-packages \
 ```
 
 The adapter loads all generated statements, configures cohort-specific MM2 base
-rates, and queries every payoff goal. MM2 currently does not expose execution
-counters or a distinct calibrated posterior statistic for this fixture through
-its Python API, so counters are explicitly `null` and the reported decision
-belief is the independently specified empirical-Bayes value. The integration
-test skips with an actionable reason when the binding is unavailable.
+rates, and queries every payoff goal. `PatchPaysOff` is a unit-strength identity
+consequence of `SealLeak`, so the strongest returned MM2 STV strength is the
+backend's action-belief value. Missing proofs—including zero or insufficient
+budgets—produce no belief and therefore no repair. Oracle Bayes beliefs remain
+separate and are used only to score chosen actions. MM2 does not expose
+execution counters through this Python API, so those counters are explicitly
+`null`. The integration test skips with an actionable reason when the binding
+is unavailable; controlled-engine tests always verify that wrong or empty MM2
+results change or remove decisions.
 
 `ReasonerBackend` in `stationops.backends` is the complete seam. A future PeTTa
 adapter can implement `infer` without changing simulation, oracle, policy, or
 scoring code.
-

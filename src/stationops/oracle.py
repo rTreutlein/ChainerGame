@@ -23,4 +23,3 @@ def repair_increment(p: float, config: Config) -> float:
 
 def resolve(history: list[HistoryCase], case: HistoryCase) -> list[HistoryCase]:
     return [*history, case]
-

@@ -29,4 +29,3 @@ def generate_statements(
             f"(Conclusions (ArchivedNoise{i} $x))) (CTV (STV 0.5 1) (STV 0 1)))"
         )
     return "\n".join(lines)
-
