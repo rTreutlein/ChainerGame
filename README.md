@@ -18,6 +18,20 @@ python -m stationops.cli generate --seed 7 > episode.metta
 python -m unittest discover -s tests -v
 ```
 
+The repository-local managed image also provides a reproducible, explicit live
+PeTTaChainer route. Its default command runs the full StationOps unit suite;
+the live command additionally fails on any skipped v1 integration test and runs
+the PeTTaChainer CLI smoke:
+
+```sh
+python /app/project_env.py --task TASK_ID
+python /app/project_env.py --task TASK_ID -- sh .myclaw/test-live-pettachainer.sh
+```
+
+The image pins PeTTaChainer commit
+`d41c7224ea80695f90c4ca1ffecc5d3a188f3c61`; its frozen upstream lock pins
+PeTTa commit `e1bd9e3fff7ee5caa176bf14a950238b7caf477d` and `janus-swi==1.5.2`.
+
 Every `run`/`sweep` output line is one JSON object. Wall time is observational;
 all semantic fields are deterministic. The default episode contains exactly
 100 current incidents and 10 repair slots.

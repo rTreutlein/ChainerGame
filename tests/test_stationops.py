@@ -282,6 +282,8 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(set(result["chosen_actions"].values()), {"repair"})
 
     def test_pettachainer_conformance_when_available(self):
+        if os.environ.get("STATIONOPS_LIVE_PETTACHAINER") != "1":
+            self.skipTest("set STATIONOPS_LIVE_PETTACHAINER=1 for live conformance")
         path = os.environ.get("PETTACHAINER_PYTHONPATH")
         try:
             backend = PeTTaChainerBackend(Config(), path)
@@ -451,6 +453,8 @@ class V1BenchmarkTests(unittest.TestCase):
         self.assertIn("slot limit", output.getvalue())
 
     def test_live_pettachainer_v1_conformance_when_available(self):
+        if os.environ.get("STATIONOPS_LIVE_PETTACHAINER") != "1":
+            self.skipTest("set STATIONOPS_LIVE_PETTACHAINER=1 for live conformance")
         path = os.environ.get("PETTACHAINER_PYTHONPATH")
         try:
             PeTTaChainerBackend(Config(), path)
@@ -470,6 +474,8 @@ class V1BenchmarkTests(unittest.TestCase):
                 self.assertAlmostEqual(round_["beliefs"][incident["id"]], expected, places=6)
         self.assertEqual(result["rounds"][0]["chosen_actions"]["r0-new-signal"], "defer")
         self.assertEqual(result["rounds"][1]["chosen_actions"]["r1-new-signal"], "repair")
+        self.assertEqual(result["rounds"][0]["chosen_actions"]["r0-old-control"], "repair")
+        self.assertEqual(result["rounds"][1]["chosen_actions"]["r1-old-control"], "repair")
 
     def test_fixture_rejects_mismatch_and_duplicate_ids(self):
         incident = Incident("x", "new", True)

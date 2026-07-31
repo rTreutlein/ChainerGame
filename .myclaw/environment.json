@@ -1,5 +1,5 @@
 {
-  "image": "myclaw-project-chainergame:python3.11",
+  "image": "myclaw-project-chainergame:pettachainer-live",
   "build": {
     "context": ".",
     "dockerfile": ".myclaw/Dockerfile"
@@ -7,7 +7,7 @@
   "test": [
     "bash",
     "-lc",
-    "python -m pip install --no-deps --no-build-isolation -e . && python -m unittest discover -s tests -v"
+    "/usr/local/bin/uv pip install --no-cache --python /opt/pettachainer/.venv/bin/python --no-deps --no-build-isolation -e . && /opt/pettachainer/.venv/bin/python -m unittest discover -s tests -v"
   ],
   "caches": [
     {
