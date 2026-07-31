@@ -26,8 +26,12 @@ def main(argv=None):
         p.add_argument("--incidents", type=int, default=100)
         p.add_argument("--repair-slots", type=int, default=10)
         p.add_argument("--irrelevant", type=int, default=0)
-        p.add_argument("--backend", choices=("reference", "mm2"), default="reference")
+        p.add_argument("--backend", choices=("reference", "mm2", "pettachainer"), default="reference")
         p.add_argument("--mm2-path", default=os.environ.get("MM2_CHAINER_PYTHONPATH"))
+        p.add_argument(
+            "--pettachainer-path",
+            default=os.environ.get("PETTACHAINER_PYTHONPATH"),
+        )
         p.add_argument("--budget", type=int, default=100)
         p.add_argument("--budgets", default="1,10,100")
     args = parser.parse_args(argv)
@@ -37,7 +41,18 @@ def main(argv=None):
         return
     budgets = [args.budget] if args.command == "run" else [int(x) for x in args.budgets.split(",")]
     for budget in budgets:
-        print(json.dumps(run_episode(config, args.backend, budget, args.mm2_path), sort_keys=True))
+        print(
+            json.dumps(
+                run_episode(
+                    config,
+                    args.backend,
+                    budget,
+                    args.mm2_path,
+                    args.pettachainer_path,
+                ),
+                sort_keys=True,
+            )
+        )
 
 
 if __name__ == "__main__":

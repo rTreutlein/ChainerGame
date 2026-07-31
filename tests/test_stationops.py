@@ -2,8 +2,9 @@ import json
 import os
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from stationops.backends import BackendUnavailable, MM2Backend
+from stationops.backends import BackendUnavailable, MM2Backend, PeTTaChainerBackend
 from stationops.config import Config
 from stationops.episode import run_episode
 from stationops.metta import generate_statements
@@ -147,6 +148,152 @@ class BenchmarkTests(unittest.TestCase):
         beliefs, _ = backend.infer(generate_history(cfg), [incident], 100, "")
         self.assertEqual(beliefs, {"old-alarm": .01})
         self.assertEqual(allocate([incident], beliefs, cfg), {"old-alarm": "defer"})
+
+    def test_pettachainer_beliefs_drive_decisions_and_preserve_order(self):
+        class Handler:
+            instances = []
+
+            def __init__(self):
+                self.queries = []
+                self.atoms = []
+                self.__class__.instances.append(self)
+
+            def add_atoms_no_check(self, atoms):
+                self.atoms = atoms
+
+            def query(self, query, steps, timeout_sec):
+                self.queries.append((query, steps, timeout_sec))
+                if "old-alarm" in query:
+                    return [
+                        "(: weak (PatchPaysOff old old-alarm) (STV 0.2 1))",
+                        "(: strong (PatchPaysOff old old-alarm) (STV 0.8 1))",
+                    ]
+                return []
+
+        cfg = Config(repair_slots=2)
+        backend = PeTTaChainerBackend(
+            cfg, module=SimpleNamespace(PeTTaChainer=Handler)
+        )
+        incidents = [
+            Incident("new-alarm", "new", True),
+            Incident("old-alarm", "old", True),
+        ]
+        beliefs, counters = backend.infer(
+            generate_history(cfg), incidents, 17, "(: fact (A) (STV 1 1))"
+        )
+
+        self.assertEqual(beliefs, {"old-alarm": .8})
+        self.assertEqual(counters, {"queries": 2, "engine_steps": None})
+        self.assertEqual(
+            allocate(incidents, beliefs, cfg),
+            {"new-alarm": "defer", "old-alarm": "repair"},
+        )
+        self.assertEqual(
+            [query for query, _, _ in Handler.instances[-1].queries],
+            [
+                "(: $prf (PatchPaysOff new new-alarm) $tv)",
+                "(: $prf (PatchPaysOff old old-alarm) $tv)",
+            ],
+        )
+        self.assertEqual(Handler.instances[-1].atoms, ["(: fact (A) (STV 1 1))"])
+        self.assertTrue(
+            all(
+                steps == 17 and timeout == 0
+                for _, steps, timeout in Handler.instances[-1].queries
+            )
+        )
+
+    def test_pettachainer_batches_are_isolated_and_zero_budget_is_empty(self):
+        class Handler:
+            instances = []
+
+            def __init__(self):
+                self.__class__.instances.append(self)
+
+            def add_atoms_no_check(self, atoms):
+                pass
+
+            def query(self, query, steps, timeout_sec):
+                incident_id = "second" if "second" in query else "first"
+                return [f"(: proof (PatchPaysOff old {incident_id}) (STV .4 1e0))"]
+
+        backend = PeTTaChainerBackend(
+            Config(), module=SimpleNamespace(PeTTaChainer=Handler)
+        )
+        first = [Incident("first", "old", True), Incident("second", "old", True)]
+        reversed_batch = list(reversed(first))
+        beliefs, _ = backend.infer([], first, 10, "")
+        reversed_beliefs, _ = backend.infer([], reversed_batch, 10, "")
+        zero, _ = backend.infer([], first, 0, "")
+
+        self.assertEqual(beliefs, {"first": .4, "second": .4})
+        self.assertEqual(reversed_beliefs, {"second": .4, "first": .4})
+        self.assertEqual(zero, {})
+        self.assertEqual(len(Handler.instances), 2)
+
+    def test_pettachainer_unavailable_error_is_actionable(self):
+        with patch("stationops.backends.importlib.import_module", side_effect=ImportError):
+            with self.assertRaises(BackendUnavailable) as caught:
+                PeTTaChainerBackend(Config(), "/definitely/not/pettachainer")
+        message = str(caught.exception)
+        self.assertIn("--pettachainer-path", message)
+        self.assertIn("PETTACHAINER_PYTHONPATH", message)
+
+    def test_run_episode_explicitly_selects_pettachainer(self):
+        class Backend:
+            name = "pettachainer"
+
+            def __init__(self, config, python_path):
+                self.python_path = python_path
+
+            def infer(self, history, incidents, budget, statements):
+                return {incident.id: .8 for incident in incidents}, {
+                    "queries": len(incidents),
+                    "engine_steps": None,
+                }
+
+        cfg = Config(incidents=2, repair_slots=2)
+        with patch("stationops.episode.PeTTaChainerBackend", Backend):
+            result = run_episode(
+                cfg,
+                "pettachainer",
+                20,
+                pettachainer_path="/controlled/pettachainer",
+            )
+
+        self.assertEqual(result["backend"], "pettachainer")
+        self.assertEqual(len(result["beliefs"]), 2)
+        self.assertEqual(set(result["chosen_actions"].values()), {"repair"})
+
+    def test_pettachainer_conformance_when_available(self):
+        path = os.environ.get("PETTACHAINER_PYTHONPATH")
+        try:
+            backend = PeTTaChainerBackend(Config(), path)
+        except BackendUnavailable as exc:
+            self.skipTest(str(exc))
+
+        cfg = Config()
+        history = generate_history(cfg)
+        all_incidents = generate_incidents(cfg)
+        incidents = [
+            next(x for x in all_incidents if x.cohort == cohort and x.alarm)
+            for cohort in ("old", "new")
+        ]
+        beliefs, _ = backend.infer(
+            history,
+            incidents,
+            200,
+            generate_statements(history, incidents, cfg),
+        )
+        priors = empirical_priors(history)
+        for incident in incidents:
+            expected = posterior(
+                priors[incident.cohort],
+                incident.alarm,
+                cfg.sensitivity,
+                cfg.false_positive_rate,
+            )
+            self.assertAlmostEqual(beliefs[incident.id], expected, places=6)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 import time
 
-from .backends import MM2Backend, ReferenceBackend
+from .backends import MM2Backend, PeTTaChainerBackend, ReferenceBackend
 from .config import Config
 from .metta import generate_statements
 from .oracle import empirical_priors, posterior, repair_increment
@@ -16,10 +16,23 @@ def _utility(actions, beliefs, incidents, config):
     )
 
 
-def run_episode(config: Config, backend_name="reference", budget=100, mm2_path=None) -> dict:
+def run_episode(
+    config: Config,
+    backend_name="reference",
+    budget=100,
+    mm2_path=None,
+    pettachainer_path=None,
+) -> dict:
     history, incidents = generate_history(config), generate_incidents(config)
     statements = generate_statements(history, incidents, config)
-    backend = ReferenceBackend(config) if backend_name == "reference" else MM2Backend(config, mm2_path)
+    if backend_name == "reference":
+        backend = ReferenceBackend(config)
+    elif backend_name == "mm2":
+        backend = MM2Backend(config, mm2_path)
+    elif backend_name == "pettachainer":
+        backend = PeTTaChainerBackend(config, pettachainer_path)
+    else:
+        raise ValueError(f"unknown backend: {backend_name}")
     started = time.perf_counter()
     beliefs, counters = backend.infer(history, incidents, budget, statements)
     elapsed = time.perf_counter() - started

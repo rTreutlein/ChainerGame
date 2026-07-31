@@ -38,7 +38,7 @@ The generated MeTTa uses ordinary cohort-bearing predicates, `STV`, `CTV`,
 crisp; sensor uncertainty occurs only in the causal CTV. Benchmark truth,
 scoring, and Bayes calculations do not depend on a reasoner or proof strings.
 
-## MM2 adapter and future backends
+## Reasoner backends
 
 MM2-Chainer is not vendored or located by a machine-specific default. Build its
 Python binding under Python 3.13 as documented upstream, then make the installed
@@ -61,6 +61,26 @@ execution counters through this Python API, so those counters are explicitly
 is unavailable; controlled-engine tests always verify that wrong or empty MM2
 results change or remove decisions.
 
-`ReasonerBackend` in `stationops.backends` is the complete seam. A future PeTTa
-adapter can implement `infer` without changing simulation, oracle, policy, or
-scoring code.
+PeTTaChainer is an explicitly selected peer backend; StationOps never switches
+to it automatically when MM2 is unavailable. Install PeTTaChainer and its
+commit-locked PeTTa dependency as documented upstream. Make the
+`pettachainer` package importable normally, set `PETTACHAINER_PYTHONPATH` to
+the PeTTaChainer checkout/package parent, or pass `--pettachainer-path`:
+
+```sh
+PETTACHAINER_PYTHONPATH=/path/to/PeTTaChainer \
+  python -m stationops.cli run --backend pettachainer --budget 200
+
+python -m stationops.cli run --backend pettachainer \
+  --pettachainer-path /path/to/PeTTaChainer --budget 200
+```
+
+The adapter creates an isolated PeTTaChainer knowledge base for each episode,
+compile-adds the generated common-subset MeTTa through the supported Python
+API, and issues grounded `PatchPaysOff` queries in incident order. The query
+budget maps to PeTTaChainer steps. The strongest returned proof STV supplies
+each action belief; a missing proof remains a missing belief, not numeric zero.
+Oracle beliefs remain scoring-only. PeTTaChainer exposes no aggregate execution
+counter through this API, so `engine_steps` is `null`.
+
+`ReasonerBackend` in `stationops.backends` remains the complete backend seam.

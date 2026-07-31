@@ -6,6 +6,8 @@ and scoring do not import a concrete logic engine.
 from __future__ import annotations
 
 import importlib
+import math
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -95,3 +97,62 @@ class MM2Backend:
         results = engine.query_many("stationops", queries, budget)
         beliefs = self._beliefs_from_results(results)
         return beliefs, {"queries": len(queries), "engine_steps": None}
+
+
+class PeTTaChainerBackend:
+    """StationOps adapter for PeTTaChainer's supported Python API."""
+
+    name = "pettachainer"
+    _stv_re = re.compile(
+        r"\((?:STV|stv)\s+"
+        r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s+"
+        r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\)"
+    )
+
+    def __init__(self, config: Config, python_path: str | None = None, module=None):
+        self.config = config
+        if module is not None:
+            self.module = module
+            return
+        if python_path:
+            sys.path.insert(0, str(Path(python_path).expanduser().resolve()))
+        try:
+            self.module = importlib.import_module("pettachainer")
+            getattr(self.module, "PeTTaChainer")
+        except (AttributeError, ImportError, OSError) as exc:
+            raise BackendUnavailable(
+                "PeTTaChainer is not importable; install its PeTTa dependency and package, "
+                "then pass --pettachainer-path pointing to the checkout/package parent or "
+                "set PETTACHAINER_PYTHONPATH"
+            ) from exc
+
+    @classmethod
+    def _strongest_strength(cls, proofs) -> float | None:
+        strengths = []
+        for proof in proofs or ():
+            match = cls._stv_re.search(str(proof))
+            if match is not None:
+                strength = float(match.group(1))
+                if math.isfinite(strength):
+                    strengths.append(strength)
+        return max(strengths) if strengths else None
+
+    def infer(self, history, incidents, budget, statements):
+        if budget <= 0:
+            return {}, {"queries": len(incidents), "engine_steps": None}
+
+        handler = self.module.PeTTaChainer()
+        atoms = [line.strip() for line in statements.splitlines() if line.strip()]
+        handler.add_atoms_no_check(atoms)
+
+        beliefs = {}
+        for incident in incidents:
+            proofs = handler.query(
+                f"(: $prf (PatchPaysOff {incident.cohort} {incident.id}) $tv)",
+                steps=budget,
+                timeout_sec=0,
+            )
+            strength = self._strongest_strength(proofs)
+            if strength is not None:
+                beliefs[incident.id] = strength
+        return beliefs, {"queries": len(incidents), "engine_steps": None}
