@@ -1,4 +1,5 @@
 import json
+import io
 import os
 import unittest
 from types import SimpleNamespace
@@ -9,9 +10,11 @@ from stationops.config import Config
 from stationops.episode import run_episode
 from stationops.metta import generate_statements
 from stationops.models import HistoryCase, Incident
+from stationops.models import EpisodeFixture, RoundFixture
 from stationops.oracle import empirical_priors, posterior, resolve
 from stationops.policy import allocate
 from stationops.simulator import generate_history, generate_incidents
+from stationops.v1 import play_episode_v1, prior_shift_fixture, run_episode_v1
 
 
 class BenchmarkTests(unittest.TestCase):
@@ -294,6 +297,144 @@ class BenchmarkTests(unittest.TestCase):
                 cfg.false_positive_rate,
             )
             self.assertAlmostEqual(beliefs[incident.id], expected, places=6)
+
+
+class V1BenchmarkTests(unittest.TestCase):
+    def test_fixture_transition_threshold_and_control_invariance(self):
+        cfg = Config(repair_slots=50)
+        fixture = prior_shift_fixture(cfg)
+        self.assertEqual(len(fixture.history), 2000)
+        self.assertEqual(len({x.id for x in fixture.history} | {
+            x.id for r in fixture.rounds for x in r.incidents
+        }), 2042)
+        result = run_episode_v1(cfg, fixture=fixture)
+        first, second = result["rounds"]
+        self.assertEqual(first["history_size_after"], second["history_size_before"])
+        self.assertEqual(first["priors_before"], {"new": .005, "old": .05})
+        self.assertAlmostEqual(second["priors_before"]["new"], 25 / 1020)
+        self.assertEqual(second["priors_before"]["old"], .05)
+        self.assertEqual(first["chosen_actions"]["r0-new-signal"], "defer")
+        self.assertEqual(second["chosen_actions"]["r1-new-signal"], "repair")
+        self.assertEqual(first["chosen_actions"]["r0-old-control"], "repair")
+        self.assertEqual(second["chosen_actions"]["r1-old-control"], "repair")
+
+    def test_private_resolutions_never_reach_current_backend(self):
+        seen = []
+
+        class Backend:
+            name = "reference"
+            def __init__(self, config): pass
+            def infer(self, history, incidents, budget, statements):
+                seen.append((list(history), list(incidents), statements))
+                return {}, {"queries": len(incidents), "engine_steps": None}
+
+        with patch("stationops.v1.ReferenceBackend", Backend):
+            run_episode_v1(Config())
+        fixture = prior_shift_fixture(Config())
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(len(seen[0][0]), len(fixture.history))
+        for resolution in fixture.rounds[0].resolutions:
+            self.assertNotIn(f"leak-{resolution.id}", seen[0][2])
+        self.assertEqual(
+            [x.id for x in seen[1][0][-len(fixture.rounds[0].resolutions):]],
+            [x.id for x in fixture.rounds[0].resolutions],
+        )
+
+    def test_schema_aggregate_repeatability_zero_and_irrelevant_invariance(self):
+        cfg = Config(repair_slots=50)
+        a = run_episode_v1(cfg)
+        b = run_episode_v1(cfg)
+        for result in (a, b):
+            for key in ("benchmark", "schema_version", "config", "seed", "fixture", "backend",
+                        "budget_per_round", "rounds", "aggregate", "aggregate_counters",
+                        "wall_time_seconds"):
+                self.assertIn(key, result)
+            self.assertAlmostEqual(result["aggregate"]["expected_utility"],
+                                   sum(x["expected_utility"] for x in result["rounds"]))
+            self.assertAlmostEqual(result["aggregate"]["regret"],
+                                   sum(x["regret"] for x in result["rounds"]))
+            json.dumps(result)
+        a.pop("wall_time_seconds"); b.pop("wall_time_seconds")
+        for result in (a, b):
+            for round_ in result["rounds"]:
+                round_.pop("wall_time_seconds")
+        self.assertEqual(a, b)
+        zero = run_episode_v1(cfg, budget=0)
+        self.assertTrue(all(not r["beliefs"] for r in zero["rounds"]))
+        self.assertTrue(all(set(r["chosen_actions"].values()) == {"defer"} for r in zero["rounds"]))
+        irrelevant = run_episode_v1(Config(repair_slots=50, irrelevant_statements=25))
+        self.assertEqual([r["beliefs"] for r in a["rounds"]],
+                         [r["beliefs"] for r in irrelevant["rounds"]])
+
+    def test_controlled_pettachainer_uses_fresh_handler_each_round(self):
+        class Handler:
+            instances = []
+            def __init__(self):
+                self.__class__.instances.append(self)
+            def add_atoms_no_check(self, atoms): pass
+            def query(self, query, steps, timeout_sec):
+                return ["(: proof (PatchPaysOff x y) (STV .2 1))"]
+        backend_module = SimpleNamespace(PeTTaChainer=Handler)
+        real = PeTTaChainerBackend
+        with patch("stationops.v1.PeTTaChainerBackend",
+                   lambda config, path: real(config, module=backend_module)):
+            result = run_episode_v1(Config(), "pettachainer")
+        self.assertEqual(len(Handler.instances), len(result["rounds"]))
+        self.assertEqual(result["aggregate_counters"]["queries"], 42)
+
+    def test_human_validation_scoring_parity_and_no_early_reveal(self):
+        cfg = Config(repair_slots=50)
+        automated = run_episode_v1(cfg)
+        choices = iter([
+            ",".join(k for k, v in automated["rounds"][0]["chosen_actions"].items() if v == "repair"),
+            ",".join(k for k, v in automated["rounds"][1]["chosen_actions"].items() if v == "repair"),
+        ])
+        output = io.StringIO()
+        snapshots = []
+        def input_fn(prompt):
+            snapshots.append(output.getvalue())
+            return next(choices)
+        human = play_episode_v1(cfg, input_fn=input_fn, output=output)
+        self.assertNotIn("leak=", snapshots[0])
+        self.assertIn("r0-new-signal: leak=", snapshots[1])
+        self.assertEqual(human["backend"], "human")
+        self.assertEqual(human["aggregate"], automated["aggregate"])
+
+    def test_human_reprompts_invalid_duplicate_and_capacity_and_handles_quit(self):
+        output = io.StringIO()
+        values = iter(["unknown", "r0-new-signal,r0-new-signal", "r0-new-signal,r0-new-evidence-00", "quit"])
+        result = play_episode_v1(Config(repair_slots=1), input_fn=lambda prompt: next(values), output=output)
+        self.assertEqual(result["status"], "quit")
+        self.assertEqual(len(result["rounds"]), 1)
+        self.assertIn("unknown incident", output.getvalue())
+        self.assertIn("duplicate incident", output.getvalue())
+        self.assertIn("slot limit", output.getvalue())
+
+    def test_live_pettachainer_v1_conformance_when_available(self):
+        path = os.environ.get("PETTACHAINER_PYTHONPATH")
+        try:
+            PeTTaChainerBackend(Config(), path)
+        except BackendUnavailable as exc:
+            self.skipTest(str(exc))
+        cfg = Config(repair_slots=50)
+        result = run_episode_v1(cfg, "pettachainer", 200, pettachainer_path=path)
+        for round_ in result["rounds"]:
+            for incident in round_["visible_incidents"]:
+                expected = posterior(
+                    round_["priors_before"][incident["cohort"]], incident["alarm"],
+                    cfg.sensitivity, cfg.false_positive_rate,
+                )
+                self.assertAlmostEqual(round_["beliefs"][incident["id"]], expected, places=6)
+        self.assertEqual(result["rounds"][0]["chosen_actions"]["r0-new-signal"], "defer")
+        self.assertEqual(result["rounds"][1]["chosen_actions"]["r1-new-signal"], "repair")
+
+    def test_fixture_rejects_mismatch_and_duplicate_ids(self):
+        incident = Incident("x", "new", True)
+        with self.assertRaises(ValueError):
+            RoundFixture((incident,), (HistoryCase("x", "old", True, True),))
+        round_ = RoundFixture((incident,), (HistoryCase("x", "new", True, True),))
+        with self.assertRaises(ValueError):
+            EpisodeFixture("bad", (HistoryCase("x", "new", False, False),), (round_,))
 
 
 if __name__ == "__main__":
