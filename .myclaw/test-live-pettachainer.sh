@@ -21,7 +21,11 @@ distribution = importlib.metadata.distribution("petta")
 direct_url = json.loads(distribution.read_text("direct_url.json"))
 petta_revision = direct_url["vcs_info"]["commit_id"]
 pettachainer_revision = subprocess.check_output(
-    ["git", "-C", "/opt/pettachainer", "rev-parse", "HEAD"], text=True
+    [
+        "git", "-c", "safe.directory=/opt/pettachainer", "-C",
+        "/opt/pettachainer", "rev-parse", "HEAD",
+    ],
+    text=True,
 ).strip()
 print(f"python={sys.version.split()[0]}")
 print(subprocess.check_output(["swipl", "--version"], text=True).strip())
