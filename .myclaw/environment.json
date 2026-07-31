@@ -1,0 +1,18 @@
+{
+  "image": "myclaw-project-chainergame:python3.11",
+  "build": {
+    "context": ".",
+    "dockerfile": ".myclaw/Dockerfile"
+  },
+  "test": [
+    "bash",
+    "-lc",
+    "python -m pip install --no-deps --no-build-isolation -e . && python -m unittest discover -s tests -v"
+  ],
+  "caches": [
+    {
+      "name": "pip",
+      "target": "/cache/pip"
+    }
+  ]
+}
