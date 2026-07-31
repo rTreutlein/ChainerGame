@@ -21,4 +21,10 @@ and executes v0/v1 reference and v1 PeTTaChainer CLI smokes in the same image:
 python /app/project_env.py --task TASK_ID -- sh .myclaw/test-live-pettachainer.sh
 ```
 
+At the pinned revision, the current StationOps generic-predicate payload does
+not satisfy PeTTaChainer's explicit-CTV input contract, so the focused live test
+currently fails with a missing belief rather than skipping. This is bounded
+live evidence that the environment is available; changing the benchmark input
+semantics requires a separate approved design task.
+
 MM2 remains external and is not installed by this image.
