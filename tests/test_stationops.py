@@ -242,6 +242,19 @@ class BenchmarkTests(unittest.TestCase):
         self.assertIn("--pettachainer-path", message)
         self.assertIn("PETTACHAINER_PYTHONPATH", message)
 
+    def test_pettachainer_runtime_dependency_error_is_actionable(self):
+        class Handler:
+            def __init__(self):
+                raise ModuleNotFoundError("No module named 'janus_swi'", name="janus_swi")
+
+        backend = PeTTaChainerBackend(
+            Config(), module=SimpleNamespace(PeTTaChainer=Handler)
+        )
+        with self.assertRaises(BackendUnavailable) as caught:
+            backend.infer(generate_history(Config()), [Incident("x", "new", True)], 10, "")
+        self.assertIn("runtime handler", str(caught.exception))
+        self.assertIn("janus_swi", str(caught.exception))
+
     def test_run_episode_explicitly_selects_pettachainer(self):
         class Backend:
             name = "pettachainer"
@@ -282,12 +295,15 @@ class BenchmarkTests(unittest.TestCase):
             next(x for x in all_incidents if x.cohort == cohort and x.alarm)
             for cohort in ("old", "new")
         ]
-        beliefs, _ = backend.infer(
-            history,
-            incidents,
-            200,
-            generate_statements(history, incidents, cfg),
-        )
+        try:
+            beliefs, _ = backend.infer(
+                history,
+                incidents,
+                200,
+                generate_statements(history, incidents, cfg),
+            )
+        except BackendUnavailable as exc:
+            self.skipTest(str(exc))
         priors = empirical_priors(history)
         for incident in incidents:
             expected = posterior(
@@ -366,6 +382,30 @@ class V1BenchmarkTests(unittest.TestCase):
         self.assertEqual([r["beliefs"] for r in a["rounds"]],
                          [r["beliefs"] for r in irrelevant["rounds"]])
 
+    def test_aggregate_engine_steps_sum_only_when_all_rounds_are_numeric(self):
+        class Backend:
+            name = "reference"
+            calls = 0
+            def __init__(self, config): pass
+            def infer(self, history, incidents, budget, statements):
+                self.__class__.calls += 1
+                return {}, {"queries": len(incidents), "engine_steps": self.calls * 3}
+
+        with patch("stationops.v1.ReferenceBackend", Backend):
+            result = run_episode_v1(Config())
+        self.assertEqual(result["aggregate_counters"]["engine_steps"], 9)
+
+        class Partial(Backend):
+            calls = 0
+            def infer(self, history, incidents, budget, statements):
+                self.__class__.calls += 1
+                steps = 3 if self.calls == 1 else None
+                return {}, {"queries": len(incidents), "engine_steps": steps}
+
+        with patch("stationops.v1.ReferenceBackend", Partial):
+            result = run_episode_v1(Config())
+        self.assertIsNone(result["aggregate_counters"]["engine_steps"])
+
     def test_controlled_pettachainer_uses_fresh_handler_each_round(self):
         class Handler:
             instances = []
@@ -417,7 +457,10 @@ class V1BenchmarkTests(unittest.TestCase):
         except BackendUnavailable as exc:
             self.skipTest(str(exc))
         cfg = Config(repair_slots=50)
-        result = run_episode_v1(cfg, "pettachainer", 200, pettachainer_path=path)
+        try:
+            result = run_episode_v1(cfg, "pettachainer", 200, pettachainer_path=path)
+        except BackendUnavailable as exc:
+            self.skipTest(str(exc))
         for round_ in result["rounds"]:
             for incident in round_["visible_incidents"]:
                 expected = posterior(

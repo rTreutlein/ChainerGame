@@ -1,4 +1,4 @@
-# StationOps: BaseRateTriage-v0
+# StationOps: BaseRateTriage
 
 A deterministic, abstract, turn-based benchmark for cohort-conditioned
 maintenance triage. Two cohorts have different empirical seal-leak rates but
@@ -21,6 +21,36 @@ python -m unittest discover -s tests -v
 Every `run`/`sweep` output line is one JSON object. Wall time is observational;
 all semantic fields are deterministic. The default episode contains exactly
 100 current incidents and 10 repair slots.
+
+BaseRateTriage-v0 remains the default. BaseRateTriage-v1 is an explicit,
+deterministic multi-round benchmark: every round is inferred and scored from
+the history available before that round, then its private resolutions are
+revealed and appended for subsequent rounds. The included `prior-shift`
+fixture moves the new-cohort positive-alarm decision from defer to repair while
+an old-cohort control remains invariant.
+
+```sh
+# One complete v1 episode; budget is constant per round.
+python -m stationops.cli run --benchmark v1 --backend reference --budget 100
+
+# Each output line independently reruns the identical full episode.
+python -m stationops.cli sweep --benchmark v1 --backend reference --budgets 0,1,100
+
+# Emit each round's public MeTTa in order, with earlier resolutions only in later rounds.
+python -m stationops.cli generate --benchmark v1 > episode-v1.metta
+
+# Play the same fixture and scoring rules interactively.
+python -m stationops.cli play --benchmark v1 --repair-slots 10 > human-result.json
+```
+
+Human play displays only the current visible incident IDs, cohort/alarm state,
+repair slots, and history-derived priors. Enter comma-separated IDs, a blank
+line to defer all, or `quit`. Invalid, duplicate, and over-capacity choices are
+rejected. Choices are locked and scored before that round's private resolutions
+are revealed. Prompts and reveals go to stderr; stdout contains the same
+JSON-compatible per-round and aggregate schema with `backend` set to `human`.
+EOF/quit scores the current round as all-defer, reveals it, and returns a
+partial result with `status` set to `quit`.
 
 ## Semantics
 
@@ -82,5 +112,22 @@ budget maps to PeTTaChainer steps. The strongest returned proof STV supplies
 each action belief; a missing proof remains a missing belief, not numeric zero.
 Oracle beliefs remain scoring-only. PeTTaChainer exposes no aggregate execution
 counter through this API, so `engine_steps` is `null`.
+
+`PETTACHAINER_PYTHONPATH` is consumed by the StationOps adapter; Python itself
+does not interpret that variable. To validate canonical source checkouts by
+direct import, put both PeTTaChainer and PeTTa's `python` directory on
+`PYTHONPATH` (along with StationOps `src`):
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH=/path/to/PeTTaChainer:/path/to/PeTTa/python:src \
+python -c 'from pettachainer import PeTTaChainer; PeTTaChainer(); print(PeTTaChainer)'
+```
+
+Constructing the handler is part of availability validation because it loads
+PeTTa's Janus/SWI-Prolog runtime. Missing dependencies such as `janus_swi` are
+reported by StationOps as actionable `BackendUnavailable` errors rather than
+as successful conformance. A live conformance run requires the handler
+construction above to succeed; skipped integration tests are not evidence.
 
 `ReasonerBackend` in `stationops.backends` remains the complete backend seam.

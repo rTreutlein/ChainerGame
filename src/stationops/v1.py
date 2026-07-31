@@ -87,9 +87,14 @@ def _round_result(index, history, round_, beliefs, actions, counters, config, el
 def _result(config, fixture, backend, budget, rounds, started, status="complete"):
     utility = sum(x["expected_utility"] for x in rounds)
     oracle_utility = sum(x["oracle_utility"] for x in rounds)
+    engine_steps = [x["backend_counters"].get("engine_steps") for x in rounds]
     counters = {
         "queries": sum(x["backend_counters"].get("queries", 0) or 0 for x in rounds),
-        "engine_steps": None,
+        "engine_steps": (
+            sum(engine_steps)
+            if engine_steps and all(type(x) in (int, float) for x in engine_steps)
+            else None
+        ),
     }
     return {
         "benchmark": "BaseRateTriage-v1",

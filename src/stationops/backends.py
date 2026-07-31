@@ -141,7 +141,15 @@ class PeTTaChainerBackend:
         if budget <= 0:
             return {}, {"queries": len(incidents), "engine_steps": None}
 
-        handler = self.module.PeTTaChainer()
+        try:
+            handler = self.module.PeTTaChainer()
+        except (ImportError, OSError) as exc:
+            dependency = getattr(exc, "name", None) or str(exc)
+            raise BackendUnavailable(
+                "PeTTaChainer could not construct its runtime handler; install its "
+                f"PeTTa/Janus dependencies (missing or unavailable: {dependency}) and ensure "
+                "both source roots and native libraries are available"
+            ) from exc
         atoms = [line.strip() for line in statements.splitlines() if line.strip()]
         handler.add_atoms_no_check(atoms)
 
