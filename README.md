@@ -119,13 +119,19 @@ python -m stationops.cli run --backend pettachainer \
   --pettachainer-path /path/to/PeTTaChainer --budget 200
 ```
 
-The adapter creates an isolated PeTTaChainer knowledge base for each episode,
-compile-adds the generated common-subset MeTTa through the supported Python
-API, and issues grounded `PatchPaysOff` queries in incident order. The query
-budget maps to PeTTaChainer steps. The strongest returned proof STV supplies
-each action belief; a missing proof remains a missing belief, not numeric zero.
-Oracle beliefs remain scoring-only. PeTTaChainer exposes no aggregate execution
-counter through this API, so `engine_steps` is `null`.
+The adapter creates an isolated PeTTaChainer knowledge base for each episode.
+It aggregates the pre-round history into cohort priors, combines those priors
+with the declared sensor model, and supplies explicit cohort-conditioned
+`PressureAlarm` to `PatchPaysOff` CTV implications through the supported Python
+API. Current observations use positive-predicate STVs (`1` or `0`), matching
+PeTTaChainer's generic-domain contract. It then issues grounded `PatchPaysOff`
+queries in incident order. The query budget maps to PeTTaChainer steps. The
+strongest returned proof STV supplies each action belief; a missing proof
+remains a missing belief, not numeric zero.
+The independently evaluated oracle remains scoring-only; the adapter's CTV is
+derived from the same public pre-round history and declared sensor parameters.
+PeTTaChainer exposes no aggregate execution counter through this API, so
+`engine_steps` is `null`.
 
 `PETTACHAINER_PYTHONPATH` is consumed by the StationOps adapter; Python itself
 does not interpret that variable. To validate canonical source checkouts by

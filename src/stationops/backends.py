@@ -150,7 +150,27 @@ class PeTTaChainerBackend:
                 f"PeTTa/Janus dependencies (missing or unavailable: {dependency}) and ensure "
                 "both source roots and native libraries are available"
             ) from exc
-        atoms = [line.strip() for line in statements.splitlines() if line.strip()]
+        priors = empirical_priors(history)
+        atoms = []
+        for cohort, prior in priors.items():
+            alarm = posterior(
+                prior, True, self.config.sensitivity, self.config.false_positive_rate
+            )
+            no_alarm = posterior(
+                prior, False, self.config.sensitivity, self.config.false_positive_rate
+            )
+            atoms.append(
+                f"(: stationops-{cohort}-alarm-to-payoff "
+                f"(Implication (Premises (PressureAlarm {cohort} $unit)) "
+                f"(Conclusions (PatchPaysOff {cohort} $unit))) "
+                f"(CTV (STV {alarm} 1) (STV {no_alarm} 1)))"
+            )
+        atoms.extend(
+            f"(: stationops-observed-{incident.id} "
+            f"(PressureAlarm {incident.cohort} {incident.id}) "
+            f"(STV {1 if incident.alarm else 0} 1))"
+            for incident in incidents
+        )
         handler.add_atoms_no_check(atoms)
 
         beliefs = {}
