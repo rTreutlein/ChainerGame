@@ -1,4 +1,5 @@
 from collections import Counter
+import math
 
 from .config import Config
 from .models import HistoryCase
@@ -15,6 +16,31 @@ def posterior(prior: float, alarm: bool, sensitivity: float, fpr: float) -> floa
     like_sound = fpr if alarm else 1.0 - fpr
     numerator = like_leak * prior
     return numerator / (numerator + like_sound * (1.0 - prior))
+
+
+def belief_error_metrics(
+    beliefs: dict[str, float], oracle_beliefs: dict[str, float]
+) -> dict[str, int | float | None]:
+    """Measure approximation error without making oracle equality a contract."""
+    signed_errors = [
+        beliefs[key] - expected
+        for key, expected in oracle_beliefs.items()
+        if isinstance(beliefs.get(key), (int, float))
+        and math.isfinite(beliefs[key])
+    ]
+    expected_count = len(oracle_beliefs)
+    evaluated_count = len(signed_errors)
+    absolute_errors = [abs(error) for error in signed_errors]
+    return {
+        "expected_count": expected_count,
+        "evaluated_count": evaluated_count,
+        "missing_count": expected_count - evaluated_count,
+        "coverage": 1.0 if expected_count == 0 else evaluated_count / expected_count,
+        "mean_absolute_error": (
+            sum(absolute_errors) / evaluated_count if evaluated_count else None
+        ),
+        "max_absolute_error": max(absolute_errors) if absolute_errors else None,
+    }
 
 
 def repair_increment(p: float, config: Config) -> float:

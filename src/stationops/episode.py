@@ -3,7 +3,7 @@ import time
 from .backends import MM2Backend, PeTTaChainerBackend, ReferenceBackend
 from .config import Config
 from .metta import generate_statements
-from .oracle import empirical_priors, posterior, repair_increment
+from .oracle import belief_error_metrics, empirical_priors, posterior, repair_increment
 from .policy import allocate
 from .simulator import generate_history, generate_incidents
 
@@ -54,6 +54,7 @@ def run_episode(
         "budget": budget,
         "empirical_priors": priors,
         "beliefs": beliefs,
+        "belief_error": belief_error_metrics(beliefs, oracle_beliefs),
         "chosen_actions": actions,
         "expected_utility": utility,
         "oracle_utility": oracle_utility,

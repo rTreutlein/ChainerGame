@@ -100,9 +100,16 @@ class MM2Backend:
 
 
 class PeTTaChainerBackend:
-    """StationOps adapter for PeTTaChainer's supported Python API."""
+    """Persistent StationOps adapter for PeTTaChainer's supported Python API.
+
+    ``statements`` is a complete public-KB snapshot for the current round.  The
+    adapter reconciles that snapshot by statement name, incrementally forwards
+    newly added facts, and retains the resulting caches for later rounds.
+    """
 
     name = "pettachainer"
+    _forward_batch_size = 100
+    _forward_steps_per_seed = 2
     _stv_re = re.compile(
         r"\((?:STV|stv)\s+"
         r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s+"
@@ -111,6 +118,8 @@ class PeTTaChainerBackend:
 
     def __init__(self, config: Config, python_path: str | None = None, module=None):
         self.config = config
+        self._handler = None
+        self._atoms_by_name: dict[str, str] = {}
         if module is not None:
             self.module = module
             return
@@ -137,12 +146,61 @@ class PeTTaChainerBackend:
                     strengths.append(strength)
         return max(strengths) if strengths else None
 
-    def infer(self, history, incidents, budget, statements):
-        if budget <= 0:
-            return {}, {"queries": len(incidents), "engine_steps": None}
+    @staticmethod
+    def _fields(expression: str) -> list[str]:
+        """Split one restricted MeTTa expression into top-level fields."""
+        expression = expression.strip()
+        if len(expression) < 2 or expression[0] != "(" or expression[-1] != ")":
+            raise ValueError(f"expected a parenthesized MeTTa expression: {expression}")
+        fields: list[str] = []
+        start = None
+        depth = 0
+        for index, char in enumerate(expression[1:-1], start=1):
+            if char == "(":
+                if start is None:
+                    start = index
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth < 0:
+                    raise ValueError(f"unbalanced MeTTa expression: {expression}")
+            elif char.isspace() and depth == 0:
+                if start is not None:
+                    fields.append(expression[start:index])
+                    start = None
+            elif start is None:
+                start = index
+        if depth != 0:
+            raise ValueError(f"unbalanced MeTTa expression: {expression}")
+        if start is not None:
+            fields.append(expression[start:-1])
+        return fields
 
+    @classmethod
+    def _statement_parts(cls, atom: str) -> tuple[str, str]:
+        fields = cls._fields(atom)
+        if len(fields) != 4 or fields[0] != ":":
+            raise ValueError(f"expected one named MeTTa statement: {atom}")
+        return fields[1], fields[2]
+
+    @classmethod
+    def _is_rule(cls, type_expression: str) -> bool:
+        fields = cls._fields(type_expression)
+        return bool(fields) and fields[0] == "Implication"
+
+    @classmethod
+    def _fact_seed(cls, type_expression: str) -> str:
+        """Return the surface term whose canonical fact seeds forward work."""
+        fields = cls._fields(type_expression)
+        if len(fields) == 2 and fields[0] == "Not":
+            # PeTTaChainer canonicalizes negative STV observations as a
+            # complemented-strength fact of the positive type.
+            return fields[1]
+        return type_expression
+
+    def _new_handler(self):
         try:
-            handler = self.module.PeTTaChainer()
+            return self.module.PeTTaChainer()
         except (ImportError, OSError) as exc:
             dependency = getattr(exc, "name", None) or str(exc)
             raise BackendUnavailable(
@@ -150,12 +208,75 @@ class PeTTaChainerBackend:
                 f"PeTTa/Janus dependencies (missing or unavailable: {dependency}) and ensure "
                 "both source roots and native libraries are available"
             ) from exc
-        atoms = [line.strip() for line in statements.splitlines() if line.strip()]
-        handler.add_atoms_no_check(atoms)
+
+    def _reconcile(self, statements: str) -> dict[str, int]:
+        entries: list[tuple[str, str, str]] = []
+        desired: dict[str, str] = {}
+        for atom in (line.strip() for line in statements.splitlines() if line.strip()):
+            name, type_expression = self._statement_parts(atom)
+            if name in desired:
+                raise ValueError(f"duplicate MeTTa statement name: {name}")
+            desired[name] = atom
+            entries.append((name, type_expression, atom))
+
+        removed = 0
+        changed_names = [
+            name
+            for name, old_atom in self._atoms_by_name.items()
+            if desired.get(name) != old_atom
+        ]
+        for name in changed_names:
+            self._handler.remove_statement(name)
+            self._atoms_by_name.pop(name)
+            removed += 1
+
+        additions = [entry for entry in entries if entry[0] not in self._atoms_by_name]
+        rules = [entry for entry in additions if self._is_rule(entry[1])]
+        facts = [entry for entry in additions if not self._is_rule(entry[1])]
+
+        if rules:
+            self._handler.add_atoms_no_check([atom for _, _, atom in rules])
+            self._atoms_by_name.update((name, atom) for name, _, atom in rules)
+
+        forward_seeds = 0
+        forward_steps = 0
+        for offset in range(0, len(facts), self._forward_batch_size):
+            batch = facts[offset:offset + self._forward_batch_size]
+            self._handler.add_atoms_no_check([atom for _, _, atom in batch])
+            self._atoms_by_name.update((name, atom) for name, _, atom in batch)
+            seeds = self._handler.select_facts(
+                [self._fact_seed(type_expression) for _, type_expression, _ in batch]
+            )
+            steps = self._forward_steps_per_seed * len(seeds)
+            self._handler.forward_chain(seeds, steps=steps)
+            forward_seeds += len(seeds)
+            forward_steps += steps
+
+        return {
+            "statements_added": len(additions),
+            "statements_removed": removed,
+            "forward_seed_facts": forward_seeds,
+            "forward_steps": forward_steps,
+        }
+
+    def infer(self, history, incidents, budget, statements):
+        if budget <= 0:
+            return {}, {"queries": len(incidents), "engine_steps": None}
+
+        if self._handler is None:
+            self._handler = self._new_handler()
+        try:
+            counters = self._reconcile(statements)
+        except Exception:
+            # A failed batch may have partially mutated the external runtime.
+            # Discard it so a later call can rebuild from its complete snapshot.
+            self._handler = None
+            self._atoms_by_name.clear()
+            raise
 
         beliefs = {}
         for incident in incidents:
-            proofs = handler.query(
+            proofs = self._handler.query(
                 f"(: $prf (PatchPaysOff {incident.cohort} {incident.id}) $tv)",
                 steps=budget,
                 timeout_sec=0,
@@ -163,4 +284,5 @@ class PeTTaChainerBackend:
             strength = self._strongest_strength(proofs)
             if strength is not None:
                 beliefs[incident.id] = strength
-        return beliefs, {"queries": len(incidents), "engine_steps": None}
+        counters.update({"queries": len(incidents), "engine_steps": None})
+        return beliefs, counters

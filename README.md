@@ -18,28 +18,11 @@ python -m stationops.cli generate --seed 7 > episode.metta
 python -m unittest discover -s tests -v
 ```
 
-The repository-local managed image also provides a reproducible, explicit live
-PeTTaChainer route. Its default command runs the full StationOps unit suite;
-the live command additionally fails on any skipped v1 integration test and runs
-the PeTTaChainer CLI smoke:
-
-```sh
-python /app/project_env.py --task TASK_ID
-python /app/project_env.py --task TASK_ID -- sh .myclaw/test-live-pettachainer.sh
-```
-
-The image pins PeTTaChainer commit
-`d41c7224ea80695f90c4ca1ffecc5d3a188f3c61`; its frozen upstream lock pins
-PeTTa commit `e1bd9e3fff7ee5caa176bf14a950238b7caf477d` and `janus-swi==1.5.2`.
-With the pre-existing adapter semantics, this live route currently reaches
-inference non-skipped and fails on a missing belief because the generated
-generic-predicate payload is not PeTTaChainer's explicit-CTV contract. The
-environment task intentionally does not manufacture posterior CTV inputs;
-adopting a new benchmark contract requires separate approval.
-
 Every `run`/`sweep` output line is one JSON object. Wall time is observational;
 all semantic fields are deterministic. The default episode contains exactly
 100 current incidents and 10 repair slots.
+`belief_error` reports coverage, missing results, mean absolute error, and
+maximum absolute error against the scoring-only oracle.
 
 BaseRateTriage-v0 remains the default. BaseRateTriage-v1 is an explicit,
 deterministic multi-round benchmark: every round is inferred and scored from
@@ -83,9 +66,12 @@ Allocation sorts positive incremental utilities descending and incident IDs
 ascending, then takes at most the configured slot count.
 
 The generated MeTTa uses ordinary cohort-bearing predicates, `STV`, `CTV`,
-`Implication`, `Premises`, `Conclusions`, and `Not`. Current observations are
+direct-sided `Implication`, and `Not`. Current observations are
 crisp; sensor uncertainty occurs only in the causal CTV. Benchmark truth,
 scoring, and Bayes calculations do not depend on a reasoner or proof strings.
+The shared sensor and payoff rules are emitted once per concrete cohort so
+inverse population folds remain cohort-conditioned instead of pooling histories
+across cohorts or registering overlapping open cache interests.
 
 ## Reasoner backends
 
@@ -118,19 +104,27 @@ the PeTTaChainer checkout/package parent, or pass `--pettachainer-path`:
 
 ```sh
 PETTACHAINER_PYTHONPATH=/path/to/PeTTaChainer \
-  python -m stationops.cli run --backend pettachainer --budget 200
+  python -m stationops.cli run --backend pettachainer --budget 10
 
 python -m stationops.cli run --backend pettachainer \
-  --pettachainer-path /path/to/PeTTaChainer --budget 200
+  --pettachainer-path /path/to/PeTTaChainer --budget 10
 ```
 
-The adapter creates an isolated PeTTaChainer knowledge base for each episode,
-compile-adds the generated common-subset MeTTa through the supported Python
-API, and issues grounded `PatchPaysOff` queries in incident order. The query
-budget maps to PeTTaChainer steps. The strongest returned proof STV supplies
-each action belief; a missing proof remains a missing belief, not numeric zero.
-Oracle beliefs remain scoring-only. PeTTaChainer exposes no aggregate execution
-counter through this API, so `engine_steps` is `null`.
+The adapter creates one isolated PeTTaChainer knowledge base per episode and
+retains it across that episode's rounds. Each round is supplied as a complete
+public snapshot. The adapter reconciles it by named statement, adding rules
+before facts, retracting disappeared or changed statements through the public
+API, and leaving unchanged statements and caches in place. Newly added facts
+are selected in batches of 100 and receive two bounded forward agenda steps per
+seed before the grounded `PatchPaysOff` queries run in incident order. This
+updates provisional base-rate caches while keeping inference explicitly finite.
+
+The query budget maps to backward PeTTaChainer steps and does not include this
+reported forward work. Round counters include `statements_added`,
+`statements_removed`, `forward_seed_facts`, and `forward_steps`; `engine_steps`
+remains `null` because the API does not expose total internal execution steps.
+The strongest returned proof STV supplies each action belief; a missing proof
+remains a missing belief, not numeric zero. Oracle beliefs remain scoring-only.
 
 `PETTACHAINER_PYTHONPATH` is consumed by the StationOps adapter; Python itself
 does not interpret that variable. To validate canonical source checkouts by

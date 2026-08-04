@@ -6,14 +6,19 @@ def generate_statements(
     history: list[HistoryCase], incidents: list[Incident], config: Config
 ) -> str:
     """Restricted common-subset MeTTa; negative labels are explicit Not facts."""
+    cohorts = sorted({item.cohort for item in history} | {item.cohort for item in incidents})
     lines = [
-        "(: alarmGivenLeak (Implication (Premises (SealLeak $cohort $unit)) "
-        "(Conclusions (PressureAlarm $cohort $unit))) "
-        f"(CTV (STV {config.sensitivity} 1) (STV {config.false_positive_rate} 1)))",
-        "(: patchGoal (Implication (Premises (SealLeak $cohort $unit)) "
-        "(Conclusions (PatchPaysOff $cohort $unit))) "
-        "(CTV (STV 1 1) (STV 0 1)))",
+        f"(: alarmGivenLeak-{cohort} (Implication (SealLeak {cohort} $unit) "
+        f"(PressureAlarm {cohort} $unit)) "
+        f"(CTV (STV {config.sensitivity} 1) (STV {config.false_positive_rate} 1)))"
+        for cohort in cohorts
     ]
+    lines.extend(
+        f"(: patchGoal-{cohort} (Implication (SealLeak {cohort} $unit) "
+        f"(PatchPaysOff {cohort} $unit)) "
+        f"(CTV (STV 1 1) (STV 0 1)))"
+        for cohort in cohorts
+    )
     for case in history:
         leak = f"(SealLeak {case.cohort} {case.id})"
         alarm = f"(PressureAlarm {case.cohort} {case.id})"
@@ -25,7 +30,7 @@ def generate_statements(
     for i in range(config.irrelevant_statements):
         lines.append(f"(: irrelevant-fact-{i} (TelemetryNoise noise-{i}) (STV 1 1))")
         lines.append(
-            f"(: irrelevant-rule-{i} (Implication (Premises (TelemetryNoise $x)) "
-            f"(Conclusions (ArchivedNoise{i} $x))) (CTV (STV 0.5 1) (STV 0 1)))"
+            f"(: irrelevant-rule-{i} (Implication (TelemetryNoise $x) "
+            f"(ArchivedNoise{i} $x)) (CTV (STV 0.5 1) (STV 0 1)))"
         )
     return "\n".join(lines)

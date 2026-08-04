@@ -10,7 +10,7 @@ from .config import Config
 from .episode import _utility
 from .metta import generate_statements
 from .models import EpisodeFixture, HistoryCase, Incident, RoundFixture
-from .oracle import empirical_priors, posterior
+from .oracle import belief_error_metrics, empirical_priors, posterior
 from .policy import allocate
 from .simulator import generate_history
 
@@ -72,6 +72,7 @@ def _round_result(index, history, round_, beliefs, actions, counters, config, el
         "visible_incident_ids": [x.id for x in round_.incidents],
         "visible_incidents": [asdict(x) for x in round_.incidents],
         "beliefs": beliefs,
+        "belief_error": belief_error_metrics(beliefs, oracle_beliefs),
         "chosen_actions": actions,
         "expected_utility": utility,
         "oracle_utility": oracle_utility,
@@ -96,6 +97,16 @@ def _result(config, fixture, backend, budget, rounds, started, status="complete"
             else None
         ),
     }
+    for key in (
+        "statements_added",
+        "statements_removed",
+        "forward_seed_facts",
+        "forward_steps",
+    ):
+        if any(key in x["backend_counters"] for x in rounds):
+            counters[key] = sum(
+                x["backend_counters"].get(key, 0) or 0 for x in rounds
+            )
     return {
         "benchmark": "BaseRateTriage-v1",
         "schema_version": 1,

@@ -12,6 +12,7 @@ from .v1 import play_episode_v1, prior_shift_fixture, run_episode_v1
 def _config(args):
     return Config(
         seed=args.seed,
+        history_size=args.history_size,
         incidents=args.incidents,
         repair_slots=args.repair_slots,
         irrelevant_statements=args.irrelevant,
@@ -24,6 +25,7 @@ def main(argv=None):
     for name in ("generate", "run", "sweep", "play"):
         p = sub.add_parser(name)
         p.add_argument("--seed", type=int, default=7)
+        p.add_argument("--history-size", type=int, default=1000)
         p.add_argument("--incidents", type=int, default=100)
         p.add_argument("--repair-slots", type=int, default=10)
         p.add_argument("--irrelevant", type=int, default=0)

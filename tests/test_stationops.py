@@ -11,10 +11,42 @@ from stationops.episode import run_episode
 from stationops.metta import generate_statements
 from stationops.models import HistoryCase, Incident
 from stationops.models import EpisodeFixture, RoundFixture
-from stationops.oracle import empirical_priors, posterior, resolve
+from stationops.oracle import belief_error_metrics, empirical_priors, posterior, resolve
 from stationops.policy import allocate
 from stationops.simulator import generate_history, generate_incidents
 from stationops.v1 import play_episode_v1, prior_shift_fixture, run_episode_v1
+
+
+LIVE_MAX_ABSOLUTE_BELIEF_ERROR = 0.05
+LIVE_MIN_NORMALIZED_SCORE = 0.95
+
+
+def compact_live_prior_shift_fixture(config: Config) -> EpisodeFixture:
+    """Cheaper live fixture with the same new-cohort threshold transition."""
+    history = tuple(generate_history(config))
+    first = (
+        Incident("r0-new-signal", "new", True),
+        Incident("r0-new-evidence-00", "new", True),
+        Incident("r0-new-evidence-01", "new", True),
+        Incident("r0-new-evidence-02", "new", True),
+        Incident("r0-old-control", "old", True),
+    )
+    first_resolutions = tuple(
+        HistoryCase(item.id, item.cohort, item.cohort == "new", item.alarm)
+        for item in first
+    )
+    second = (
+        Incident("r1-new-signal", "new", True),
+        Incident("r1-old-control", "old", True),
+    )
+    second_resolutions = tuple(
+        HistoryCase(item.id, item.cohort, False, item.alarm) for item in second
+    )
+    return EpisodeFixture(
+        "compact-live-prior-shift",
+        history,
+        (RoundFixture(first, first_resolutions), RoundFixture(second, second_resolutions)),
+    )
 
 
 class BenchmarkTests(unittest.TestCase):
@@ -28,6 +60,26 @@ class BenchmarkTests(unittest.TestCase):
         self.assertIn("(Not (SealLeak", source)
         self.assertIn("(Not (PressureAlarm", source)
         self.assertIn("(CTV", source)
+        self.assertIn(
+            "(Implication (SealLeak old $unit) (PressureAlarm old $unit))",
+            source,
+        )
+        self.assertIn(
+            "(Implication (SealLeak new $unit) (PressureAlarm new $unit))",
+            source,
+        )
+        self.assertIn(
+            "(Implication (SealLeak old $unit) (PatchPaysOff old $unit))",
+            source,
+        )
+        self.assertIn(
+            "(Implication (SealLeak new $unit) (PatchPaysOff new $unit))",
+            source,
+        )
+        self.assertNotIn("(SealLeak $cohort $unit) (PressureAlarm", source)
+        self.assertNotIn("(SealLeak $cohort $unit) (PatchPaysOff", source)
+        self.assertNotIn("(Premises ", source)
+        self.assertNotIn("(Conclusions ", source)
 
     def test_posterior_threshold_and_decisions(self):
         cfg = Config(repair_slots=100)
@@ -63,10 +115,25 @@ class BenchmarkTests(unittest.TestCase):
     def test_json_contract(self):
         result = run_episode(Config(), budget=100)
         for key in ("config", "seed", "backend", "budget", "empirical_priors", "beliefs",
+                    "belief_error",
                     "chosen_actions", "expected_utility", "oracle_utility", "do_nothing_utility",
                     "regret", "normalized_score", "wall_time_seconds", "backend_counters"):
             self.assertIn(key, result)
         json.dumps(result)
+        self.assertEqual(result["belief_error"]["missing_count"], 0)
+        self.assertEqual(result["belief_error"]["max_absolute_error"], 0.0)
+
+    def test_belief_error_metrics_measure_approximation_and_missing_results(self):
+        metrics = belief_error_metrics(
+            {"exact": 0.25, "approximate": 0.4, "invalid": float("nan")},
+            {"exact": 0.25, "approximate": 0.5, "missing": 0.75, "invalid": 0.1},
+        )
+        self.assertEqual(metrics["expected_count"], 4)
+        self.assertEqual(metrics["evaluated_count"], 2)
+        self.assertEqual(metrics["missing_count"], 2)
+        self.assertEqual(metrics["coverage"], 0.5)
+        self.assertAlmostEqual(metrics["mean_absolute_error"], 0.05)
+        self.assertAlmostEqual(metrics["max_absolute_error"], 0.1)
 
     def test_mm2_conformance_when_binding_available(self):
         path = os.environ.get("MM2_CHAINER_PYTHONPATH")
@@ -162,7 +229,17 @@ class BenchmarkTests(unittest.TestCase):
                 self.__class__.instances.append(self)
 
             def add_atoms_no_check(self, atoms):
-                self.atoms = atoms
+                self.atoms.extend(atoms)
+
+            def remove_statement(self, name):
+                raise AssertionError(f"unexpected removal: {name}")
+
+            def select_facts(self, terms):
+                return list(terms)
+
+            def forward_chain(self, facts, steps):
+                self.forwarded = (list(facts), steps)
+                return []
 
             def query(self, query, steps, timeout_sec):
                 self.queries.append((query, steps, timeout_sec))
@@ -186,7 +263,17 @@ class BenchmarkTests(unittest.TestCase):
         )
 
         self.assertEqual(beliefs, {"old-alarm": .8})
-        self.assertEqual(counters, {"queries": 2, "engine_steps": None})
+        self.assertEqual(
+            counters,
+            {
+                "statements_added": 1,
+                "statements_removed": 0,
+                "forward_seed_facts": 1,
+                "forward_steps": 2,
+                "queries": 2,
+                "engine_steps": None,
+            },
+        )
         self.assertEqual(
             allocate(incidents, beliefs, cfg),
             {"new-alarm": "defer", "old-alarm": "repair"},
@@ -199,6 +286,7 @@ class BenchmarkTests(unittest.TestCase):
             ],
         )
         self.assertEqual(Handler.instances[-1].atoms, ["(: fact (A) (STV 1 1))"])
+        self.assertEqual(Handler.instances[-1].forwarded, (["(A)"], 2))
         self.assertTrue(
             all(
                 steps == 17 and timeout == 0
@@ -206,15 +294,25 @@ class BenchmarkTests(unittest.TestCase):
             )
         )
 
-    def test_pettachainer_batches_are_isolated_and_zero_budget_is_empty(self):
+    def test_pettachainer_snapshots_reuse_handler_and_zero_budget_is_empty(self):
         class Handler:
             instances = []
 
             def __init__(self):
+                self.removed = []
                 self.__class__.instances.append(self)
 
             def add_atoms_no_check(self, atoms):
                 pass
+
+            def remove_statement(self, name):
+                self.removed.append(name)
+
+            def select_facts(self, terms):
+                return list(terms)
+
+            def forward_chain(self, facts, steps):
+                return []
 
             def query(self, query, steps, timeout_sec):
                 incident_id = "second" if "second" in query else "first"
@@ -232,7 +330,69 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(beliefs, {"first": .4, "second": .4})
         self.assertEqual(reversed_beliefs, {"second": .4, "first": .4})
         self.assertEqual(zero, {})
-        self.assertEqual(len(Handler.instances), 2)
+        self.assertEqual(len(Handler.instances), 1)
+
+    def test_pettachainer_reconciles_named_snapshots_rules_first(self):
+        class Handler:
+            instances = []
+
+            def __init__(self):
+                self.added = []
+                self.removed = []
+                self.forwarded = []
+                self.__class__.instances.append(self)
+
+            def add_atoms_no_check(self, atoms):
+                self.added.append(list(atoms))
+
+            def remove_statement(self, name):
+                self.removed.append(name)
+
+            def select_facts(self, terms):
+                return list(terms)
+
+            def forward_chain(self, facts, steps):
+                self.forwarded.append((list(facts), steps))
+                return []
+
+            def query(self, query, steps, timeout_sec):
+                return []
+
+        backend = PeTTaChainerBackend(
+            Config(), module=SimpleNamespace(PeTTaChainer=Handler)
+        )
+        first = "\n".join((
+            "(: rule (Implication (A) (Goal)) (CTV (STV 1 1) (STV 0 1)))",
+            "(: fact-a (A) (STV 1 1))",
+            "(: fact-b (Not (B)) (STV 1 1))",
+        ))
+        second = "\n".join((
+            "(: rule (Implication (A) (Goal)) (CTV (STV 1 1) (STV 0 1)))",
+            "(: fact-a (A) (STV .5 1))",
+            "(: fact-c (C) (STV 1 1))",
+        ))
+
+        _, initial = backend.infer([], [], 1, first)
+        _, revised = backend.infer([], [], 1, second)
+
+        handler = Handler.instances[0]
+        self.assertEqual(
+            handler.added,
+            [
+                ["(: rule (Implication (A) (Goal)) (CTV (STV 1 1) (STV 0 1)))"],
+                ["(: fact-a (A) (STV 1 1))", "(: fact-b (Not (B)) (STV 1 1))"],
+                ["(: fact-a (A) (STV .5 1))", "(: fact-c (C) (STV 1 1))"],
+            ],
+        )
+        self.assertEqual(handler.removed, ["fact-a", "fact-b"])
+        self.assertEqual(
+            handler.forwarded,
+            [(["(A)", "(B)"], 4), (["(A)", "(C)"], 4)],
+        )
+        self.assertEqual(initial["statements_added"], 3)
+        self.assertEqual(initial["statements_removed"], 0)
+        self.assertEqual(revised["statements_added"], 2)
+        self.assertEqual(revised["statements_removed"], 2)
 
     def test_pettachainer_unavailable_error_is_actionable(self):
         with patch("stationops.backends.importlib.import_module", side_effect=ImportError):
@@ -307,14 +467,24 @@ class BenchmarkTests(unittest.TestCase):
         except BackendUnavailable as exc:
             self.skipTest(str(exc))
         priors = empirical_priors(history)
-        for incident in incidents:
-            expected = posterior(
+        oracle_beliefs = {
+            incident.id: posterior(
                 priors[incident.cohort],
                 incident.alarm,
                 cfg.sensitivity,
                 cfg.false_positive_rate,
             )
-            self.assertAlmostEqual(beliefs[incident.id], expected, places=6)
+            for incident in incidents
+        }
+        metrics = belief_error_metrics(beliefs, oracle_beliefs)
+        self.assertEqual(metrics["missing_count"], 0)
+        self.assertLessEqual(
+            metrics["max_absolute_error"], LIVE_MAX_ABSOLUTE_BELIEF_ERROR
+        )
+        self.assertEqual(
+            allocate(incidents, beliefs, cfg),
+            allocate(incidents, oracle_beliefs, cfg),
+        )
 
 
 class V1BenchmarkTests(unittest.TestCase):
@@ -379,6 +549,7 @@ class V1BenchmarkTests(unittest.TestCase):
         self.assertEqual(a, b)
         zero = run_episode_v1(cfg, budget=0)
         self.assertTrue(all(not r["beliefs"] for r in zero["rounds"]))
+        self.assertTrue(all(r["belief_error"]["coverage"] == 0 for r in zero["rounds"]))
         self.assertTrue(all(set(r["chosen_actions"].values()) == {"defer"} for r in zero["rounds"]))
         irrelevant = run_episode_v1(Config(repair_slots=50, irrelevant_statements=25))
         self.assertEqual([r["beliefs"] for r in a["rounds"]],
@@ -408,12 +579,23 @@ class V1BenchmarkTests(unittest.TestCase):
             result = run_episode_v1(Config())
         self.assertIsNone(result["aggregate_counters"]["engine_steps"])
 
-    def test_controlled_pettachainer_uses_fresh_handler_each_round(self):
+    def test_controlled_pettachainer_reuses_handler_and_forwards_round_deltas(self):
         class Handler:
             instances = []
             def __init__(self):
+                self.added = []
+                self.removed = []
+                self.forwarded = []
                 self.__class__.instances.append(self)
-            def add_atoms_no_check(self, atoms): pass
+            def add_atoms_no_check(self, atoms):
+                self.added.append(list(atoms))
+            def remove_statement(self, name):
+                self.removed.append(name)
+            def select_facts(self, terms):
+                return list(terms)
+            def forward_chain(self, facts, steps):
+                self.forwarded.append((list(facts), steps))
+                return []
             def query(self, query, steps, timeout_sec):
                 return ["(: proof (PatchPaysOff x y) (STV .2 1))"]
         backend_module = SimpleNamespace(PeTTaChainer=Handler)
@@ -421,8 +603,28 @@ class V1BenchmarkTests(unittest.TestCase):
         with patch("stationops.v1.PeTTaChainerBackend",
                    lambda config, path: real(config, module=backend_module)):
             result = run_episode_v1(Config(), "pettachainer")
-        self.assertEqual(len(Handler.instances), len(result["rounds"]))
+        self.assertEqual(len(Handler.instances), 1)
+        handler = Handler.instances[0]
+        self.assertIn("observed-r0-new-signal", handler.removed)
+        self.assertIn("observed-r0-old-control", handler.removed)
+        self.assertEqual(
+            result["rounds"][1]["backend_counters"]["statements_added"],
+            82,
+        )
+        self.assertEqual(
+            result["rounds"][1]["backend_counters"]["statements_removed"],
+            40,
+        )
+        self.assertEqual(
+            result["rounds"][1]["backend_counters"]["forward_seed_facts"],
+            82,
+        )
+        self.assertTrue(handler.forwarded)
         self.assertEqual(result["aggregate_counters"]["queries"], 42)
+        self.assertEqual(result["aggregate_counters"]["statements_added"], 4126)
+        self.assertEqual(result["aggregate_counters"]["statements_removed"], 40)
+        self.assertEqual(result["aggregate_counters"]["forward_seed_facts"], 4122)
+        self.assertEqual(result["aggregate_counters"]["forward_steps"], 8244)
 
     def test_human_validation_scoring_parity_and_no_early_reveal(self):
         cfg = Config(repair_slots=50)
@@ -460,18 +662,27 @@ class V1BenchmarkTests(unittest.TestCase):
             PeTTaChainerBackend(Config(), path)
         except BackendUnavailable as exc:
             self.skipTest(str(exc))
-        cfg = Config(repair_slots=50)
+        cfg = Config(history_size=200, repair_slots=10)
+        fixture = compact_live_prior_shift_fixture(cfg)
         try:
-            result = run_episode_v1(cfg, "pettachainer", 200, pettachainer_path=path)
+            result = run_episode_v1(
+                cfg,
+                "pettachainer",
+                10,
+                pettachainer_path=path,
+                fixture=fixture,
+            )
         except BackendUnavailable as exc:
             self.skipTest(str(exc))
         for round_ in result["rounds"]:
-            for incident in round_["visible_incidents"]:
-                expected = posterior(
-                    round_["priors_before"][incident["cohort"]], incident["alarm"],
-                    cfg.sensitivity, cfg.false_positive_rate,
-                )
-                self.assertAlmostEqual(round_["beliefs"][incident["id"]], expected, places=6)
+            self.assertEqual(round_["belief_error"]["missing_count"], 0)
+            self.assertLessEqual(
+                round_["belief_error"]["max_absolute_error"],
+                LIVE_MAX_ABSOLUTE_BELIEF_ERROR,
+            )
+        self.assertGreaterEqual(
+            result["aggregate"]["normalized_score"], LIVE_MIN_NORMALIZED_SCORE
+        )
         self.assertEqual(result["rounds"][0]["chosen_actions"]["r0-new-signal"], "defer")
         self.assertEqual(result["rounds"][1]["chosen_actions"]["r1-new-signal"], "repair")
         self.assertEqual(result["rounds"][0]["chosen_actions"]["r0-old-control"], "repair")
