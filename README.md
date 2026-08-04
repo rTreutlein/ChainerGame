@@ -144,3 +144,6 @@ as successful conformance. A live conformance run requires the handler
 construction above to succeed; skipped integration tests are not evidence.
 
 `ReasonerBackend` in `stationops.backends` remains the complete backend seam.
+
+Measured PeTTaChainer accuracy/runtime curves are recorded in
+[`BENCHMARK_RESULTS.md`](BENCHMARK_RESULTS.md).
