@@ -46,10 +46,15 @@ class ReferenceBackend:
 
 
 class MM2Backend:
+    """Persistent adapter for MM2's incremental named-statement API."""
+
     name = "mm2"
 
     def __init__(self, config: Config, python_path: str | None = None, module=None):
         self.config = config
+        self._engine = None
+        self._atoms_by_name: dict[str, str] = {}
+        self._base_rates: dict[str, float] = {}
         if module is not None:
             self.module = module
             return
@@ -63,6 +68,66 @@ class MM2Backend:
                 "`maturin develop --release`, then pass --mm2-path or set "
                 "MM2_CHAINER_PYTHONPATH"
             ) from exc
+
+    @staticmethod
+    def _statement_name(atom: str) -> str:
+        fields = atom.split(maxsplit=2)
+        if len(fields) < 3 or fields[0] != "(:":
+            raise ValueError(f"expected one named MeTTa statement: {atom}")
+        return fields[1]
+
+    def _reconcile(self, statements: str) -> dict[str, int]:
+        entries: list[tuple[str, str]] = []
+        desired: dict[str, str] = {}
+        for atom in (line.strip() for line in statements.splitlines() if line.strip()):
+            name = self._statement_name(atom)
+            if name in desired:
+                raise ValueError(f"duplicate MeTTa statement name: {name}")
+            desired[name] = atom
+            entries.append((name, atom))
+
+        changed_names = [
+            name
+            for name, atom in entries
+            if name in self._atoms_by_name and self._atoms_by_name[name] != atom
+        ]
+        if changed_names:
+            raise ValueError(
+                "cannot replace named statements in append-only MM2 knowledge base: "
+                + ", ".join(changed_names)
+            )
+
+        additions = [entry for entry in entries if entry[0] not in self._atoms_by_name]
+        if additions:
+            self._engine.add_many(
+                "stationops",
+                "\n".join(atom for _, atom in additions),
+            )
+            self._atoms_by_name.update(additions)
+
+        return {
+            "statements_added": len(additions),
+            "statements_removed": 0,
+        }
+
+    def _update_base_rates(self, history) -> int:
+        priors = empirical_priors(history)
+        missing_cohorts = sorted(self._base_rates.keys() - priors.keys())
+        if missing_cohorts:
+            raise ValueError(
+                "history lost cohorts in append-only MM2 episode: "
+                + ", ".join(missing_cohorts)
+            )
+        updated = 0
+        for cohort, prior in priors.items():
+            if self._base_rates.get(cohort) == prior:
+                continue
+            self._engine.set_base_rate(
+                "stationops", f"(SealLeak {cohort} $unit)", f"(STV {prior} 1)"
+            )
+            self._base_rates[cohort] = prior
+            updated += 1
+        return updated
 
     @staticmethod
     def _beliefs_from_results(results) -> dict[str, float]:
@@ -83,26 +148,34 @@ class MM2Backend:
     def infer(self, history, incidents, budget, statements):
         if budget <= 0:
             return {}, {"queries": len(incidents), "engine_steps": None}
-        engine = self.module.Engine()
-        engine.add_many("stationops", statements)
-        priors = empirical_priors(history)
-        for cohort, prior in priors.items():
-            engine.set_base_rate("stationops", f"(SealLeak {cohort} $unit)", f"(STV {prior} 1)")
+        if self._engine is None:
+            self._engine = self.module.Engine()
+        try:
+            counters = self._reconcile(statements)
+            counters["base_rates_updated"] = self._update_base_rates(history)
+        except Exception:
+            # Reconciliation can partially mutate the native engine. Rebuild
+            # from the next complete snapshot rather than retaining mixed state.
+            self._engine = None
+            self._atoms_by_name.clear()
+            self._base_rates.clear()
+            raise
         # SealLeak is the action belief. PatchPaysOff is a unit-strength wrapper
         # used by engines that compose inversion with another backward rule;
         # current MM2 coverage exposes the inverted SealLeak proof directly.
         queries = [(x.id, f"(SealLeak {x.cohort} {x.id})") for x in incidents]
-        results = engine.query_many("stationops", queries, budget)
+        results = self._engine.query_many("stationops", queries, budget)
         beliefs = self._beliefs_from_results(results)
-        return beliefs, {"queries": len(queries), "engine_steps": None}
+        counters.update({"queries": len(queries), "engine_steps": None})
+        return beliefs, counters
 
 
 class PeTTaChainerBackend:
     """Persistent StationOps adapter for PeTTaChainer's supported Python API.
 
-    ``statements`` is a complete public-KB snapshot for the current round.  The
-    adapter reconciles that snapshot by statement name, incrementally forwards
-    newly added facts, and retains the resulting caches for later rounds.
+    ``statements`` is the current round's public view. The adapter treats each
+    view as an append-only contribution, incrementally forwards newly named
+    facts, and retains all prior knowledge and caches for later rounds.
     """
 
     name = "pettachainer"
@@ -217,16 +290,16 @@ class PeTTaChainerBackend:
             desired[name] = atom
             entries.append((name, type_expression, atom))
 
-        removed = 0
         changed_names = [
             name
-            for name, old_atom in self._atoms_by_name.items()
-            if desired.get(name) != old_atom
+            for name, _, atom in entries
+            if name in self._atoms_by_name and self._atoms_by_name[name] != atom
         ]
-        for name in changed_names:
-            self._handler.remove_statement(name)
-            self._atoms_by_name.pop(name)
-            removed += 1
+        if changed_names:
+            raise ValueError(
+                "cannot replace named statements in append-only PeTTaChainer knowledge base: "
+                + ", ".join(changed_names)
+            )
 
         additions = [entry for entry in entries if entry[0] not in self._atoms_by_name]
         rules = [entry for entry in additions if self._is_rule(entry[1])]
@@ -252,7 +325,7 @@ class PeTTaChainerBackend:
 
         return {
             "statements_added": len(additions),
-            "statements_removed": removed,
+            "statements_removed": 0,
             "forward_seed_facts": forward_seeds,
             "forward_steps": forward_steps,
         }

@@ -85,8 +85,13 @@ MM2_CHAINER_PYTHONPATH=/path/to/site-packages \
   python -m stationops.cli run --backend mm2 --budget 100
 ```
 
-The adapter loads all generated statements, configures cohort-specific MM2 base
-rates, and queries each `SealLeak` action belief directly. `PatchPaysOff` is a
+The adapter keeps one MM2 engine for the episode. Each round adds only newly
+named statements; knowledge from earlier rounds remains in the append-only KB.
+A repeated name with different content is rejected instead of retracting the
+old statement. An incident's alarm retains the same statement name when its
+outcome becomes known, preventing duplicate evidence during that transition.
+The adapter updates the derived cohort base-rate cache and
+queries each `SealLeak` action belief directly. `PatchPaysOff` is a
 unit-strength identity consequence of `SealLeak`, but current MM2 coverage does
 not compose an inverted proof through that additional wrapper in one backward
 query. The strongest returned MM2 STV strength is the backend's action-belief
@@ -114,18 +119,19 @@ python -m stationops.cli run --backend pettachainer \
 ```
 
 The adapter creates one isolated PeTTaChainer knowledge base per episode and
-retains it across that episode's rounds. Each round is supplied as a complete
-public snapshot. The adapter reconciles it by named statement, adding rules
-before facts, retracting disappeared or changed statements through the public
-API, and leaving unchanged statements and caches in place. Newly added facts
-are selected in batches of 100 and receive two bounded forward agenda steps per
-seed before the grounded `PatchPaysOff` queries run in incident order. This
-updates provisional base-rate caches while keeping inference explicitly finite.
+retains it across that episode's rounds. Each round's public view contributes
+only newly named statements; disappeared statements remain as earlier
+knowledge, and a repeated name with different content is rejected. Rules are
+added before facts. Newly added facts are selected in batches of 100 and receive
+two bounded forward agenda steps per seed before the grounded `PatchPaysOff`
+queries run in incident order. This updates provisional base-rate caches while
+keeping inference explicitly finite and the KB append-only.
 
 The query budget maps to backward PeTTaChainer steps and does not include this
 reported forward work. Round counters include `statements_added`,
 `statements_removed`, `forward_seed_facts`, and `forward_steps`; `engine_steps`
 remains `null` because the API does not expose total internal execution steps.
+`statements_removed` remains zero under the append-only adapter contract.
 The strongest returned proof STV supplies each action belief; a missing proof
 remains a missing belief, not numeric zero. Oracle beliefs remain scoring-only.
 

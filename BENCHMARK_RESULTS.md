@@ -50,6 +50,16 @@ computed base rates.
   zero regret, normalized score 1.0, and round maximum absolute errors 0.00809
   and 0.01164.
 
+The append-only persistent adapter was validated on the full v1 fixture at
+budget 10. It retained one engine, added 4,044 statements in round one and only
+42 new statements in round two, and removed none. The run completed in 59.47
+seconds (30.45 and 29.01 seconds by round) with 100% coverage, zero regret,
+normalized score 1.0, and round maximum absolute errors 0.02659 and 0.02777.
+The prior rebuild-per-round adapter took 63.56 seconds (31.46 and 32.08
+seconds). Persistence therefore saved about 6% overall and 10% in round two;
+the remaining round-two cost is native inference and derived-cache refresh,
+not statement parsing or KB reconstruction.
+
 StationOps queries MM2's inverted `SealLeak` belief directly. The
 unit-strength `PatchPaysOff` wrapper has the same action-belief semantics, but
 the current MM2 backward surface does not compose an inverted proof through

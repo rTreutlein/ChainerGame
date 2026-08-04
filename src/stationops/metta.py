@@ -26,7 +26,10 @@ def generate_statements(
         lines.append(f"(: alarm-{case.id} {' ' if case.alarm else '(Not '}{alarm}{'' if case.alarm else ')'} (STV 1 1))")
     for item in incidents:
         alarm = f"(PressureAlarm {item.cohort} {item.id})"
-        lines.append(f"(: observed-{item.id} {' ' if item.alarm else '(Not '}{alarm}{'' if item.alarm else ')'} (STV 1 1))")
+        # Keep the same statement identity when this incident later becomes a
+        # history case. An append-only backend must not see one alarm event as
+        # fresh evidence merely because the simulator learned its outcome.
+        lines.append(f"(: alarm-{item.id} {' ' if item.alarm else '(Not '}{alarm}{'' if item.alarm else ')'} (STV 1 1))")
     for i in range(config.irrelevant_statements):
         lines.append(f"(: irrelevant-fact-{i} (TelemetryNoise noise-{i}) (STV 1 1))")
         lines.append(

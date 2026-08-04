@@ -228,6 +228,57 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(beliefs, {"old-alarm": .01})
         self.assertEqual(allocate([incident], beliefs, cfg), {"old-alarm": "defer"})
 
+    def test_mm2_reuses_engine_and_keeps_knowledge_append_only(self):
+        class Engine:
+            instances = []
+
+            def __init__(self):
+                self.added = []
+                self.base_rates = []
+                self.__class__.instances.append(self)
+
+            def add_many(self, kb, statements):
+                self.added.append((kb, statements))
+
+            def set_base_rate(self, kb, pattern, value):
+                self.base_rates.append((kb, pattern, value))
+
+            def query_many(self, kb, queries, budget):
+                return [(tag, []) for tag, _ in queries]
+
+            def remove_statement(self, *args):
+                raise AssertionError("append-only adapter must not remove statements")
+
+        backend = MM2Backend(Config(), module=SimpleNamespace(Engine=Engine))
+        history = [HistoryCase("history", "old", True, True)]
+        first = "\n".join((
+            "(: stable (A) (STV 1 1))",
+            "(: old-view (B) (STV 1 1))",
+        ))
+        second = "\n".join((
+            "(: stable (A) (STV 1 1))",
+            "(: new-fact (C) (STV 1 1))",
+        ))
+
+        _, initial = backend.infer(history, [], 1, first)
+        _, updated = backend.infer(history, [], 1, second)
+
+        self.assertEqual(len(Engine.instances), 1)
+        self.assertEqual(
+            Engine.instances[0].added,
+            [
+                ("stationops", first),
+                ("stationops", "(: new-fact (C) (STV 1 1))"),
+            ],
+        )
+        self.assertEqual(initial["statements_added"], 2)
+        self.assertEqual(updated["statements_added"], 1)
+        self.assertEqual(updated["statements_removed"], 0)
+        self.assertEqual(updated["base_rates_updated"], 0)
+
+        with self.assertRaisesRegex(ValueError, "append-only MM2"):
+            backend.infer(history, [], 1, "(: stable (A) (STV .5 1))")
+
     def test_pettachainer_beliefs_drive_decisions_and_preserve_order(self):
         class Handler:
             instances = []
@@ -341,7 +392,7 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(zero, {})
         self.assertEqual(len(Handler.instances), 1)
 
-    def test_pettachainer_reconciles_named_snapshots_rules_first(self):
+    def test_pettachainer_adds_named_deltas_rules_first_without_retractions(self):
         class Handler:
             instances = []
 
@@ -377,7 +428,7 @@ class BenchmarkTests(unittest.TestCase):
         ))
         second = "\n".join((
             "(: rule (Implication (A) (Goal)) (CTV (STV 1 1) (STV 0 1)))",
-            "(: fact-a (A) (STV .5 1))",
+            "(: fact-a (A) (STV 1 1))",
             "(: fact-c (C) (STV 1 1))",
         ))
 
@@ -390,18 +441,21 @@ class BenchmarkTests(unittest.TestCase):
             [
                 ["(: rule (Implication (A) (Goal)) (CTV (STV 1 1) (STV 0 1)))"],
                 ["(: fact-a (A) (STV 1 1))", "(: fact-b (Not (B)) (STV 1 1))"],
-                ["(: fact-a (A) (STV .5 1))", "(: fact-c (C) (STV 1 1))"],
+                ["(: fact-c (C) (STV 1 1))"],
             ],
         )
-        self.assertEqual(handler.removed, ["fact-a", "fact-b"])
+        self.assertEqual(handler.removed, [])
         self.assertEqual(
             handler.forwarded,
-            [(["(A)", "(B)"], 4), (["(A)", "(C)"], 4)],
+            [(["(A)", "(B)"], 4), (["(C)"], 2)],
         )
         self.assertEqual(initial["statements_added"], 3)
         self.assertEqual(initial["statements_removed"], 0)
-        self.assertEqual(revised["statements_added"], 2)
-        self.assertEqual(revised["statements_removed"], 2)
+        self.assertEqual(revised["statements_added"], 1)
+        self.assertEqual(revised["statements_removed"], 0)
+
+        with self.assertRaisesRegex(ValueError, "append-only PeTTaChainer"):
+            backend.infer([], [], 1, "(: fact-a (A) (STV .5 1))")
 
     def test_pettachainer_unavailable_error_is_actionable(self):
         with patch("stationops.backends.importlib.import_module", side_effect=ImportError):
@@ -614,26 +668,25 @@ class V1BenchmarkTests(unittest.TestCase):
             result = run_episode_v1(Config(), "pettachainer")
         self.assertEqual(len(Handler.instances), 1)
         handler = Handler.instances[0]
-        self.assertIn("observed-r0-new-signal", handler.removed)
-        self.assertIn("observed-r0-old-control", handler.removed)
+        self.assertEqual(handler.removed, [])
         self.assertEqual(
             result["rounds"][1]["backend_counters"]["statements_added"],
-            82,
+            42,
         )
         self.assertEqual(
             result["rounds"][1]["backend_counters"]["statements_removed"],
-            40,
+            0,
         )
         self.assertEqual(
             result["rounds"][1]["backend_counters"]["forward_seed_facts"],
-            82,
+            42,
         )
         self.assertTrue(handler.forwarded)
         self.assertEqual(result["aggregate_counters"]["queries"], 42)
-        self.assertEqual(result["aggregate_counters"]["statements_added"], 4126)
-        self.assertEqual(result["aggregate_counters"]["statements_removed"], 40)
-        self.assertEqual(result["aggregate_counters"]["forward_seed_facts"], 4122)
-        self.assertEqual(result["aggregate_counters"]["forward_steps"], 8244)
+        self.assertEqual(result["aggregate_counters"]["statements_added"], 4086)
+        self.assertEqual(result["aggregate_counters"]["statements_removed"], 0)
+        self.assertEqual(result["aggregate_counters"]["forward_seed_facts"], 4082)
+        self.assertEqual(result["aggregate_counters"]["forward_steps"], 8164)
 
     def test_mm2_v1_conformance_when_binding_available(self):
         path = os.environ.get("MM2_CHAINER_PYTHONPATH")

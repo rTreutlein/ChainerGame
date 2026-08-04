@@ -100,6 +100,7 @@ def _result(config, fixture, backend, budget, rounds, started, status="complete"
     for key in (
         "statements_added",
         "statements_removed",
+        "base_rates_updated",
         "forward_seed_facts",
         "forward_steps",
     ):
