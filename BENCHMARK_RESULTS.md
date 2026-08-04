@@ -60,6 +60,14 @@ seconds). Persistence therefore saved about 6% overall and 10% in round two;
 the remaining round-two cost is native inference and derived-cache refresh,
 not statement parsing or KB reconstruction.
 
+MM2-Chainer `21d1e70` batches forward seeds and settles contribution deltas by
+identity. With that engine and StationOps forwarding the 42 round-two facts in
+one call, the same full v1 budget-10 run completed in 34.45 seconds (31.16 and
+3.28 seconds by round). An instrumented repeat attributed 0.03 seconds to
+round-two insertion, 2.71 seconds to incremental forward maintenance, and 0.51
+seconds to the two warm queries. Coverage remained 100%, regret remained zero,
+and the round maximum absolute errors were 0.02659 and 0.02777.
+
 StationOps queries MM2's inverted `SealLeak` belief directly. The
 unit-strength `PatchPaysOff` wrapper has the same action-belief semantics, but
 the current MM2 backward surface does not compose an inverted proof through

@@ -22,6 +22,56 @@ class BackendUnavailable(RuntimeError):
     pass
 
 
+def _fields(expression: str) -> list[str]:
+    """Split one restricted MeTTa expression into top-level fields."""
+    expression = expression.strip()
+    if len(expression) < 2 or expression[0] != "(" or expression[-1] != ")":
+        raise ValueError(f"expected a parenthesized MeTTa expression: {expression}")
+    fields: list[str] = []
+    start = None
+    depth = 0
+    for index, char in enumerate(expression[1:-1], start=1):
+        if char == "(":
+            if start is None:
+                start = index
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                raise ValueError(f"unbalanced MeTTa expression: {expression}")
+        elif char.isspace() and depth == 0:
+            if start is not None:
+                fields.append(expression[start:index])
+                start = None
+        elif start is None:
+            start = index
+    if depth != 0:
+        raise ValueError(f"unbalanced MeTTa expression: {expression}")
+    if start is not None:
+        fields.append(expression[start:-1])
+    return fields
+
+
+def _statement_parts(atom: str) -> tuple[str, str]:
+    fields = _fields(atom)
+    if len(fields) != 4 or fields[0] != ":":
+        raise ValueError(f"expected one named MeTTa statement: {atom}")
+    return fields[1], fields[2]
+
+
+def _is_rule(type_expression: str) -> bool:
+    fields = _fields(type_expression)
+    return bool(fields) and fields[0] == "Implication"
+
+
+def _fact_seed(type_expression: str) -> str:
+    """Return the positive surface term whose canonical fact seeds forward work."""
+    fields = _fields(type_expression)
+    if len(fields) == 2 and fields[0] == "Not":
+        return fields[1]
+    return type_expression
+
+
 class ReasonerBackend(Protocol):
     name: str
 
@@ -49,6 +99,7 @@ class MM2Backend:
     """Persistent adapter for MM2's incremental named-statement API."""
 
     name = "mm2"
+    _forward_steps_per_seed = 2
 
     def __init__(self, config: Config, python_path: str | None = None, module=None):
         self.config = config
@@ -69,26 +120,20 @@ class MM2Backend:
                 "MM2_CHAINER_PYTHONPATH"
             ) from exc
 
-    @staticmethod
-    def _statement_name(atom: str) -> str:
-        fields = atom.split(maxsplit=2)
-        if len(fields) < 3 or fields[0] != "(:":
-            raise ValueError(f"expected one named MeTTa statement: {atom}")
-        return fields[1]
-
     def _reconcile(self, statements: str) -> dict[str, int]:
-        entries: list[tuple[str, str]] = []
+        cold_start = not self._atoms_by_name
+        entries: list[tuple[str, str, str]] = []
         desired: dict[str, str] = {}
         for atom in (line.strip() for line in statements.splitlines() if line.strip()):
-            name = self._statement_name(atom)
+            name, type_expression = _statement_parts(atom)
             if name in desired:
                 raise ValueError(f"duplicate MeTTa statement name: {name}")
             desired[name] = atom
-            entries.append((name, atom))
+            entries.append((name, type_expression, atom))
 
         changed_names = [
             name
-            for name, atom in entries
+            for name, _, atom in entries
             if name in self._atoms_by_name and self._atoms_by_name[name] != atom
         ]
         if changed_names:
@@ -101,13 +146,23 @@ class MM2Backend:
         if additions:
             self._engine.add_many(
                 "stationops",
-                "\n".join(atom for _, atom in additions),
+                "\n".join(atom for _, _, atom in additions),
             )
-            self._atoms_by_name.update(additions)
+            self._atoms_by_name.update((name, atom) for name, _, atom in additions)
+
+        facts = [] if cold_start else [
+            entry for entry in additions if not _is_rule(entry[1])
+        ]
+        seeds = [_fact_seed(type_expression) for _, type_expression, _ in facts]
+        forward_steps = len(seeds) * self._forward_steps_per_seed
+        if seeds:
+            self._engine.forward_chain("stationops", seeds, forward_steps)
 
         return {
             "statements_added": len(additions),
             "statements_removed": 0,
+            "forward_seed_facts": len(seeds),
+            "forward_steps": forward_steps,
         }
 
     def _update_base_rates(self, history) -> int:
@@ -217,58 +272,6 @@ class PeTTaChainerBackend:
                     strengths.append(strength)
         return max(strengths) if strengths else None
 
-    @staticmethod
-    def _fields(expression: str) -> list[str]:
-        """Split one restricted MeTTa expression into top-level fields."""
-        expression = expression.strip()
-        if len(expression) < 2 or expression[0] != "(" or expression[-1] != ")":
-            raise ValueError(f"expected a parenthesized MeTTa expression: {expression}")
-        fields: list[str] = []
-        start = None
-        depth = 0
-        for index, char in enumerate(expression[1:-1], start=1):
-            if char == "(":
-                if start is None:
-                    start = index
-                depth += 1
-            elif char == ")":
-                depth -= 1
-                if depth < 0:
-                    raise ValueError(f"unbalanced MeTTa expression: {expression}")
-            elif char.isspace() and depth == 0:
-                if start is not None:
-                    fields.append(expression[start:index])
-                    start = None
-            elif start is None:
-                start = index
-        if depth != 0:
-            raise ValueError(f"unbalanced MeTTa expression: {expression}")
-        if start is not None:
-            fields.append(expression[start:-1])
-        return fields
-
-    @classmethod
-    def _statement_parts(cls, atom: str) -> tuple[str, str]:
-        fields = cls._fields(atom)
-        if len(fields) != 4 or fields[0] != ":":
-            raise ValueError(f"expected one named MeTTa statement: {atom}")
-        return fields[1], fields[2]
-
-    @classmethod
-    def _is_rule(cls, type_expression: str) -> bool:
-        fields = cls._fields(type_expression)
-        return bool(fields) and fields[0] == "Implication"
-
-    @classmethod
-    def _fact_seed(cls, type_expression: str) -> str:
-        """Return the surface term whose canonical fact seeds forward work."""
-        fields = cls._fields(type_expression)
-        if len(fields) == 2 and fields[0] == "Not":
-            # PeTTaChainer canonicalizes negative STV observations as a
-            # complemented-strength fact of the positive type.
-            return fields[1]
-        return type_expression
-
     def _new_handler(self):
         try:
             return self.module.PeTTaChainer()
@@ -284,7 +287,7 @@ class PeTTaChainerBackend:
         entries: list[tuple[str, str, str]] = []
         desired: dict[str, str] = {}
         for atom in (line.strip() for line in statements.splitlines() if line.strip()):
-            name, type_expression = self._statement_parts(atom)
+            name, type_expression = _statement_parts(atom)
             if name in desired:
                 raise ValueError(f"duplicate MeTTa statement name: {name}")
             desired[name] = atom
@@ -302,8 +305,8 @@ class PeTTaChainerBackend:
             )
 
         additions = [entry for entry in entries if entry[0] not in self._atoms_by_name]
-        rules = [entry for entry in additions if self._is_rule(entry[1])]
-        facts = [entry for entry in additions if not self._is_rule(entry[1])]
+        rules = [entry for entry in additions if _is_rule(entry[1])]
+        facts = [entry for entry in additions if not _is_rule(entry[1])]
 
         if rules:
             self._handler.add_atoms_no_check([atom for _, _, atom in rules])
@@ -316,7 +319,7 @@ class PeTTaChainerBackend:
             self._handler.add_atoms_no_check([atom for _, _, atom in batch])
             self._atoms_by_name.update((name, atom) for name, _, atom in batch)
             seeds = self._handler.select_facts(
-                [self._fact_seed(type_expression) for _, type_expression, _ in batch]
+                [_fact_seed(type_expression) for _, type_expression, _ in batch]
             )
             steps = self._forward_steps_per_seed * len(seeds)
             self._handler.forward_chain(seeds, steps=steps)

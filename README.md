@@ -90,7 +90,10 @@ named statements; knowledge from earlier rounds remains in the append-only KB.
 A repeated name with different content is rejected instead of retracting the
 old statement. An incident's alarm retains the same statement name when its
 outcome becomes known, preventing duplicate evidence during that transition.
-The adapter updates the derived cohort base-rate cache and
+The first backward query performs MM2's complete cold cache bootstrap. Later
+rounds batch all newly added fact seeds into one bounded forward call, allowing
+MM2 to update only dirty base-rate contributions before backward inference.
+The adapter updates the explicit cohort-prior cache and
 queries each `SealLeak` action belief directly. `PatchPaysOff` is a
 unit-strength identity consequence of `SealLeak`, but current MM2 coverage does
 not compose an inverted proof through that additional wrapper in one backward

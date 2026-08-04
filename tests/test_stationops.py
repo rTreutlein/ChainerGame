@@ -235,6 +235,7 @@ class BenchmarkTests(unittest.TestCase):
             def __init__(self):
                 self.added = []
                 self.base_rates = []
+                self.forwarded = []
                 self.__class__.instances.append(self)
 
             def add_many(self, kb, statements):
@@ -242,6 +243,10 @@ class BenchmarkTests(unittest.TestCase):
 
             def set_base_rate(self, kb, pattern, value):
                 self.base_rates.append((kb, pattern, value))
+
+            def forward_chain(self, kb, seeds, steps):
+                self.forwarded.append((kb, list(seeds), steps))
+                return []
 
             def query_many(self, kb, queries, budget):
                 return [(tag, []) for tag, _ in queries]
@@ -275,6 +280,12 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(updated["statements_added"], 1)
         self.assertEqual(updated["statements_removed"], 0)
         self.assertEqual(updated["base_rates_updated"], 0)
+        self.assertEqual(updated["forward_seed_facts"], 1)
+        self.assertEqual(updated["forward_steps"], 2)
+        self.assertEqual(
+            Engine.instances[0].forwarded,
+            [("stationops", ["(C)"], 2)],
+        )
 
         with self.assertRaisesRegex(ValueError, "append-only MM2"):
             backend.infer(history, [], 1, "(: stable (A) (STV .5 1))")
