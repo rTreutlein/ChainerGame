@@ -86,15 +86,18 @@ MM2_CHAINER_PYTHONPATH=/path/to/site-packages \
 ```
 
 The adapter loads all generated statements, configures cohort-specific MM2 base
-rates, and queries every payoff goal. `PatchPaysOff` is a unit-strength identity
-consequence of `SealLeak`, so the strongest returned MM2 STV strength is the
-backend's action-belief value. Missing proofs—including zero or insufficient
-budgets—produce no belief and therefore no repair. Oracle Bayes beliefs remain
-separate and are used only to score chosen actions. MM2 does not expose
-execution counters through this Python API, so those counters are explicitly
-`null`. The integration test skips with an actionable reason when the binding
-is unavailable; controlled-engine tests always verify that wrong or empty MM2
-results change or remove decisions.
+rates, and queries each `SealLeak` action belief directly. `PatchPaysOff` is a
+unit-strength identity consequence of `SealLeak`, but current MM2 coverage does
+not compose an inverted proof through that additional wrapper in one backward
+query. The strongest returned MM2 STV strength is the backend's action-belief
+value. Missing proofs—including zero or insufficient budgets—produce no belief
+and therefore no repair. Oracle Bayes beliefs remain separate and are used only
+to score chosen actions. MM2 does not expose execution counters through this
+Python API, so those counters are explicitly `null`. Live conformance uses the
+same maximum absolute belief error of 0.05 as PeTTaChainer. The integration test
+skips with an actionable reason when the binding is unavailable; controlled
+engine tests always verify that wrong or empty MM2 results change or remove
+decisions.
 
 PeTTaChainer is an explicitly selected peer backend; StationOps never switches
 to it automatically when MM2 is unavailable. Install PeTTaChainer and its

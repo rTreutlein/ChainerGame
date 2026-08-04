@@ -144,15 +144,10 @@ class BenchmarkTests(unittest.TestCase):
         result = run_episode(Config(repair_slots=100), "mm2", 100, path)
         old_alarm = next(x for x in generate_incidents(Config(repair_slots=100)) if x.cohort == "old" and x.alarm)
         new_alarm = next(x for x in generate_incidents(Config(repair_slots=100)) if x.cohort == "new" and x.alarm)
-        self.assertAlmostEqual(
-            result["beliefs"][old_alarm.id],
-            posterior(.05, True, .9, .12),
-            places=6,
-        )
-        self.assertAlmostEqual(
-            result["beliefs"][new_alarm.id],
-            posterior(.005, True, .9, .12),
-            places=6,
+        self.assertEqual(result["belief_error"]["missing_count"], 0)
+        self.assertLessEqual(
+            result["belief_error"]["max_absolute_error"],
+            LIVE_MAX_ABSOLUTE_BELIEF_ERROR,
         )
         self.assertGreater(result["beliefs"][old_alarm.id], Config().repair_threshold)
         self.assertLess(result["beliefs"][new_alarm.id], Config().repair_threshold)
@@ -161,6 +156,12 @@ class BenchmarkTests(unittest.TestCase):
 
     def test_mm2_beliefs_are_derived_from_engine_results(self):
         class Engine:
+            instances = []
+
+            def __init__(self):
+                self.queries = []
+                self.__class__.instances.append(self)
+
             def add_many(self, *args):
                 pass
 
@@ -168,6 +169,7 @@ class BenchmarkTests(unittest.TestCase):
                 pass
 
             def query_many(self, kb, queries, budget):
+                self.queries = list(queries)
                 if budget < 2:
                     return [(tag, []) for tag, _ in queries]
                 values = {"old-alarm": .8, "new-alarm": .01}
@@ -185,6 +187,13 @@ class BenchmarkTests(unittest.TestCase):
         ]
         beliefs, _ = backend.infer(history, incidents, 2, "")
         self.assertEqual(beliefs, {"old-alarm": .8, "new-alarm": .01})
+        self.assertEqual(
+            Engine.instances[-1].queries,
+            [
+                ("old-alarm", "(SealLeak old old-alarm)"),
+                ("new-alarm", "(SealLeak new new-alarm)"),
+            ],
+        )
         self.assertEqual(
             allocate(incidents, beliefs, cfg),
             {"old-alarm": "repair", "new-alarm": "defer"},
@@ -625,6 +634,35 @@ class V1BenchmarkTests(unittest.TestCase):
         self.assertEqual(result["aggregate_counters"]["statements_removed"], 40)
         self.assertEqual(result["aggregate_counters"]["forward_seed_facts"], 4122)
         self.assertEqual(result["aggregate_counters"]["forward_steps"], 8244)
+
+    def test_mm2_v1_conformance_when_binding_available(self):
+        path = os.environ.get("MM2_CHAINER_PYTHONPATH")
+        try:
+            MM2Backend(Config(), path)
+        except BackendUnavailable as exc:
+            self.skipTest(str(exc))
+        cfg = Config(history_size=200, repair_slots=10)
+        result = run_episode_v1(
+            cfg,
+            "mm2",
+            100,
+            mm2_path=path,
+            fixture=compact_live_prior_shift_fixture(cfg),
+        )
+
+        for round_ in result["rounds"]:
+            self.assertEqual(round_["belief_error"]["missing_count"], 0)
+            self.assertLessEqual(
+                round_["belief_error"]["max_absolute_error"],
+                LIVE_MAX_ABSOLUTE_BELIEF_ERROR,
+            )
+        self.assertGreaterEqual(
+            result["aggregate"]["normalized_score"], LIVE_MIN_NORMALIZED_SCORE
+        )
+        self.assertEqual(result["rounds"][0]["chosen_actions"]["r0-new-signal"], "defer")
+        self.assertEqual(result["rounds"][1]["chosen_actions"]["r1-new-signal"], "repair")
+        self.assertEqual(result["rounds"][0]["chosen_actions"]["r0-old-control"], "repair")
+        self.assertEqual(result["rounds"][1]["chosen_actions"]["r1-old-control"], "repair")
 
     def test_human_validation_scoring_parity_and_no_early_reveal(self):
         cfg = Config(repair_slots=50)

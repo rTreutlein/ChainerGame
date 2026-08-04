@@ -66,12 +66,7 @@ class MM2Backend:
 
     @staticmethod
     def _beliefs_from_results(results) -> dict[str, float]:
-        """Map each proven PatchPaysOff goal to its strongest returned STV.
-
-        PatchPaysOff is a unit-strength identity consequence of SealLeak in the
-        generated KB. Its returned strength therefore has the benchmark's leak
-        belief semantics. An absent proof means an absent belief, never zero.
-        """
+        """Map each proven SealLeak goal to its strongest returned STV."""
         beliefs = {}
         for tag, proofs in results:
             strengths = [
@@ -93,7 +88,10 @@ class MM2Backend:
         priors = empirical_priors(history)
         for cohort, prior in priors.items():
             engine.set_base_rate("stationops", f"(SealLeak {cohort} $unit)", f"(STV {prior} 1)")
-        queries = [(x.id, f"(PatchPaysOff {x.cohort} {x.id})") for x in incidents]
+        # SealLeak is the action belief. PatchPaysOff is a unit-strength wrapper
+        # used by engines that compose inversion with another backward rule;
+        # current MM2 coverage exposes the inverted SealLeak proof directly.
+        queries = [(x.id, f"(SealLeak {x.cohort} {x.id})") for x in incidents]
         results = engine.query_many("stationops", queries, budget)
         beliefs = self._beliefs_from_results(results)
         return beliefs, {"queries": len(queries), "engine_steps": None}

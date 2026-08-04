@@ -35,3 +35,22 @@ fixed point and instead lost coverage in this run.
 The dominant remaining performance problem is the 40 independent backward
 queries in round one. Round two is much cheaper at budget 10 because it reuses
 the persistent KB and updates only the public statement delta.
+
+## MM2 live integration
+
+Validated on 2026-08-04 with MM2-Chainer `2df2a80` and its Python 3.13 wheel.
+The native fix bounds large fold-proof provenance to MORK-compatible expression
+arity. Before that fix, the full StationOps history panicked while refreshing
+computed base rates.
+
+- Full v0 conformance: 2,000 history cases, 100 incidents, budget 100; passed in
+  34.63 seconds with 100% coverage, zero regret, normalized score 1.0, and
+  maximum absolute belief error 0.00335.
+- Compact two-round v1: budget 100; passed in 11.96 seconds with 100% coverage,
+  zero regret, normalized score 1.0, and round maximum absolute errors 0.00809
+  and 0.01164.
+
+StationOps queries MM2's inverted `SealLeak` belief directly. The
+unit-strength `PatchPaysOff` wrapper has the same action-belief semantics, but
+the current MM2 backward surface does not compose an inverted proof through
+that additional rule in one query.
