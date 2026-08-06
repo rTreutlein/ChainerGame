@@ -891,9 +891,11 @@ def run_game_episode(
     budget: int = 100,
     mm2_path: str | None = None,
     pettachainer_path: str | None = None,
+    shortfall_budget: int | None = None,
 ) -> dict:
     """Run the standard controller through the same simulation used by humans."""
     config = config or GameConfig()
+    shortfall_budget = budget if shortfall_budget is None else shortfall_budget
     session = GameSession(config)
     models = {
         equipment_type: sensor_rates(config, equipment_type)
@@ -936,7 +938,7 @@ def run_game_episode(
             }
         else:
             shortfall_marginals, shortfall_counters = conditioner(
-                session._shortfall_events, budget
+                session._shortfall_events, shortfall_budget
             )
         oracle_shortfalls, _ = reference.condition_shortfalls(
             session._shortfall_events, 1
@@ -1022,6 +1024,8 @@ def run_game_episode(
         "config": config.to_dict(),
         "backend": backend.name,
         "budget_per_shift": budget,
+        "diagnosis_budget_per_shift": budget,
+        "shortfall_budget_per_shift": shortfall_budget,
         "rounds": rounds,
         "aggregate": {
             "expected_utility": expected,

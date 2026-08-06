@@ -58,10 +58,14 @@ rules, and learning boundary as the browser game:
 
 ```sh
 stationops run --benchmark v2 --backend reference --budget 100
-stationops run --benchmark v2 --backend mm2 --budget 300
-stationops run --benchmark v2 --backend pettachainer --budget 300
+stationops run --benchmark v2 --backend mm2 --budget 1 --shortfall-budget 20
+stationops run --benchmark v2 --backend pettachainer --budget 300 --shortfall-budget 300
 stationops sweep --benchmark v2 --backend reference --budgets 0,1,10,100
 ```
+
+V2 keeps diagnosis and aggregate-loss budgets separate because a native step
+does not represent equivalent work in MM2 and PeTTaChainer. The values above
+are current fixture-specific calibration points, not cross-backend units.
 
 StationOps-v2 defaults to a mixed information model:
 
@@ -90,9 +94,9 @@ feature group so learning cannot permanently starve itself.
 Long runs expose windowed learning metrics and the public data behind them:
 
 ```sh
-stationops run --benchmark v2 --backend mm2 --budget 300 \
+stationops run --benchmark v2 --backend mm2 --budget 1 --shortfall-budget 20 \
   --sensor-knowledge mixed --shifts 30 --learning-window 5
-stationops run --benchmark v2 --backend pettachainer --budget 300 \
+stationops run --benchmark v2 --backend pettachainer --budget 300 --shortfall-budget 300 \
   --sensor-knowledge induced --shifts 30 --learning-window 5
 ```
 
@@ -106,7 +110,7 @@ and fixed seeds rather than interpreting one late window as convergence.
 The minimal MM2 induction probe can be run directly:
 
 ```sh
-/path/to/mm2-chainer query --kb stationLearningKb --steps 300 \
+/path/to/mm2-chainer query --kb stationLearningKb --steps 1 \
   --add examples/inductive_sensor_statements.metta \
   '(Inheritance (PressureAlarm old coolant-pump) (SealLeak old coolant-pump))'
 ```

@@ -52,6 +52,11 @@ def main(argv=None):
             default=os.environ.get("PETTACHAINER_PYTHONPATH"),
         )
         p.add_argument("--budget", type=int, default=100)
+        p.add_argument(
+            "--shortfall-budget",
+            type=int,
+            help="v2 aggregate-loss query budget; defaults to --budget",
+        )
         p.add_argument("--budgets", default="1,10,100")
         p.add_argument("--benchmark", choices=("v0", "v1", "v2"), default="v0")
         p.add_argument("--shifts", type=int, default=5)
@@ -115,7 +120,12 @@ def main(argv=None):
             )
         else:
             result = run_game_episode(
-                _game_config(args), args.backend, budget, args.mm2_path, args.pettachainer_path
+                _game_config(args),
+                args.backend,
+                budget,
+                args.mm2_path,
+                args.pettachainer_path,
+                shortfall_budget=args.shortfall_budget,
             )
         print(json.dumps(result, sort_keys=True))
 

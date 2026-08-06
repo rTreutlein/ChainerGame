@@ -269,6 +269,34 @@ class AutomatedGameTests(unittest.TestCase):
             self.assertEqual(round_["belief_metrics"]["coverage"], 0.0)
             self.assertTrue(set(round_["chosen_repairs"]).issubset(round_["inspections"]))
 
+    def test_diagnosis_and_shortfall_budgets_are_independent(self):
+        class RecordingBackend:
+            name = "recording"
+
+            def __init__(self, config):
+                self.reference = ReferenceBackend(config)
+                self.diagnosis_budgets = []
+                self.shortfall_budgets = []
+
+            def infer(self, history, incidents, budget, statements):
+                self.diagnosis_budgets.append(budget)
+                return self.reference.infer(history, incidents, budget, statements)
+
+            def condition_shortfalls(self, events, budget):
+                self.shortfall_budgets.append(budget)
+                return self.reference.condition_shortfalls(events, budget)
+
+        config = GameConfig(shifts=2, modules=4)
+        backend = RecordingBackend(config.logic_config())
+        with patch("stationops.game._backend", return_value=backend):
+            result = run_game_episode(
+                config, "reference", budget=3, shortfall_budget=7
+            )
+        self.assertEqual(backend.diagnosis_budgets, [3, 3])
+        self.assertEqual(backend.shortfall_budgets, [7, 7])
+        self.assertEqual(result["diagnosis_budget_per_shift"], 3)
+        self.assertEqual(result["shortfall_budget_per_shift"], 7)
+
     def test_backend_receives_only_pre_shift_history_and_visible_incidents(self):
         class RecordingBackend:
             name = "recording"

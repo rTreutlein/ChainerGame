@@ -108,20 +108,41 @@ later decisions without conditioning on the anonymous production-loss totals.
 MM2-Chainer `a97a10b` (with MORK `904e1ba`) added the registered native
 operators. A focused live probe produced the exact oracle posterior for a
 five-unit loss: pump `0.7772727`, motor `0.2227273`, and valve `0.2227273`.
-Repeating the same six-shift configuration produced:
+Repeating the same six-shift configuration with the original uncalibrated
+budget of 300 produced:
 
 | Backend revision | Coverage early / late | Brier early / late | Log loss early / late | Mean regret early / late | Confirmed cases added | Normalized score | Wall time |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | MM2 `a97a10b` | 1.00 / 1.00 | 0.1650 / 0.1226 | 2.1252 / 0.3425 | 1.69 / 0.00 | 10 / 9 | 0.9882 | 243.59 s |
 
-This closes the semantic and decision-quality gap with the recorded
-PeTTaChainer run. The native shortfall path was exercised from shift three
-onward and answered 32 marginal queries in total. Runtime is now the visible
-remaining issue: the earlier MM2 build took 80.51 seconds partly because it
-skipped this work entirely, while the functional build took 243.59 seconds.
-The timings were not collected as a controlled backend speed comparison, but
-they are sufficient to identify shortfall query reuse or batched projection as
-the next MM2 optimization target.
+This closes the decision-quality gap with the recorded PeTTaChainer run. It is
+not a valid speed comparison: MM2 reaches all ten first-shift diagnosis results
+at native budget 1, while PeTTaChainer first reaches them at 47. Native steps
+have different meanings, and MM2 executes substantially more scheduler work
+per requested step.
+
+### Backend-calibrated sequential rerun
+
+The same fixture was rerun sequentially on 2026-08-06 after separating the
+diagnosis and shortfall budgets in the v2 runner. MM2 used diagnosis budget 1
+and shortfall budget 20. PeTTaChainer used 300 for both because lower tested
+settings were not complete or monotonic over the full interactive episode:
+47/20 and 50/50 missed two shift-two diagnoses and four shortfall marginals;
+100/100 changed the policy and reduced diagnosis coverage further.
+
+| Backend | Diagnosis / shortfall budget | Diagnosis coverage early / late | Shortfall results | Brier early / late | Log loss early / late | Mean regret early / late | Normalized score | Wall time |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| MM2 `a97a10b` | 1 / 20 | 1.00 / 1.00 | 32 / 32 | 0.1650 / 0.1226 | 2.1251 / 0.3425 | 1.69 / 0.00 | 0.9882 | 80.29 s |
+| PeTTaChainer `b709d31` | 300 / 300 | 1.00 / 1.00 | 30 / 32 | 0.1652 / 0.1234 | 1.3597 / 0.3445 | 1.69 / 0.00 | 0.9882 | 70.07 s |
+
+Both backends selected the same repairs and reached the same score. MM2
+returned every requested diagnosis and shortfall result. PeTTaChainer returned
+every diagnosis but missed two shift-six shortfall marginals even at budget
+300; those omissions did not change this episode's decisions. The wall times
+therefore describe the actual calibrated runs, but should not be read as exact
+semantic parity or as equal native work. The main follow-up is why PeTTa's
+forward update does not materialize the learned sensor relation and why its
+bounded best-first coverage is non-monotonic.
 
 The comparison is an interactive-policy benchmark, not a fixed replay: repairs
 change later persistent faults, and each policy selects which cases become
