@@ -88,10 +88,11 @@ so earlier results survive if a later point becomes intractable. The final
 `stress-summary` contains the same points together plus a `budget_curve` with
 cross-seed mean, minimum, and maximum coverage, score, regret, and wall time.
 Each point reports diagnosis and aggregate-shortfall coverage, score, regret,
-per-shift deterioration, and, when exposed by the backend, native steps,
-transitions, and unifications. Runs are intentionally interactive: an
-under-budget decision can leave faults unresolved, which increases the number
-of ambiguous candidates—and therefore the workload—in later shifts.
+logical versus actually executed shortfall queries, cache hits, per-shift
+deterioration, and, when exposed by the backend, native steps, transitions, and
+unifications. Runs are intentionally interactive: an under-budget decision can
+leave faults unresolved, which increases the number of ambiguous
+candidates—and therefore the workload—in later shifts.
 
 StationOps-v2 defaults to a mixed information model:
 
@@ -160,6 +161,12 @@ tables for a diagnostic decision. StationOps sends the same rules and queries
 to MM2. Current MM2 builds provide registered native implementations of both
 operators; older builds report `shortfall_supported: false` instead of silently
 substituting the Python reference result.
+
+Both chainer adapters memoize successful marginals by the immutable shortfall
+revision hash. An unchanged revision therefore returns prior results without an
+engine query. Missing marginals are deliberately retried: bounded MM2 calls can
+retain partial proof state and finish on a later shift. Discovering a candidate's
+condition changes the revision hash, correctly invalidating the old result.
 
 The self-contained MeTTa experiment `examples/shortfall_foldall_vs_dp.metta`
 compares an exhaustive `FoldAll` over complete explanations with an ordinary-rule

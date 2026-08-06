@@ -46,11 +46,13 @@ class ShortfallConditioningTests(unittest.TestCase):
         class Handler:
             def __init__(self):
                 self.atoms = []
+                self.queries = []
 
             def add_atoms_no_check(self, atoms):
                 self.atoms.extend(atoms)
 
             def query(self, query, steps, timeout_sec):
+                self.queries.append((query, steps))
                 unit = next(name for name in ("motor", "pump", "valve") if name in query)
                 values = {"motor": 0.2, "pump": 0.8, "valve": 0.2}
                 event = event_atom(example_event())
@@ -69,6 +71,75 @@ class ShortfallConditioningTests(unittest.TestCase):
         self.assertTrue(counters["shortfall_supported"])
         self.assertTrue(
             any("WeightedSubsetPosteriorDP" in atom for atom in handler.atoms)
+        )
+
+        repeated, repeated_counters = backend.condition_shortfalls(
+            [example_event()], 20
+        )
+        self.assertEqual(repeated, marginals)
+        self.assertEqual(len(handler.queries), 3)
+        self.assertEqual(repeated_counters["shortfall_cache_hits"], 3)
+        self.assertEqual(repeated_counters["shortfall_engine_queries"], 0)
+        self.assertEqual(repeated_counters["shortfall_engine_steps"], 0)
+
+        revised = example_event()
+        revised["candidates"].pop("motor")
+        backend.condition_shortfalls([revised], 20)
+        self.assertEqual(len(handler.queries), 5)
+
+    def test_mm2_caches_answers_but_retries_unfinished_queries(self):
+        event_name = event_atom(example_event())
+
+        class Engine:
+            instances = []
+
+            def __init__(self):
+                self.calls = []
+                self.__class__.instances.append(self)
+
+            def add_many(self, *args):
+                pass
+
+            def query_many(self, kb, queries, budget):
+                self.calls.append((list(queries), budget))
+                results = []
+                for tag, _ in queries:
+                    unit = tag.split("|", 1)[1]
+                    if budget >= 30 or unit == "pump":
+                        values = {"motor": 0.2, "pump": 0.8, "valve": 0.2}
+                        proof = {
+                            "term": f"(ShortfallMarginal {event_name} {unit} "
+                            f"{values[unit]})"
+                        }
+                        results.append((tag, [proof]))
+                    else:
+                        results.append((tag, []))
+                return results
+
+        backend = MM2Backend(Config(), module=SimpleNamespace(Engine=Engine))
+        first, first_counters = backend.condition_shortfalls([example_event()], 20)
+        self.assertEqual(first, {1: {"pump": 0.8}})
+        self.assertEqual(first_counters["shortfall_engine_queries"], 3)
+
+        repeated, repeated_counters = backend.condition_shortfalls(
+            [example_event()], 20
+        )
+        self.assertEqual(repeated, first)
+        self.assertEqual(repeated_counters["shortfall_cache_hits"], 1)
+        self.assertEqual(repeated_counters["shortfall_engine_queries"], 2)
+
+        expanded, expanded_counters = backend.condition_shortfalls(
+            [example_event()], 30
+        )
+        self.assertEqual(
+            expanded,
+            {1: {"motor": 0.2, "pump": 0.8, "valve": 0.2}},
+        )
+        self.assertEqual(expanded_counters["shortfall_cache_hits"], 1)
+        self.assertEqual(expanded_counters["shortfall_engine_queries"], 2)
+        self.assertEqual(
+            [len(call[0]) for call in backend._engine.calls],
+            [3, 2, 2],
         )
 
     def test_mm2_reports_missing_compute_operators_without_mutating_main_engine(self):

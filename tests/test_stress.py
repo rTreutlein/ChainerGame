@@ -56,6 +56,8 @@ class StressBenchmarkTests(unittest.TestCase):
                 },
                 "backend_counters": {
                     "shortfall_queries": 3,
+                    "shortfall_engine_queries": 2,
+                    "shortfall_cache_hits": 1,
                     "diagnosis_engine_stats": {
                         "steps": 4,
                         "transitions": 5,
@@ -75,6 +77,10 @@ class StressBenchmarkTests(unittest.TestCase):
         summary = summarize_stress_episode(result)
         self.assertEqual(summary["diagnosis_coverage"], 0.75)
         self.assertEqual(summary["shortfall_coverage"], 2 / 3)
+        self.assertEqual(summary["shortfall_engine_queries"], 2)
+        self.assertEqual(summary["shortfall_cache_hits"], 1)
+        self.assertEqual(summary["shifts"][0]["shortfall_engine_queries"], 2)
+        self.assertEqual(summary["shifts"][0]["shortfall_cache_hits"], 1)
         self.assertEqual(summary["backend_work"]["diagnosis_steps"], 4)
         self.assertEqual(summary["backend_work"]["shortfall_unifications"], 9)
 

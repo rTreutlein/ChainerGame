@@ -41,6 +41,26 @@ def _engine_execution_stats(engine) -> dict | None:
     return result if isinstance(result, dict) else None
 
 
+def _shortfall_query_plan(events, cache):
+    queries = marginal_queries(events)
+    shifts = {event_atom(event): int(event["shift"]) for event in events}
+    active_tags = {tag for tag, _ in queries}
+    for stale_tag in cache.keys() - active_tags:
+        del cache[stale_tag]
+
+    marginals: dict[int, dict[str, float]] = {}
+    pending = []
+    cache_hits = 0
+    for tag, query in queries:
+        event_name, unit = tag.split("|", 1)
+        if tag in cache:
+            marginals.setdefault(shifts[event_name], {})[unit] = cache[tag]
+            cache_hits += 1
+        else:
+            pending.append((tag, query))
+    return queries, shifts, marginals, pending, cache_hits
+
+
 def _fields(expression: str) -> list[str]:
     """Split one restricted MeTTa expression into top-level fields."""
     expression = expression.strip()
@@ -158,6 +178,7 @@ class MM2Backend:
         self._base_rates: dict[str, float] = {}
         self._shortfall_supported: bool | None = None
         self._shortfall_unsupported_reason: str | None = None
+        self._shortfall_cache: dict[str, float] = {}
         if module is not None:
             self.module = module
             return
@@ -234,13 +255,24 @@ class MM2Backend:
 
     def condition_shortfalls(self, events, budget):
         queries = marginal_queries(events)
-        shifts = {event_atom(event): int(event["shift"]) for event in events}
         if not queries or budget <= 0:
             return {}, {
                 "shortfall_queries": len(queries),
+                "shortfall_engine_queries": 0,
+                "shortfall_cache_hits": 0,
                 "shortfall_statements_added": 0,
                 "shortfall_engine_steps": None,
             }
+        (
+            queries,
+            shifts,
+            marginals,
+            pending,
+            cache_hits,
+        ) = _shortfall_query_plan(
+            events,
+            self._shortfall_cache,
+        )
         if self._engine is None:
             self._engine = self.module.Engine()
         if self._shortfall_supported is None:
@@ -255,23 +287,40 @@ class MM2Backend:
         if not self._shortfall_supported:
             return {}, {
                 "shortfall_queries": len(queries),
+                "shortfall_engine_queries": 0,
+                "shortfall_cache_hits": cache_hits,
                 "shortfall_statements_added": 0,
                 "shortfall_engine_steps": None,
                 "shortfall_supported": False,
                 "shortfall_unsupported_reason": self._shortfall_unsupported_reason,
             }
 
+        if not pending:
+            return marginals, {
+                "shortfall_queries": len(queries),
+                "shortfall_marginal_queries": len(queries),
+                "shortfall_engine_queries": 0,
+                "shortfall_cache_hits": cache_hits,
+                "shortfall_statements_added": 0,
+                "shortfall_engine_steps": 0,
+                "shortfall_engine_stats": None,
+                "shortfall_supported": True,
+            }
+
+        pending_events = {tag.split("|", 1)[0] for tag, _ in pending}
         try:
             counters = self._reconcile(
-                generate_shortfall_statements(events), forward_facts=False
+                generate_shortfall_statements([
+                    event for event in events if event_atom(event) in pending_events
+                ]),
+                forward_facts=False,
             )
         except Exception:
             self._engine = None
             self._atoms_by_name.clear()
             self._base_rates.clear()
             raise
-        marginals: dict[int, dict[str, float]] = {}
-        for tag, proofs in self._engine.query_many("stationops", queries, budget):
+        for tag, proofs in self._engine.query_many("stationops", pending, budget):
             event_name, unit = tag.split("|", 1)
             probability = next(
                 (
@@ -282,11 +331,14 @@ class MM2Backend:
                 None,
             )
             if probability is not None:
+                self._shortfall_cache[tag] = probability
                 marginals.setdefault(shifts[event_name], {})[unit] = probability
         execution_stats = _engine_execution_stats(self._engine)
         return marginals, {
             "shortfall_queries": len(queries),
             "shortfall_marginal_queries": len(queries),
+            "shortfall_engine_queries": len(pending),
+            "shortfall_cache_hits": cache_hits,
             "shortfall_statements_added": counters["statements_added"],
             "shortfall_engine_steps": (
                 execution_stats.get("steps") if execution_stats else None
@@ -412,6 +464,7 @@ class PeTTaChainerBackend:
         self.sensor_knowledge = sensor_knowledge or {}
         self._handler = None
         self._atoms_by_name: dict[str, str] = {}
+        self._shortfall_cache: dict[str, float] = {}
         if module is not None:
             self.module = module
             return
@@ -517,35 +570,62 @@ class PeTTaChainerBackend:
 
     def condition_shortfalls(self, events, budget):
         queries = marginal_queries(events)
-        shifts = {event_atom(event): int(event["shift"]) for event in events}
         if not queries or budget <= 0:
             return {}, {
                 "shortfall_queries": len(queries),
+                "shortfall_engine_queries": 0,
+                "shortfall_cache_hits": 0,
                 "shortfall_statements_added": 0,
                 "shortfall_engine_steps": None,
             }
+        (
+            queries,
+            shifts,
+            marginals,
+            pending,
+            cache_hits,
+        ) = _shortfall_query_plan(
+            events,
+            self._shortfall_cache,
+        )
         if self._handler is None:
             self._handler = self._new_handler()
+        if not pending:
+            return marginals, {
+                "shortfall_queries": len(queries),
+                "shortfall_marginal_queries": len(queries),
+                "shortfall_engine_queries": 0,
+                "shortfall_cache_hits": cache_hits,
+                "shortfall_statements_added": 0,
+                "shortfall_engine_steps": 0,
+                "shortfall_supported": True,
+            }
+        pending_events = {tag.split("|", 1)[0] for tag, _ in pending}
         try:
             counters = self._reconcile(
-                generate_shortfall_statements(events), forward_facts=False
+                generate_shortfall_statements([
+                    event for event in events if event_atom(event) in pending_events
+                ]),
+                forward_facts=False,
             )
         except Exception:
             self._handler = None
             self._atoms_by_name.clear()
             raise
-        marginals: dict[int, dict[str, float]] = {}
-        for tag, query in queries:
+        for tag, query in pending:
             event_name, unit = tag.split("|", 1)
             proofs = self._handler.query(
                 f"(: $prf {query} $tv)", steps=budget, timeout_sec=0
             )
             probability = self._shortfall_probability(proofs)
             if probability is not None:
+                self._shortfall_cache[tag] = probability
                 marginals.setdefault(shifts[event_name], {})[unit] = probability
         return marginals, {
             "shortfall_queries": len(queries),
             "shortfall_marginal_queries": len(queries),
+            "shortfall_engine_queries": len(pending),
+            "shortfall_cache_hits": cache_hits,
             "shortfall_statements_added": counters["statements_added"],
             "shortfall_engine_steps": None,
             "shortfall_supported": True,

@@ -219,3 +219,26 @@ it is recorded as a timeout, not as zero coverage. The small-fixture budget knee
 therefore cannot be treated as a scale-independent calibration. Multi-seed
 curves should use the streaming stress command so completed points remain
 available when a later budget/workload combination times out.
+
+### Immutable-result cache follow-up
+
+ChainerGame now caches successful shortfall marginals by immutable event
+revision in both MM2 and PeTTaChainer adapters. A focused live MM2 probe reduced
+an unchanged three-marginal repeat from 0.247 seconds to 0.00013 seconds: engine
+queries fell from three to zero and all three values were cache hits. Missing
+answers are not negatively cached because another bounded call can continue
+MM2's retained partial proof state.
+
+The seed-7 six-shift decisions and coverage remained identical at shortfall
+budgets 20, 40, and 50. At budget 50, shortfall transitions decreased from
+3,636,037 to 3,504,451 (3.6%); wall time changed from 8.91 to 8.65 seconds.
+Budgets 20 and 40 performed essentially the same native work as before because
+their unfinished queries still had to continue.
+
+The 20-module, 12-shift budget-25 workload completed in 155.83 seconds, with the
+same 38/726 answers and decision metrics as before, but reported zero reusable
+cache hits. Completed evidence caused its source event to be revised or retired
+before the next shift, while unresolved marginals remained unfinished searches.
+This isolates the next scaling problem: preserving/resuming the partial DP work
+and reusing it across closely related event revisions, rather than merely
+remembering completed top-level answers.

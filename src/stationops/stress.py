@@ -46,6 +46,13 @@ def summarize_stress_episode(result: dict) -> dict:
         "shortfall_coverage": (
             shortfall_returned / shortfall_requested if shortfall_requested else 1.0
         ),
+        "shortfall_engine_queries": _sum_optional(
+            row["backend_counters"].get("shortfall_engine_queries")
+            for row in rounds
+        ),
+        "shortfall_cache_hits": _sum_optional(
+            row["backend_counters"].get("shortfall_cache_hits") for row in rounds
+        ),
         "normalized_score": result["aggregate"]["normalized_score"],
         "regret": result["aggregate"]["regret"],
         "station_score": result["aggregate"]["station_score"],
@@ -73,6 +80,12 @@ def summarize_stress_episode(result: dict) -> dict:
                 "diagnosis_coverage": row["belief_metrics"]["coverage"],
                 "shortfall_requested": row["backend_counters"].get(
                     "shortfall_queries", 0
+                ),
+                "shortfall_engine_queries": row["backend_counters"].get(
+                    "shortfall_engine_queries"
+                ),
+                "shortfall_cache_hits": row["backend_counters"].get(
+                    "shortfall_cache_hits"
                 ),
                 "shortfall_returned": sum(
                     len(values) for values in row["shortfall_marginals"].values()
