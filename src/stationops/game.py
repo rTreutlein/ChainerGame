@@ -16,9 +16,46 @@ from .backends import MM2Backend, PeTTaChainerBackend, ReferenceBackend
 from .config import Config
 from .metta import generate_statements
 from .models import HistoryCase, Incident
-from .oracle import belief_error_metrics, empirical_priors, posterior
+from .oracle import (
+    belief_error_metrics,
+    empirical_feature_priors,
+    posterior,
+)
 from .shortfall import oracle_event_marginals
-from .simulator import generate_history
+
+
+EQUIPMENT_TYPES = (
+    ("coolant-pump", "coolant pump"),
+    ("oxygen-scrubber", "oxygen scrubber"),
+    ("power-converter", "power converter"),
+    ("thermal-loop-pump", "thermal-loop pump"),
+    ("ore-feed-pump", "ore-feed pump"),
+)
+
+# These are hidden simulator parameters shared by every module with the same
+# visible equipment type.  They are deliberately not arbitrary per-module
+# probabilities: resolved cases can therefore generalize to future states.
+HAZARD_MULTIPLIERS = {
+    "coolant-pump": 1.35,
+    "oxygen-scrubber": 0.70,
+    "power-converter": 1.05,
+    "thermal-loop-pump": 1.20,
+    "ore-feed-pump": 0.80,
+}
+SENSOR_DELTAS = {
+    "coolant-pump": (0.07, -0.03),
+    "oxygen-scrubber": (-0.10, -0.07),
+    "power-converter": (0.00, 0.05),
+    "thermal-loop-pump": (0.05, 0.03),
+    "ore-feed-pump": (-0.15, -0.10),
+}
+MIXED_SENSOR_KNOWLEDGE = {
+    "coolant-pump": "full",
+    "oxygen-scrubber": "positive",
+    "power-converter": "positive",
+    "thermal-loop-pump": "induced",
+    "ore-feed-pump": "induced",
+}
 
 
 @dataclass(frozen=True)
@@ -41,6 +78,8 @@ class GameConfig:
     new_prior: float = 0.04
     sensitivity: float = 0.85
     false_positive_rate: float = 0.15
+    sensor_knowledge: str = "mixed"
+    learning_window: int = 10
 
     def __post_init__(self):
         positive = {
@@ -66,6 +105,10 @@ class GameConfig:
             raise ValueError("resources, action limits, and action costs cannot be negative")
         if self.initial_seal_kits > self.maximum_seal_kits:
             raise ValueError("initial seal kits cannot exceed maximum seal kits")
+        if self.sensor_knowledge not in {"full", "positive", "induced", "mixed"}:
+            raise ValueError("sensor_knowledge must be full, positive, induced, or mixed")
+        if self.learning_window <= 0:
+            raise ValueError("learning_window must be positive")
         for name in ("old_prior", "new_prior", "sensitivity", "false_positive_rate"):
             if not 0.0 <= getattr(self, name) <= 1.0:
                 raise ValueError(f"{name} must be between zero and one")
@@ -94,6 +137,7 @@ class GameConfig:
 class StationModule:
     id: str
     cohort: str
+    equipment_type: str
     description: str
     criticality: str
     value_at_risk: int
@@ -106,33 +150,95 @@ class StationIncident:
     alarm: bool
 
     def logic_incident(self) -> Incident:
-        return Incident(self.id, self.module.cohort, self.alarm)
+        return Incident(
+            self.id,
+            self.module.cohort,
+            self.alarm,
+            self.module.equipment_type,
+        )
 
 
 def _modules(count: int) -> tuple[StationModule, ...]:
-    descriptions = (
-        "coolant pump",
-        "oxygen scrubber",
-        "power converter",
-        "thermal-loop pump",
-        "ore-feed pump",
-    )
     values = (120, 45, 90, 70, 55, 110, 40, 80, 65, 100)
     result = []
     for index in range(count):
         value = values[index % len(values)]
+        equipment_type, description = EQUIPMENT_TYPES[index % len(EQUIPMENT_TYPES)]
         criticality = "HIGH" if value >= 90 else "MEDIUM" if value >= 60 else "LOW"
         cohort = "old" if index % 2 == 0 else "new"
         result.append(
             StationModule(
                 f"M{index + 1:02d}",
                 cohort,
-                descriptions[index % len(descriptions)],
+                equipment_type,
+                description,
                 criticality,
                 value,
             )
         )
     return tuple(result)
+
+
+def _bounded_probability(value: float) -> float:
+    return min(max(value, 0.0), 1.0)
+
+
+def sensor_rates(config: GameConfig, equipment_type: str) -> tuple[float, float]:
+    sensitivity_delta, false_positive_delta = SENSOR_DELTAS[equipment_type]
+    return (
+        _bounded_probability(config.sensitivity + sensitivity_delta),
+        _bounded_probability(config.false_positive_rate + false_positive_delta),
+    )
+
+
+def new_fault_probability(config: GameConfig, module: StationModule) -> float:
+    cohort_rate = config.old_prior if module.cohort == "old" else config.new_prior
+    return 1.0 - (1.0 - cohort_rate) ** HAZARD_MULTIPLIERS[module.equipment_type]
+
+
+def sensor_knowledge(config: GameConfig) -> dict[str, str]:
+    if config.sensor_knowledge == "mixed":
+        return dict(MIXED_SENSOR_KNOWLEDGE)
+    return {
+        equipment_type: config.sensor_knowledge
+        for equipment_type, _ in EQUIPMENT_TYPES
+    }
+
+
+def public_sensor_description(config: GameConfig, equipment_type: str) -> str:
+    mode = sensor_knowledge(config)[equipment_type]
+    sensitivity, false_positive = sensor_rates(config, equipment_type)
+    if mode == "full":
+        return (
+            f"calibrated: {sensitivity:.0%} detection / "
+            f"{false_positive:.0%} false alarm"
+        )
+    if mode == "positive":
+        return f"partial spec: {sensitivity:.0%} detection / false alarm unknown"
+    return "uncharacterized sensor"
+
+
+def _generate_game_history(config: GameConfig) -> list[HistoryCase]:
+    """Generate resolved public cases from the same feature-conditioned world."""
+    rng = random.Random(config.seed)
+    result = []
+    for cohort in ("old", "new"):
+        cohort_modules = [module for module in _modules(10) if module.cohort == cohort]
+        for index in range(config.initial_history_per_cohort):
+            template = cohort_modules[index % len(cohort_modules)]
+            leak = rng.random() < new_fault_probability(config, template)
+            sensitivity, false_positive = sensor_rates(config, template.equipment_type)
+            alarm = rng.random() < (sensitivity if leak else false_positive)
+            result.append(
+                HistoryCase(
+                    f"h-{cohort}-{index:04d}",
+                    cohort,
+                    leak,
+                    alarm,
+                    template.equipment_type,
+                )
+            )
+    return result
 
 
 class GameSession:
@@ -142,7 +248,7 @@ class GameSession:
         self.config = config or GameConfig()
         self.logic_config = self.config.logic_config()
         self.modules = _modules(self.config.modules)
-        self.history = generate_history(self.logic_config)
+        self.history = _generate_game_history(self.config)
         self.shift_index = 0
         self.credits = self.config.initial_credits
         self.seal_kits = self.config.initial_seal_kits
@@ -172,10 +278,13 @@ class GameSession:
         incidents = []
         faults = {}
         for module in self.modules:
-            prior = self.config.old_prior if module.cohort == "old" else self.config.new_prior
+            prior = new_fault_probability(self.config, module)
             fault = self._module_faults[module.id] or self._rng.random() < prior
             self._module_faults[module.id] = fault
-            alarm_rate = self.config.sensitivity if fault else self.config.false_positive_rate
+            sensitivity, false_positive = sensor_rates(
+                self.config, module.equipment_type
+            )
+            alarm_rate = sensitivity if fault else false_positive
             alarm = self._rng.random() < alarm_rate
             incident_id = f"shift-{self.shift_index + 1:02d}-{module.id}"
             incidents.append(StationIncident(incident_id, module, alarm))
@@ -215,9 +324,13 @@ class GameSession:
                 "id": item.id,
                 "module_id": item.module.id,
                 "description": item.module.description,
+                "equipment_type": item.module.equipment_type,
                 "cohort": "old / Orion" if item.module.cohort == "old" else "new / Vesta",
                 "alarm": item.alarm,
                 "sensor": "PRESSURE ALARM" if item.alarm else "pressure normal",
+                "sensor_knowledge": public_sensor_description(
+                    self.config, item.module.equipment_type
+                ),
                 "criticality": item.module.criticality,
                 "value_at_risk": item.module.value_at_risk,
             }
@@ -321,7 +434,7 @@ class GameSession:
         if remaining_loss <= 0:
             return
 
-        priors = empirical_priors(self.history)
+        priors = empirical_feature_priors(self.history)
         candidates = {}
         for item in self._incidents:
             if (
@@ -333,10 +446,9 @@ class GameSession:
             probability = (belief_snapshot or {}).get(item.id)
             if not isinstance(probability, (int, float)) or not math.isfinite(probability):
                 probability = posterior(
-                    priors[item.module.cohort],
+                    priors[(item.module.cohort, item.module.equipment_type)],
                     item.alarm,
-                    self.config.sensitivity,
-                    self.config.false_positive_rate,
+                    *sensor_rates(self.config, item.module.equipment_type),
                 )
             candidates[item.module.id] = {
                 "impact": item.module.value_at_risk,
@@ -388,7 +500,13 @@ class GameSession:
                         self.config.repair_cost + self.config.unnecessary_repair_penalty
                     )
                 outcomes.append({"module_id": item.module.id, "incident_id": item.id, "result": result})
-                confirmed[item.id] = HistoryCase(item.id, item.module.cohort, fault, item.alarm)
+                confirmed[item.id] = HistoryCase(
+                    item.id,
+                    item.module.cohort,
+                    fault,
+                    item.alarm,
+                    item.module.equipment_type,
+                )
                 self._resolve_shortfall_candidate(item.module, fault)
                 self._module_faults[item.module.id] = False
                 self._known_fault_modules.discard(item.module.id)
@@ -400,10 +518,20 @@ class GameSession:
                 production_loss += item.module.value_at_risk
                 if item.id in self._inspected:
                     confirmed[item.id] = HistoryCase(
-                        item.id, item.module.cohort, True, item.alarm
+                        item.id,
+                        item.module.cohort,
+                        True,
+                        item.alarm,
+                        item.module.equipment_type,
                     )
             elif item.id in self._inspected:
-                confirmed[item.id] = HistoryCase(item.id, item.module.cohort, False, item.alarm)
+                confirmed[item.id] = HistoryCase(
+                    item.id,
+                    item.module.cohort,
+                    False,
+                    item.alarm,
+                    item.module.equipment_type,
+                )
 
         production = self.maximum_production - production_loss
         maintenance_cost = len(repairs) * self.config.repair_cost + self._inspection_spend
@@ -453,9 +581,22 @@ class GameSession:
     def logic_statements(self, history: list[HistoryCase] | None = None) -> str:
         """Return exactly the current public knowledge made available to a backend."""
         history = self.history if history is None else history
-        lines = [generate_statements(history, self.incidents, self.logic_config)]
+        lines = [
+            generate_statements(
+                history,
+                self.incidents,
+                self.logic_config,
+                sensor_knowledge=sensor_knowledge(self.config),
+                sensor_models={
+                    equipment_type: sensor_rates(self.config, equipment_type)
+                    for equipment_type, _ in EQUIPMENT_TYPES
+                },
+            )
+        ]
         lines.extend(
-            f"(: known-leak-{item.id} (SealLeak {item.module.cohort} {item.id}) (STV 1 1))"
+            f"(: known-leak-{item.id} "
+            f"(SealLeak {item.module.cohort} {item.module.equipment_type} {item.id}) "
+            f"(STV 1 1))"
             for item in self._incidents
             if item.module.id in self._known_fault_modules
         )
@@ -521,11 +662,7 @@ def decision_beliefs(
             "seal serviced intact",
         }:
             age = session.shift_index + 1 - int(record["shift"])
-            cohort_prior = (
-                session.config.old_prior
-                if item.module.cohort == "old"
-                else session.config.new_prior
-            )
+            cohort_prior = new_fault_probability(session.config, item.module)
             age_prior = 1.0 - (1.0 - cohort_prior) ** max(age, 0)
             if age_prior <= 0:
                 current_odds = 0.0
@@ -575,7 +712,7 @@ def diagnostic_value(
 def diagnostic_plan(
     session: GameSession, beliefs: dict[str, float]
 ) -> tuple[list[str], dict[str, float]]:
-    """Allocate diagnostics from chainer beliefs by expected value of information."""
+    """Allocate diagnostics by decision value, then explore unknown sensor types."""
     priorities = {
         item.id: diagnostic_value(beliefs[item.id], item, session.config)
         for item in session._incidents
@@ -594,7 +731,31 @@ def diagnostic_plan(
         if session.config.inspection_cost else len(candidates)
     )
     count = min(session.config.diagnostic_slots, affordable)
-    return [incident_id for _, _, incident_id in candidates[:count]], priorities
+    selected = [incident_id for _, _, incident_id in candidates[:count]]
+
+    # Pure exploitation can permanently starve induction: a type with no proof
+    # would never be inspected and could therefore never acquire one.  Fill any
+    # remaining diagnostic capacity with the least-sampled feature groups that
+    # need a learned inverse, preferring higher production impact on ties.
+    remaining = count - len(selected)
+    if remaining:
+        sample_counts = Counter(
+            (case.cohort, case.equipment_type) for case in session.history
+        )
+        modes = sensor_knowledge(session.config)
+        exploration = sorted(
+            (
+                sample_counts[(item.module.cohort, item.module.equipment_type)],
+                -item.module.value_at_risk,
+                item.id,
+            )
+            for item in session._incidents
+            if item.id not in selected
+            and item.module.id not in session._known_fault_modules
+            and modes[item.module.equipment_type] in {"positive", "induced"}
+        )
+        selected.extend(incident_id for _, _, incident_id in exploration[:remaining])
+    return selected, priorities
 
 
 def _decision_utility(
@@ -629,14 +790,99 @@ def _probability_metrics(beliefs: dict[str, float], truth: dict[str, bool]) -> d
     }
 
 
-def _backend(config: Config, name: str, mm2_path=None, pettachainer_path=None):
+def _backend(
+    config: Config,
+    name: str,
+    mm2_path=None,
+    pettachainer_path=None,
+    *,
+    sensor_models=None,
+    sensor_knowledge_map=None,
+):
     if name == "reference":
-        return ReferenceBackend(config)
+        return ReferenceBackend(config, sensor_models)
     if name == "mm2":
-        return MM2Backend(config, mm2_path)
+        return MM2Backend(
+            config, mm2_path, sensor_knowledge=sensor_knowledge_map
+        )
     if name == "pettachainer":
-        return PeTTaChainerBackend(config, pettachainer_path)
+        return PeTTaChainerBackend(
+            config,
+            pettachainer_path,
+            sensor_knowledge=sensor_knowledge_map,
+        )
     raise ValueError(f"unknown backend: {name}")
+
+
+def _mean(values: list[float | None]) -> float | None:
+    finite = [
+        value
+        for value in values
+        if isinstance(value, (int, float)) and math.isfinite(value)
+    ]
+    return sum(finite) / len(finite) if finite else None
+
+
+def _learning_curve(rounds: list[dict], window_size: int) -> list[dict]:
+    curve = []
+    for offset in range(0, len(rounds), window_size):
+        window = rounds[offset:offset + window_size]
+        curve.append({
+            "shift_start": window[0]["shift"],
+            "shift_end": window[-1]["shift"],
+            "mean_brier_score": _mean([
+                round_["belief_metrics"]["brier_score"] for round_ in window
+            ]),
+            "mean_log_loss": _mean([
+                round_["belief_metrics"]["log_loss"] for round_ in window
+            ]),
+            "mean_coverage": _mean([
+                round_["belief_metrics"]["coverage"] for round_ in window
+            ]),
+            "mean_regret": _mean([round_["regret"] for round_ in window]),
+            "total_regret": sum(round_["regret"] for round_ in window),
+            "confirmed_cases_added": sum(
+                round_["history_size_after"] - round_["history_size_before"]
+                for round_ in window
+            ),
+            "station_score": sum(
+                round_["resolution"]["shift_score"] for round_ in window
+            ),
+        })
+    return curve
+
+
+def _resolved_model(history: list[HistoryCase]) -> dict[str, dict]:
+    """Summarize the public labels from which induction is allowed to learn."""
+    grouped: dict[tuple[str, str | None], list[HistoryCase]] = {}
+    for case in history:
+        grouped.setdefault((case.cohort, case.equipment_type), []).append(case)
+    result = {}
+    for (cohort, equipment_type), cases in sorted(
+        grouped.items(), key=lambda row: (row[0][0], row[0][1] or "")
+    ):
+        leaks = [case for case in cases if case.leak]
+        intact = [case for case in cases if not case.leak]
+        alarms = [case for case in cases if case.alarm]
+        normals = [case for case in cases if not case.alarm]
+        key = f"{cohort}|{equipment_type or 'untyped'}"
+        result[key] = {
+            "cases": len(cases),
+            "leak_rate": len(leaks) / len(cases),
+            "alarm_given_leak": (
+                sum(case.alarm for case in leaks) / len(leaks) if leaks else None
+            ),
+            "alarm_given_intact": (
+                sum(case.alarm for case in intact) / len(intact) if intact else None
+            ),
+            "leak_given_alarm": (
+                sum(case.leak for case in alarms) / len(alarms) if alarms else None
+            ),
+            "leak_given_normal": (
+                sum(case.leak for case in normals) / len(normals) if normals else None
+            ),
+        }
+    return result
 
 
 def run_game_episode(
@@ -649,8 +895,21 @@ def run_game_episode(
     """Run the standard controller through the same simulation used by humans."""
     config = config or GameConfig()
     session = GameSession(config)
-    backend = _backend(session.logic_config, backend_name, mm2_path, pettachainer_path)
-    reference = ReferenceBackend(session.logic_config)
+    models = {
+        equipment_type: sensor_rates(config, equipment_type)
+        for equipment_type, _ in EQUIPMENT_TYPES
+    }
+    knowledge = sensor_knowledge(config)
+    backend = _backend(
+        session.logic_config,
+        backend_name,
+        mm2_path,
+        pettachainer_path,
+        sensor_models=models,
+        sensor_knowledge_map=knowledge,
+    )
+    reference = ReferenceBackend(session.logic_config, models)
+    initial_resolved_model = _resolved_model(session.history)
     rounds = []
     started = time.perf_counter()
 
@@ -665,8 +924,7 @@ def run_game_episode(
         beliefs, counters = backend.infer(history_before, incidents, budget, statements)
         oracle_beliefs, _ = reference.infer(history_before, incidents, 1, statements)
         oracle_beliefs.update((incident_id, 1.0) for incident_id in known_faults)
-        if backend.name == "reference":
-            beliefs.update((incident_id, 1.0) for incident_id in known_faults)
+        beliefs.update((incident_id, 1.0) for incident_id in known_faults)
 
         conditioner = getattr(backend, "condition_shortfalls", None)
         if conditioner is None:
@@ -728,6 +986,7 @@ def run_game_episode(
                     "id": item.id,
                     "module_id": item.module.id,
                     "cohort": item.module.cohort,
+                    "equipment_type": item.module.equipment_type,
                     "alarm": item.alarm,
                     "criticality": item.module.criticality,
                     "value_at_risk": item.module.value_at_risk,
@@ -735,6 +994,7 @@ def run_game_episode(
                 for item in station_incidents
             ],
             "history_size_before": len(history_before),
+            "history_size_after": len(session.history),
             "beliefs": beliefs,
             "decision_beliefs": controller_beliefs,
             "belief_evidence": belief_evidence,
@@ -753,11 +1013,12 @@ def run_game_episode(
             "wall_time_seconds": time.perf_counter() - round_started,
         })
 
+    learning_curve = _learning_curve(rounds, config.learning_window)
     expected = sum(round_["expected_utility"] for round_ in rounds)
     oracle = sum(round_["oracle_utility"] for round_ in rounds)
     return {
         "benchmark": "StationOps-v2",
-        "schema_version": 1,
+        "schema_version": 2,
         "config": config.to_dict(),
         "backend": backend.name,
         "budget_per_shift": budget,
@@ -770,6 +1031,53 @@ def run_game_episode(
             "station_score": session.station_score,
             "total_production": session.total_production,
             "confirmed_history_size": len(session.history),
+            "learning_curve": learning_curve,
+            "early_to_late_brier_improvement": (
+                learning_curve[0]["mean_brier_score"]
+                - learning_curve[-1]["mean_brier_score"]
+                if len(learning_curve) > 1
+                and learning_curve[0]["mean_brier_score"] is not None
+                and learning_curve[-1]["mean_brier_score"] is not None
+                else None
+            ),
+            "early_to_late_log_loss_improvement": (
+                learning_curve[0]["mean_log_loss"]
+                - learning_curve[-1]["mean_log_loss"]
+                if len(learning_curve) > 1
+                and learning_curve[0]["mean_log_loss"] is not None
+                and learning_curve[-1]["mean_log_loss"] is not None
+                else None
+            ),
+            "early_to_late_regret_improvement": (
+                learning_curve[0]["mean_regret"]
+                - learning_curve[-1]["mean_regret"]
+                if len(learning_curve) > 1
+                else None
+            ),
+            "early_to_late_coverage_change": (
+                learning_curve[-1]["mean_coverage"]
+                - learning_curve[0]["mean_coverage"]
+                if len(learning_curve) > 1
+                else None
+            ),
+            "resolved_model_before": initial_resolved_model,
+            "resolved_model_after": _resolved_model(session.history),
+        },
+        "sensor_knowledge_by_type": knowledge,
+        "scoring_only_hidden_model": {
+            "new_fault_probability": {
+                f"{module.cohort}|{module.equipment_type}": new_fault_probability(
+                    config, module
+                )
+                for module in session.modules
+            },
+            "sensor_rates": {
+                equipment_type: {
+                    "sensitivity": rates[0],
+                    "false_positive_rate": rates[1],
+                }
+                for equipment_type, rates in models.items()
+            },
         },
         "status": session.status,
         "wall_time_seconds": time.perf_counter() - started,

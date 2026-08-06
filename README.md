@@ -28,7 +28,11 @@ PYTHONPATH=src python -m stationops.cli game
 Each shift shows only the current modules, their cohort/manufacturer, pressure
 sensor state, criticality, and production value at risk. That last value is a
 knowable impact—the production lost if the module leaks—not a disclosed failure
-probability. The dashboard does not reveal
+probability. New-fault and sensor behavior is shared by visible cohort and
+equipment type, not arbitrary per-module constants. This lets a resolved
+coolant-pump case inform later coolant pumps. Failure hazards remain hidden;
+the dashboard reveals only the configured full or partial sensor documentation.
+It does not reveal
 the simulator's hidden fault state or a calculated posterior. Inspections
 consume credits and diagnostic slots. Repairs consume credits, repair slots,
 and seal kits. Committing a shift applies maintenance decisions and production
@@ -44,6 +48,7 @@ learned maintenance evidence carry through the episode. Useful controls are:
 ```sh
 stationops game --seed 9 --shifts 8 --modules 12
 stationops game --diagnostic-slots 1 --repair-slots 1 --credits 20
+stationops game --sensor-knowledge induced --shifts 30
 ```
 
 ## Test reasoners in the same simulation
@@ -53,9 +58,57 @@ rules, and learning boundary as the browser game:
 
 ```sh
 stationops run --benchmark v2 --backend reference --budget 100
-stationops run --benchmark v2 --backend mm2 --budget 100
-stationops run --benchmark v2 --backend pettachainer --budget 10
+stationops run --benchmark v2 --backend mm2 --budget 300
+stationops run --benchmark v2 --backend pettachainer --budget 300
 stationops sweep --benchmark v2 --backend reference --budgets 0,1,10,100
+```
+
+StationOps-v2 defaults to a mixed information model:
+
+- coolant pumps have a calibrated full CTV;
+- oxygen scrubbers and power converters have only a positive-path STV;
+- thermal-loop and ore-feed pumps have no supplied causal rule.
+
+The dashboard shows the corresponding calibrated, partial, or uncharacterized
+sensor label, including exactly those numeric rates that the logic receives.
+
+Every resolved case is also encoded as a shared state subject, for example
+`(Inheritance (State shift-03-M04) (SealLeak new thermal-loop-pump))` and a
+corresponding `PressureAlarm` or `PressureNormal` observation. False labels use
+complemented-strength positive facts (`STV 0 1`); absence remains unknown.
+Only inspected or repaired outcomes enter this table. An unresolved current
+alarm is deliberately excluded, since inserting an observation without its
+leak label would dilute the learned conditional.
+
+For positive-only and undocumented types the controller queries an induced
+`PressureAlarm/PressureNormal -> SealLeak` inheritance relation. The
+positive-path STV remains useful in its known forward direction; the learned
+relation supplies the inverse needed for diagnosis. If a learned relation has
+no proof yet, otherwise-unused diagnostic capacity explores the least-sampled
+feature group so learning cannot permanently starve itself.
+
+Long runs expose windowed learning metrics and the public data behind them:
+
+```sh
+stationops run --benchmark v2 --backend mm2 --budget 300 \
+  --sensor-knowledge mixed --shifts 30 --learning-window 5
+stationops run --benchmark v2 --backend pettachainer --budget 300 \
+  --sensor-knowledge induced --shifts 30 --learning-window 5
+```
+
+The JSON contains per-window Brier score, log loss, coverage, regret, confirmed
+case growth, and station score; before/after resolved-model tables; the public
+knowledge regime; and a clearly labeled scoring-only hidden model. Because
+repairs affect later hidden state and inspections select which labels become
+public, improvement is not guaranteed or monotonic. Compare several metrics
+and fixed seeds rather than interpreting one late window as convergence.
+
+The minimal MM2 induction probe can be run directly:
+
+```sh
+/path/to/mm2-chainer query --kb stationLearningKb --steps 300 \
+  --add examples/inductive_sensor_statements.metta \
+  '(Inheritance (PressureAlarm old coolant-pump) (SealLeak old coolant-pump))'
 ```
 
 The standard controller queries every visible incident with the same budget.
@@ -94,16 +147,18 @@ absolute error against the exact empirical reference, Brier score, log loss,
 diagnostic priorities, raw and public-evidence-adjusted beliefs, chosen and
 oracle repairs, decision regret, actual production outcomes, backend counters,
 and aggregate station score. A zero-budget reasoner receives no inferred
-beliefs and therefore cannot schedule a diagnostic or repair unless a fault was
-already established in an earlier shift.
+beliefs and therefore schedules no evidence-driven action. It may still use an
+otherwise-idle diagnostic slot to explore a type whose inverse relation must be
+learned; only a confirmed inspection or an already-known fault can then cause a
+repair.
 
 ## Base-rate conformance benchmarks
 
 A deterministic, abstract, turn-based benchmark for cohort-conditioned
 maintenance triage. Two cohorts have different empirical seal-leak rates but
 share the same pressure-alarm sensor model. The game asks a reasoner for every
-candidate `PatchPaysOff` goal at the same budget, then independently evaluates
-expected utility and chooses the best feasible repairs.
+candidate `SealLeak` action belief at the same budget, then independently
+evaluates expected utility and chooses the best feasible repairs.
 
 ### Install and run
 
@@ -155,9 +210,10 @@ partial result with `status` set to `quit`.
 
 ### Semantics
 
-Each cohort has a coherent, explicit labeled contingency table: both positive
-facts and `(Not ...)` facts are emitted, while absence means unknown. The exact
-oracle estimates `P(leak|cohort)` from those rows and applies Bayes' rule using
+Each cohort has a coherent, explicit labeled contingency table: positive and
+complemented-strength (`STV 0 1`) facts are emitted, while absence means
+unknown. The exact oracle estimates `P(leak|cohort)` from those rows and
+applies Bayes' rule using
 `P(alarm|leak)=0.90` and `P(alarm|no leak)=0.12`. With default histories,
 positive-alarm posteriors are about 0.283 (old) and 0.036 (new). Repair has
 incremental utility `p*100 - (1-p)*10 - 5`, hence threshold `15/110 ≈ 0.136`.
@@ -225,9 +281,10 @@ retains it across that episode's rounds. Each round's public view contributes
 only newly named statements; disappeared statements remain as earlier
 knowledge, and a repeated name with different content is rejected. Rules are
 added before facts. Newly added facts are selected in batches of 100 and receive
-two bounded forward agenda steps per seed before the grounded `PatchPaysOff`
-queries run in incident order. This updates provisional base-rate caches while
-keeping inference explicitly finite and the KB append-only.
+two bounded forward agenda steps per seed before grounded `SealLeak` or learned
+inheritance-relation queries run in incident order. This updates provisional
+base-rate caches while keeping inference explicitly finite and the KB
+append-only.
 
 The query budget maps to backward PeTTaChainer steps and does not include this
 reported forward work. Round counters include `statements_added`,

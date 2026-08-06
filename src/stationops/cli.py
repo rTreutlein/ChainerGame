@@ -26,9 +26,12 @@ def _game_config(args):
         seed=args.seed,
         shifts=args.shifts,
         modules=args.modules,
+        initial_history_per_cohort=args.initial_history_per_cohort,
         diagnostic_slots=args.diagnostic_slots,
         repair_slots=2 if args.repair_slots is None else args.repair_slots,
         initial_credits=args.credits,
+        sensor_knowledge=args.sensor_knowledge,
+        learning_window=args.learning_window,
     )
 
 
@@ -53,15 +56,29 @@ def main(argv=None):
         p.add_argument("--benchmark", choices=("v0", "v1", "v2"), default="v0")
         p.add_argument("--shifts", type=int, default=5)
         p.add_argument("--modules", type=int, default=10)
+        p.add_argument("--initial-history-per-cohort", type=int, default=40)
         p.add_argument("--diagnostic-slots", type=int, default=2)
         p.add_argument("--credits", type=int, default=30)
+        p.add_argument(
+            "--sensor-knowledge",
+            choices=("full", "positive", "induced", "mixed"),
+            default="mixed",
+        )
+        p.add_argument("--learning-window", type=int, default=10)
     game = sub.add_parser("game")
     game.add_argument("--seed", type=int, default=7)
     game.add_argument("--shifts", type=int, default=5)
     game.add_argument("--modules", type=int, default=10)
+    game.add_argument("--initial-history-per-cohort", type=int, default=40)
     game.add_argument("--diagnostic-slots", type=int, default=2)
     game.add_argument("--repair-slots", type=int, default=2)
     game.add_argument("--credits", type=int, default=30)
+    game.add_argument(
+        "--sensor-knowledge",
+        choices=("full", "positive", "induced", "mixed"),
+        default="mixed",
+    )
+    game.add_argument("--learning-window", type=int, default=10)
     game.add_argument("--host", default="127.0.0.1")
     game.add_argument("--port", type=int, default=8765)
     args = parser.parse_args(argv)

@@ -72,3 +72,39 @@ StationOps queries MM2's inverted `SealLeak` belief directly. The
 unit-strength `PatchPaysOff` wrapper has the same action-belief semantics, but
 the current MM2 backward surface does not compose an inverted proof through
 that additional rule in one query.
+
+## StationOps-v2 shared-state induction
+
+Run on 2026-08-06 with MM2-Chainer `1a397fc`, PeTTaChainer `b709d31`, and
+PeTTa `e038e4d`. The current ChainerGame change was tested before its final
+commit. Both backends used seed 7, six shifts, ten modules, 20 initial resolved
+cases per cohort, the mixed knowledge model, a backward budget of 300, and
+three-shift reporting windows. The two processes ran concurrently, so wall
+times are validation observations rather than a clean speed comparison.
+
+The mixed model supplies a full CTV for coolant pumps, a positive-only STV for
+oxygen scrubbers and power converters, and no causal rule for thermal-loop and
+ore-feed pumps. Positive-only and undocumented types both use the induced
+shared-state inverse for diagnosis. All false observations are positive facts
+with `STV 0 1`; only resolved cases enter induction.
+
+| Backend | Coverage early / late | Brier early / late | Log loss early / late | Mean regret early / late | Confirmed cases added | Normalized score | Wall time |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| MM2 | 1.00 / 1.00 | 0.1650 / 0.2570 | 2.1252 / 4.0182 | 5.02 / 65.32 | 9 / 8 | 0.4984 | 80.51 s |
+| PeTTaChainer | 1.00 / 1.00 | 0.1652 / 0.1234 | 1.3597 / 0.3445 | 1.69 / 0.00 | 10 / 9 | 0.9882 | 72.40 s |
+
+PeTTaChainer improved on all three quality/decision metrics in this short run.
+MM2 retained complete coverage but became less calibrated and made worse
+decisions. This is intentionally recorded as a result rather than hidden by a
+Python fallback. It needs investigation against MM2's incremental inheritance
+aggregation and evidence reuse.
+
+The comparison is an interactive-policy benchmark, not a fixed replay: repairs
+change later persistent faults, and each policy selects which cases become
+labeled. It therefore measures whole-system learning and control, but it does
+not by itself attribute the divergence to one formula. A one-shift parity smoke
+test with the same mixed model and 20 initial cases per cohort gave both
+backends 10/10 belief coverage; MM2 took 18.22 seconds and PeTTaChainer 12.42
+seconds. An earlier ten-shift all-induced MM2 run with 40 initial cases per
+cohort took 196.31 seconds, demonstrating why longer exact-induction runs need
+query reuse or materialization before they become routine CI benchmarks.

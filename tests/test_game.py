@@ -10,7 +10,9 @@ from stationops.game import (
     allocate_repairs,
     decision_beliefs,
     diagnostic_plan,
+    new_fault_probability,
     run_game_episode,
+    sensor_rates,
 )
 from stationops.web import GameApplication, INDEX_HTML
 
@@ -28,6 +30,39 @@ def without_timing(value):
 
 
 class GameSessionTests(unittest.TestCase):
+    def test_hidden_rates_are_shared_by_visible_equipment_features(self):
+        session = GameSession(GameConfig(modules=10))
+        old_rates = {
+            module.equipment_type: new_fault_probability(session.config, module)
+            for module in session.modules
+            if module.cohort == "old"
+        }
+        self.assertGreater(len(set(old_rates.values())), 1)
+        self.assertNotEqual(
+            sensor_rates(session.config, "coolant-pump"),
+            sensor_rates(session.config, "ore-feed-pump"),
+        )
+
+    def test_mixed_knowledge_emits_full_positive_and_inductive_paths(self):
+        session = GameSession(GameConfig(modules=10))
+        source = session.logic_statements()
+        self.assertIn(
+            "alarmGivenLeak-old-coolant-pump", source
+        )
+        self.assertIn("(CTV (STV 0.92 1) (STV 0.12 1))", source)
+        self.assertIn(
+            "alarmGivenLeak-old-oxygen-scrubber", source
+        )
+        self.assertIn("(STV 0.75 1)", source)
+        self.assertNotIn("alarmGivenLeak-old-thermal-loop-pump", source)
+        resolved = session.history[0]
+        self.assertIn(
+            f"(Inheritance (State {resolved.id}) "
+            f"(SealLeak {resolved.cohort} {resolved.equipment_type}))",
+            source,
+        )
+        self.assertNotIn(f"(State {session.incidents[0].id})", source)
+
     def test_zero_action_limits_are_valid_benchmark_dimensions(self):
         session = GameSession(
             GameConfig(shifts=1, modules=2, diagnostic_slots=0, repair_slots=0)
@@ -44,6 +79,7 @@ class GameSessionTests(unittest.TestCase):
             self.assertNotIn("fault", incident)
             self.assertNotIn("leak", incident)
             self.assertNotIn("inspection", incident)
+            self.assertIn("sensor_knowledge", incident)
         json.dumps(state)
 
     def test_learning_contains_only_discovered_cases(self):
@@ -126,6 +162,14 @@ class GameSessionTests(unittest.TestCase):
         self.assertEqual(plan, [target.id])
         self.assertGreater(priorities[target.id], 0)
 
+    def test_induced_types_receive_exploration_diagnostics_without_a_proof(self):
+        session = GameSession(
+            GameConfig(modules=10, diagnostic_slots=1, sensor_knowledge="induced")
+        )
+        plan, _ = diagnostic_plan(session, {})
+        self.assertEqual(len(plan), 1)
+        self.assertIn(plan[0], {item.id for item in session._incidents})
+
     def test_diagnosed_unrepaired_leak_remains_known_until_repaired(self):
         session = GameSession(
             GameConfig(shifts=3, modules=2, old_prior=0.0, new_prior=0.0)
@@ -142,7 +186,8 @@ class GameSessionTests(unittest.TestCase):
         )
         current = next(item for item in session._incidents if item.module.id == first.module.id)
         self.assertIn(
-            f"(SealLeak {current.module.cohort} {current.id})",
+            f"(SealLeak {current.module.cohort} "
+            f"{current.module.equipment_type} {current.id})",
             session.logic_statements(),
         )
 
@@ -190,6 +235,18 @@ class GameSessionTests(unittest.TestCase):
 
 
 class AutomatedGameTests(unittest.TestCase):
+    def test_long_episode_reports_windowed_learning_metrics(self):
+        result = run_game_episode(
+            GameConfig(shifts=6, modules=4, learning_window=2),
+            "reference",
+        )
+        curve = result["aggregate"]["learning_curve"]
+        self.assertEqual(
+            [(window["shift_start"], window["shift_end"]) for window in curve],
+            [(1, 2), (3, 4), (5, 6)],
+        )
+        self.assertTrue(all(window["mean_coverage"] == 1.0 for window in curve))
+
     def test_reference_episode_is_deterministic_and_complete(self):
         first = run_game_episode()
         second = run_game_episode()
@@ -206,7 +263,7 @@ class AutomatedGameTests(unittest.TestCase):
             self.assertIsNotNone(round_["belief_metrics"]["brier_score"])
             self.assertNotIn("fault", json.dumps(round_["visible_incidents"]))
 
-    def test_zero_budget_has_no_inferred_diagnostics_or_repairs(self):
+    def test_zero_budget_repairs_only_confirmed_or_known_faults(self):
         result = run_game_episode(budget=0)
         for round_ in result["rounds"]:
             self.assertEqual(round_["belief_metrics"]["coverage"], 0.0)
@@ -256,7 +313,7 @@ class AutomatedGameTests(unittest.TestCase):
         result = run_game_episode(
             GameConfig(shifts=2, modules=4),
             "pettachainer",
-            10,
+            300,
             pettachainer_path=os.environ.get("PETTACHAINER_PYTHONPATH"),
         )
         self.assertGreaterEqual(

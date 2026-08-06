@@ -11,6 +11,16 @@ def empirical_priors(history: list[HistoryCase]) -> dict[str, float]:
     return {c: leaks[c] / totals[c] for c in sorted(totals)}
 
 
+def empirical_feature_priors(history: list[HistoryCase]) -> dict[tuple[str, str | None], float]:
+    """Estimate leak rates at the most specific visible feature level."""
+    totals = Counter((x.cohort, x.equipment_type) for x in history)
+    leaks = Counter((x.cohort, x.equipment_type) for x in history if x.leak)
+    ordered = sorted(
+        totals.items(), key=lambda row: (row[0][0], row[0][1] or "")
+    )
+    return {key: leaks[key] / total for key, total in ordered}
+
+
 def posterior(prior: float, alarm: bool, sensitivity: float, fpr: float) -> float:
     like_leak = sensitivity if alarm else 1.0 - sensitivity
     like_sound = fpr if alarm else 1.0 - fpr

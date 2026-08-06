@@ -103,7 +103,8 @@ function render(s) {
     const info=document.createElement('div');
     info.innerHTML=`<h3>${item.module_id} · ${item.description}</h3><div class="tags">
       <span class="tag">${item.cohort}</span><span class="tag ${item.alarm?'alarm':''}">${item.sensor}</span>
-      <span class="tag ${item.criticality}">${item.criticality}</span><span class="tag">production at risk ${item.value_at_risk}</span></div>
+      <span class="tag">${item.sensor_knowledge}</span><span class="tag ${item.criticality}">${item.criticality}</span>
+      <span class="tag">production at risk ${item.value_at_risk}</span></div>
       ${item.inspection?`<div class="inspection">DIAGNOSTIC: ${item.inspection}</div>`:''}`;
     const actions=document.createElement('div'); actions.className='actions';
     const inspect=document.createElement('button'); inspect.textContent='Inspect';

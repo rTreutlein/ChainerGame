@@ -8,6 +8,7 @@ class HistoryCase:
     cohort: str
     leak: bool
     alarm: bool
+    equipment_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -15,6 +16,7 @@ class Incident:
     id: str
     cohort: str
     alarm: bool
+    equipment_type: str | None = None
 
 
 @dataclass(frozen=True)

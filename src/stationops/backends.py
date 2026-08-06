@@ -15,7 +15,7 @@ from typing import Protocol
 
 from .config import Config
 from .models import HistoryCase, Incident
-from .oracle import empirical_priors, posterior
+from .oracle import empirical_feature_priors, posterior
 from .shortfall import (
     SHORTFALL_RULES,
     event_atom,
@@ -91,12 +91,25 @@ class ReasonerBackend(Protocol):
 @dataclass
 class ReferenceBackend:
     config: Config
+    sensor_models: dict[str, tuple[float, float]] | None = None
     name: str = "reference"
 
+    def _sensor_rates(self, equipment_type: str | None) -> tuple[float, float]:
+        default = (self.config.sensitivity, self.config.false_positive_rate)
+        return (
+            self.sensor_models.get(equipment_type, default)
+            if self.sensor_models
+            else default
+        )
+
     def infer(self, history, incidents, budget, statements):
-        priors = empirical_priors(history)
+        priors = empirical_feature_priors(history)
         beliefs = {
-            x.id: posterior(priors[x.cohort], x.alarm, self.config.sensitivity, self.config.false_positive_rate)
+            x.id: posterior(
+                priors[(x.cohort, x.equipment_type)],
+                x.alarm,
+                *self._sensor_rates(x.equipment_type),
+            )
             for x in incidents
         }
         # A zero budget intentionally supplies no proofs; positive reference budgets converge.
@@ -120,8 +133,15 @@ class MM2Backend:
     name = "mm2"
     _forward_steps_per_seed = 2
 
-    def __init__(self, config: Config, python_path: str | None = None, module=None):
+    def __init__(
+        self,
+        config: Config,
+        python_path: str | None = None,
+        module=None,
+        sensor_knowledge: dict[str, str] | None = None,
+    ):
         self.config = config
+        self.sensor_knowledge = sensor_knowledge or {}
         self._engine = None
         self._atoms_by_name: dict[str, str] = {}
         self._base_rates: dict[str, float] = {}
@@ -261,23 +281,41 @@ class MM2Backend:
         }
 
     def _update_base_rates(self, history) -> int:
-        priors = empirical_priors(history)
-        missing_cohorts = sorted(self._base_rates.keys() - priors.keys())
-        if missing_cohorts:
+        priors = empirical_feature_priors(history)
+        desired = {}
+        for (cohort, equipment_type), prior in priors.items():
+            fields = f"{cohort} " + (f"{equipment_type} " if equipment_type else "")
+            desired[f"(SealLeak {fields}$unit)"] = prior
+        missing_patterns = sorted(self._base_rates.keys() - desired.keys())
+        if missing_patterns:
             raise ValueError(
-                "history lost cohorts in append-only MM2 episode: "
-                + ", ".join(missing_cohorts)
+                "history lost feature groups in append-only MM2 episode: "
+                + ", ".join(missing_patterns)
             )
         updated = 0
-        for cohort, prior in priors.items():
-            if self._base_rates.get(cohort) == prior:
+        for pattern, prior in desired.items():
+            if self._base_rates.get(pattern) == prior:
                 continue
-            self._engine.set_base_rate(
-                "stationops", f"(SealLeak {cohort} $unit)", f"(STV {prior} 1)"
-            )
-            self._base_rates[cohort] = prior
+            self._engine.set_base_rate("stationops", pattern, f"(STV {prior} 1)")
+            self._base_rates[pattern] = prior
             updated += 1
         return updated
+
+    def _incident_query(self, incident: Incident) -> str:
+        if (
+            incident.equipment_type is not None
+            and self.sensor_knowledge.get(incident.equipment_type)
+            in {"positive", "induced"}
+        ):
+            observation = "PressureAlarm" if incident.alarm else "PressureNormal"
+            return (
+                f"(Inheritance ({observation} {incident.cohort} {incident.equipment_type}) "
+                f"(SealLeak {incident.cohort} {incident.equipment_type}))"
+            )
+        fields = f"{incident.cohort} "
+        if incident.equipment_type is not None:
+            fields += f"{incident.equipment_type} "
+        return f"(SealLeak {fields}{incident.id})"
 
     @staticmethod
     def _beliefs_from_results(results) -> dict[str, float]:
@@ -310,13 +348,22 @@ class MM2Backend:
             self._atoms_by_name.clear()
             self._base_rates.clear()
             raise
-        # SealLeak is the action belief. PatchPaysOff is a unit-strength wrapper
-        # used by engines that compose inversion with another backward rule;
-        # current MM2 coverage exposes the inverted SealLeak proof directly.
-        queries = [(x.id, f"(SealLeak {x.cohort} {x.id})") for x in incidents]
+        queries = [(x.id, self._incident_query(x)) for x in incidents]
         results = self._engine.query_many("stationops", queries, budget)
         beliefs = self._beliefs_from_results(results)
-        counters.update({"queries": len(queries), "engine_steps": None})
+        counters.update({
+            "queries": len(queries),
+            "induced_queries": sum(
+                self.sensor_knowledge.get(x.equipment_type) == "induced"
+                for x in incidents
+            ),
+            "learned_relation_queries": sum(
+                self.sensor_knowledge.get(x.equipment_type)
+                in {"positive", "induced"}
+                for x in incidents
+            ),
+            "engine_steps": None,
+        })
         return beliefs, counters
 
 
@@ -337,8 +384,15 @@ class PeTTaChainerBackend:
         r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\)"
     )
 
-    def __init__(self, config: Config, python_path: str | None = None, module=None):
+    def __init__(
+        self,
+        config: Config,
+        python_path: str | None = None,
+        module=None,
+        sensor_knowledge: dict[str, str] | None = None,
+    ):
         self.config = config
+        self.sensor_knowledge = sensor_knowledge or {}
         self._handler = None
         self._atoms_by_name: dict[str, str] = {}
         if module is not None:
@@ -497,13 +551,41 @@ class PeTTaChainerBackend:
 
         beliefs = {}
         for incident in incidents:
+            if (
+                incident.equipment_type is not None
+                and self.sensor_knowledge.get(incident.equipment_type)
+                in {"positive", "induced"}
+            ):
+                observation = "PressureAlarm" if incident.alarm else "PressureNormal"
+                goal = (
+                    f"(Inheritance ({observation} {incident.cohort} "
+                    f"{incident.equipment_type}) "
+                    f"(SealLeak {incident.cohort} {incident.equipment_type}))"
+                )
+            else:
+                fields = f"{incident.cohort} "
+                if incident.equipment_type is not None:
+                    fields += f"{incident.equipment_type} "
+                goal = f"(SealLeak {fields}{incident.id})"
             proofs = self._handler.query(
-                f"(: $prf (PatchPaysOff {incident.cohort} {incident.id}) $tv)",
+                f"(: $prf {goal} $tv)",
                 steps=budget,
                 timeout_sec=0,
             )
             strength = self._strongest_strength(proofs)
             if strength is not None:
                 beliefs[incident.id] = strength
-        counters.update({"queries": len(incidents), "engine_steps": None})
+        counters.update({
+            "queries": len(incidents),
+            "induced_queries": sum(
+                self.sensor_knowledge.get(x.equipment_type) == "induced"
+                for x in incidents
+            ),
+            "learned_relation_queries": sum(
+                self.sensor_knowledge.get(x.equipment_type)
+                in {"positive", "induced"}
+                for x in incidents
+            ),
+            "engine_steps": None,
+        })
         return beliefs, counters

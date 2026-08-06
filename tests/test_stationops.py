@@ -57,8 +57,9 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(len(incidents), 100)
         self.assertEqual({"old": 0.05, "new": 0.005}, empirical_priors(history))
         source = generate_statements(history, incidents, cfg)
-        self.assertIn("(Not (SealLeak", source)
-        self.assertIn("(Not (PressureAlarm", source)
+        self.assertIn("(SealLeak old h-old-0000) (STV 0 1)", source)
+        self.assertIn("(PressureAlarm old h-old-0000) (STV 0 1)", source)
+        self.assertNotIn("(Not ", source)
         self.assertIn("(CTV", source)
         self.assertIn(
             "(Implication (SealLeak old $unit) (PressureAlarm old $unit))",
@@ -342,6 +343,8 @@ class BenchmarkTests(unittest.TestCase):
                 "forward_seed_facts": 1,
                 "forward_steps": 2,
                 "queries": 2,
+                "induced_queries": 0,
+                "learned_relation_queries": 0,
                 "engine_steps": None,
             },
         )
@@ -352,8 +355,8 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(
             [query for query, _, _ in Handler.instances[-1].queries],
             [
-                "(: $prf (PatchPaysOff new new-alarm) $tv)",
-                "(: $prf (PatchPaysOff old old-alarm) $tv)",
+                "(: $prf (SealLeak new new-alarm) $tv)",
+                "(: $prf (SealLeak old old-alarm) $tv)",
             ],
         )
         self.assertEqual(Handler.instances[-1].atoms, ["(: fact (A) (STV 1 1))"])
@@ -402,6 +405,56 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(reversed_beliefs, {"second": .4, "first": .4})
         self.assertEqual(zero, {})
         self.assertEqual(len(Handler.instances), 1)
+
+    def test_pettachainer_induced_query_uses_shared_state_relation(self):
+        class Handler:
+            instances = []
+
+            def __init__(self):
+                self.queries = []
+                self.__class__.instances.append(self)
+
+            def add_atoms_no_check(self, atoms):
+                pass
+
+            def select_facts(self, terms):
+                return list(terms)
+
+            def forward_chain(self, facts, steps):
+                return []
+
+            def query(self, query, steps, timeout_sec):
+                self.queries.append(query)
+                return ["(: induced relation (STV .42 .7))"]
+
+        backend = PeTTaChainerBackend(
+            Config(),
+            module=SimpleNamespace(PeTTaChainer=Handler),
+            sensor_knowledge={"thermal-loop-pump": "induced"},
+        )
+        incident = Incident(
+            "current", "old", True, "thermal-loop-pump"
+        )
+        beliefs, counters = backend.infer([], [incident], 100, "")
+        self.assertEqual(beliefs, {"current": .42})
+        self.assertEqual(counters["induced_queries"], 1)
+        self.assertEqual(counters["learned_relation_queries"], 1)
+        self.assertEqual(
+            Handler.instances[0].queries,
+            [
+                "(: $prf (Inheritance (PressureAlarm old thermal-loop-pump) "
+                "(SealLeak old thermal-loop-pump)) $tv)"
+            ],
+        )
+
+        positive_backend = PeTTaChainerBackend(
+            Config(),
+            module=SimpleNamespace(PeTTaChainer=Handler),
+            sensor_knowledge={"thermal-loop-pump": "positive"},
+        )
+        _, positive_counters = positive_backend.infer([], [incident], 100, "")
+        self.assertEqual(positive_counters["induced_queries"], 0)
+        self.assertEqual(positive_counters["learned_relation_queries"], 1)
 
     def test_pettachainer_adds_named_deltas_rules_first_without_retractions(self):
         class Handler:
