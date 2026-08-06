@@ -95,9 +95,33 @@ with `STV 0 1`; only resolved cases enter induction.
 
 PeTTaChainer improved on all three quality/decision metrics in this short run.
 MM2 retained complete coverage but became less calibrated and made worse
-decisions. This is intentionally recorded as a result rather than hidden by a
-Python fallback. It needs investigation against MM2's incremental inheritance
-aggregation and evidence reuse.
+decisions. This was intentionally recorded as a result rather than hidden by a
+Python fallback.
+
+The divergence was subsequently traced to a missing MM2 capability, not to
+incremental inheritance aggregation. MM2-Chainer `1a397fc` could infer the
+shared-state sensor relations, but it rejected the
+`WeightedSubsetPosteriorDP` and `WeightedSubsetPosteriorMarginal` Compute
+operators. StationOps therefore reported `shortfall_supported: false` and made
+later decisions without conditioning on the anonymous production-loss totals.
+
+MM2-Chainer `a97a10b` (with MORK `904e1ba`) added the registered native
+operators. A focused live probe produced the exact oracle posterior for a
+five-unit loss: pump `0.7772727`, motor `0.2227273`, and valve `0.2227273`.
+Repeating the same six-shift configuration produced:
+
+| Backend revision | Coverage early / late | Brier early / late | Log loss early / late | Mean regret early / late | Confirmed cases added | Normalized score | Wall time |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| MM2 `a97a10b` | 1.00 / 1.00 | 0.1650 / 0.1226 | 2.1252 / 0.3425 | 1.69 / 0.00 | 10 / 9 | 0.9882 | 243.59 s |
+
+This closes the semantic and decision-quality gap with the recorded
+PeTTaChainer run. The native shortfall path was exercised from shift three
+onward and answered 32 marginal queries in total. Runtime is now the visible
+remaining issue: the earlier MM2 build took 80.51 seconds partly because it
+skipped this work entirely, while the functional build took 243.59 seconds.
+The timings were not collected as a controlled backend speed comparison, but
+they are sufficient to identify shortfall query reuse or batched projection as
+the next MM2 optimization target.
 
 The comparison is an interactive-policy benchmark, not a fixed replay: repairs
 change later persistent faults, and each policy selects which cases become
