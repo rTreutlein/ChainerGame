@@ -7,6 +7,7 @@ from .episode import run_episode
 from .game import GameConfig, run_game_episode
 from .metta import generate_statements
 from .simulator import generate_history, generate_incidents
+from .stress import run_stress_sweep
 from .v1 import play_episode_v1, prior_shift_fixture, run_episode_v1
 from .web import serve_game
 
@@ -38,7 +39,7 @@ def _game_config(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="stationops")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("generate", "run", "sweep", "play"):
+    for name in ("generate", "run", "sweep", "stress", "play"):
         p = sub.add_parser(name)
         p.add_argument("--seed", type=int, default=7)
         p.add_argument("--history-size", type=int, default=1000)
@@ -58,6 +59,14 @@ def main(argv=None):
             help="v2 aggregate-loss query budget; defaults to --budget",
         )
         p.add_argument("--budgets", default="1,10,100")
+        if name == "stress":
+            p.add_argument("--shortfall-budgets", default="10,20,50,100")
+            p.add_argument("--seeds", default="7")
+            p.add_argument(
+                "--stream",
+                action="store_true",
+                help="emit each completed stress point as one JSON line",
+            )
         p.add_argument("--benchmark", choices=("v0", "v1", "v2"), default="v0")
         p.add_argument("--shifts", type=int, default=5)
         p.add_argument("--modules", type=int, default=10)
@@ -107,6 +116,29 @@ def main(argv=None):
                 history.extend(round_.resolutions)
         else:
             parser.error("v2 generation is action-dependent; use `run --benchmark v2`")
+        return
+    if args.command == "stress":
+        emit = (
+            lambda row: print(
+                json.dumps({"type": "stress-run", "result": row}, sort_keys=True),
+                flush=True,
+            )
+        ) if args.stream else None
+        result = run_stress_sweep(
+            _game_config(args),
+            args.backend,
+            [int(value) for value in args.budgets.split(",")],
+            [int(value) for value in args.shortfall_budgets.split(",")],
+            [int(value) for value in args.seeds.split(",")],
+            args.mm2_path,
+            args.pettachainer_path,
+            on_run=emit,
+        )
+        print(json.dumps(
+            {"type": "stress-summary", "result": result}
+            if args.stream else result,
+            sort_keys=True,
+        ))
         return
     budgets = [args.budget] if args.command == "run" else [int(x) for x in args.budgets.split(",")]
     for budget in budgets:

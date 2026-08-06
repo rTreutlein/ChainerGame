@@ -30,6 +30,17 @@ class BackendUnavailable(RuntimeError):
     pass
 
 
+def _engine_execution_stats(engine) -> dict | None:
+    snapshot = getattr(engine, "last_execution_stats", None)
+    if not callable(snapshot):
+        return None
+    try:
+        result = snapshot()
+    except Exception:
+        return None
+    return result if isinstance(result, dict) else None
+
+
 def _fields(expression: str) -> list[str]:
     """Split one restricted MeTTa expression into top-level fields."""
     expression = expression.strip()
@@ -272,11 +283,15 @@ class MM2Backend:
             )
             if probability is not None:
                 marginals.setdefault(shifts[event_name], {})[unit] = probability
+        execution_stats = _engine_execution_stats(self._engine)
         return marginals, {
             "shortfall_queries": len(queries),
             "shortfall_marginal_queries": len(queries),
             "shortfall_statements_added": counters["statements_added"],
-            "shortfall_engine_steps": None,
+            "shortfall_engine_steps": (
+                execution_stats.get("steps") if execution_stats else None
+            ),
+            "shortfall_engine_stats": execution_stats,
             "shortfall_supported": True,
         }
 
@@ -350,6 +365,7 @@ class MM2Backend:
             raise
         queries = [(x.id, self._incident_query(x)) for x in incidents]
         results = self._engine.query_many("stationops", queries, budget)
+        execution_stats = _engine_execution_stats(self._engine)
         beliefs = self._beliefs_from_results(results)
         counters.update({
             "queries": len(queries),
@@ -362,7 +378,8 @@ class MM2Backend:
                 in {"positive", "induced"}
                 for x in incidents
             ),
-            "engine_steps": None,
+            "engine_steps": execution_stats.get("steps") if execution_stats else None,
+            "diagnosis_engine_stats": execution_stats,
         })
         return beliefs, counters
 

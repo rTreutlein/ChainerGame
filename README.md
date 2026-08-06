@@ -58,14 +58,40 @@ rules, and learning boundary as the browser game:
 
 ```sh
 stationops run --benchmark v2 --backend reference --budget 100
-stationops run --benchmark v2 --backend mm2 --budget 1 --shortfall-budget 20
+stationops run --benchmark v2 --backend mm2 --budget 1 --shortfall-budget 50
 stationops run --benchmark v2 --backend pettachainer --budget 300 --shortfall-budget 300
 stationops sweep --benchmark v2 --backend reference --budgets 0,1,10,100
 ```
 
 V2 keeps diagnosis and aggregate-loss budgets separate because a native step
 does not represent equivalent work in MM2 and PeTTaChainer. The values above
-are current fixture-specific calibration points, not cross-backend units.
+are current six-shift fixture-specific calibration points, not cross-backend
+units or safe defaults for larger workloads.
+
+Use the dedicated stress sweep to measure how gracefully a backend loses proof
+coverage and decision quality when its budget is insufficient:
+
+```sh
+stationops stress --backend mm2 --budgets 1 \
+  --shortfall-budgets 10,20,30,40,50,75,100 \
+  --seeds 7,11,19 --shifts 6 --modules 10 \
+  --initial-history-per-cohort 20 --stream
+
+# A deliberately hard closed-loop workload, protected by an external cap.
+timeout 180s stationops stress --backend mm2 --budgets 1 \
+  --shortfall-budgets 25 --seeds 7 --shifts 12 --modules 20 \
+  --initial-history-per-cohort 40 --learning-window 4 --stream
+```
+
+`--stream` emits one `stress-run` JSON object as soon as each point completes,
+so earlier results survive if a later point becomes intractable. The final
+`stress-summary` contains the same points together plus a `budget_curve` with
+cross-seed mean, minimum, and maximum coverage, score, regret, and wall time.
+Each point reports diagnosis and aggregate-shortfall coverage, score, regret,
+per-shift deterioration, and, when exposed by the backend, native steps,
+transitions, and unifications. Runs are intentionally interactive: an
+under-budget decision can leave faults unresolved, which increases the number
+of ambiguous candidates—and therefore the workload—in later shifts.
 
 StationOps-v2 defaults to a mixed information model:
 
@@ -94,7 +120,7 @@ feature group so learning cannot permanently starve itself.
 Long runs expose windowed learning metrics and the public data behind them:
 
 ```sh
-stationops run --benchmark v2 --backend mm2 --budget 1 --shortfall-budget 20 \
+stationops run --benchmark v2 --backend mm2 --budget 1 --shortfall-budget 50 \
   --sensor-knowledge mixed --shifts 30 --learning-window 5
 stationops run --benchmark v2 --backend pettachainer --budget 300 --shortfall-budget 300 \
   --sensor-knowledge induced --shifts 30 --learning-window 5
@@ -131,10 +157,9 @@ merges configurations by reachable production loss into reusable prefix and
 postfix tables rather than enumerating fault sets.
 `WeightedSubsetPosteriorMarginal` projects a module probability from those
 tables for a diagnostic decision. StationOps sends the same rules and queries
-to MM2, but the current MM2 native `Compute` implementation does not yet provide
-those two operators; its round counters therefore report
-`shortfall_supported: false` instead of silently substituting the Python
-reference result.
+to MM2. Current MM2 builds provide registered native implementations of both
+operators; older builds report `shortfall_supported: false` instead of silently
+substituting the Python reference result.
 
 The self-contained MeTTa experiment `examples/shortfall_foldall_vs_dp.metta`
 compares an exhaustive `FoldAll` over complete explanations with an ordinary-rule
@@ -259,12 +284,13 @@ not compose an inverted proof through that additional wrapper in one backward
 query. The strongest returned MM2 STV strength is the backend's action-belief
 value. Missing proofs—including zero or insufficient budgets—produce no belief
 and therefore no repair. Oracle Bayes beliefs remain separate and are used only
-to score chosen actions. MM2 does not expose execution counters through this
-Python API, so those counters are explicitly `null`. Live conformance uses the
-same maximum absolute belief error of 0.05 as PeTTaChainer. The integration test
-skips with an actionable reason when the binding is unavailable; controlled
-engine tests always verify that wrong or empty MM2 results change or remove
-decisions.
+to score chosen actions. Recent MM2 builds expose a snapshot of the last native
+execution. StationOps records its steps, transitions, and unifications
+separately for diagnosis and shortfall conditioning; older bindings leave those
+fields `null`. Live conformance uses the same maximum absolute belief error of
+0.05 as PeTTaChainer. The integration test skips with an actionable reason when
+the binding is unavailable; controlled engine tests always verify that wrong or
+empty MM2 results change or remove decisions.
 
 PeTTaChainer is an explicitly selected peer backend; StationOps never switches
 to it automatically when MM2 is unavailable. Install PeTTaChainer and its

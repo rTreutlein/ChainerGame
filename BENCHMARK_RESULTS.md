@@ -153,3 +153,69 @@ backends 10/10 belief coverage; MM2 took 18.22 seconds and PeTTaChainer 12.42
 seconds. An earlier ten-shift all-induced MM2 run with 40 initial cases per
 cohort took 196.31 seconds, demonstrating why longer exact-induction runs need
 query reuse or materialization before they become routine CI benchmarks.
+
+## Latest MM2 budget-degradation stress test
+
+Run on 2026-08-06 with MM2-Chainer `ff0b068` and MORK `dd23929`. MM2 now shares
+one native search allowance across Compute waves and batches ground inheritance
+queries. The six-shift fixture used seed 7, ten modules, 20 initial cases per
+cohort, the mixed sensor model, diagnosis budget 1, and one independent episode
+per shortfall budget. Because this is a closed-loop benchmark, each budget can
+choose different repairs and encounter a different later state.
+
+| Shortfall budget | Returned / requested | Coverage | Normalized score | Regret | Wall time | Shortfall transitions |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 10 | 7 / 55 | 0.1273 | 0.8087 | 90.07 | 5.85 s | 985,719 |
+| 20 | 7 / 55 | 0.1273 | 0.8087 | 90.07 | 6.70 s | 1,608,729 |
+| 30 | 7 / 55 | 0.1273 | 0.8087 | 90.07 | 8.02 s | 2,724,983 |
+| 40 | 24 / 55 | 0.4364 | 0.8511 | 70.07 | 9.15 s | 3,798,194 |
+| 50 | 32 / 32 | 1.0000 | 0.9882 | 5.07 | 8.91 s | 3,636,037 |
+| 75 | 32 / 32 | 1.0000 | 0.9882 | 5.07 | 11.48 s | 6,800,470 |
+| 100 | 32 / 32 | 1.0000 | 0.9882 | 5.07 | 12.95 s | 8,331,150 |
+| 150 | 32 / 32 | 1.0000 | 0.9882 | 5.07 | 17.33 s | 13,124,121 |
+
+Diagnosis coverage was 100% throughout this seed-7 curve. Its useful shortfall
+boundary is sharp, not gradual: budgets 10 through 30 return the same seven
+marginals despite doing increasingly more native work; 40 is partial; and 50 is
+the first complete point. Above 50, quality no longer improves while work and
+wall time continue to rise. The requested count also changes from 55 to 32 once
+budget 50 produces better repairs. That is not a denominator error: low-budget
+policies leave more faults unresolved, so later aggregate losses have more
+candidate causes.
+
+Two additional seeds show why this is a degradation curve rather than a global
+calibration constant:
+
+| Seed | Shortfall budget | Diagnosis coverage | Shortfall coverage | Normalized score | Regret |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 11 | 20 | 0.9000 | 18 / 74 (0.2432) | 0.0000 | 260.00 |
+| 11 | 40 | 0.9000 | 38 / 74 (0.5135) | 0.2500 | 195.00 |
+| 11 | 50 | 0.9000 | 22 / 24 (0.9167) | 0.2767 | 166.51 |
+| 19 | 20 | 0.9000 | 0 / 8 (0.0000) | 0.7540 | 50.05 |
+| 19 | 40 | 0.9000 | 0 / 8 (0.0000) | 0.7540 | 50.05 |
+| 19 | 50 | 0.9000 | 8 / 8 (1.0000) | 0.7540 | 50.05 |
+
+Increasing seed 11's diagnosis budget from 1 to 2 and then 10 left coverage at
+exactly 54/60 and did not change its policy; budget 10 merely increased native
+diagnosis transitions from about 0.74 million to 1.66 million. Those omissions
+therefore reflect unavailable public proofs for that generated history, not a
+too-small diagnosis search budget. The stress report deliberately keeps proof
+coverage separate from decision score so this distinction remains visible.
+
+A larger seed-7 workload used 20 modules, 12 shifts, 40 initial cases per
+cohort, diagnosis budget 1, and the same mixed model. At shortfall budget 25 it
+completed in 155.60 seconds with 240/240 diagnosis results but only 38/726
+shortfall marginals (5.23% coverage), normalized score 0.8212, and regret
+212.56. Diagnosis consumed 25,653,217 native transitions; shortfall conditioning
+consumed 103,292,631. Per-shift shortfall demand grew from 16 candidates in
+shift two to 117 in shift twelve, and the last five shifts each took roughly
+20--24 seconds. This is the intended compounding degradation signal: incomplete
+reasoning causes weaker maintenance decisions, which create a harder next
+state.
+
+The same large workload at shortfall budget 50 did not complete one episode
+within a 180-second external cap. Consequently there is no score for that point;
+it is recorded as a timeout, not as zero coverage. The small-fixture budget knee
+therefore cannot be treated as a scale-independent calibration. Multi-seed
+curves should use the streaming stress command so completed points remain
+available when a later budget/workload combination times out.
