@@ -16,6 +16,14 @@ from typing import Protocol
 from .config import Config
 from .models import HistoryCase, Incident
 from .oracle import empirical_priors, posterior
+from .shortfall import (
+    SHORTFALL_RULES,
+    event_atom,
+    finite_probability,
+    generate_shortfall_statements,
+    marginal_queries,
+    oracle_event_marginals,
+)
 
 
 class BackendUnavailable(RuntimeError):
@@ -77,7 +85,7 @@ class ReasonerBackend(Protocol):
 
     def infer(
         self, history: list[HistoryCase], incidents: list[Incident], budget: int, statements: str
-    ) -> tuple[dict[str, float], dict[str, int | float | None]]: ...
+    ) -> tuple[dict[str, float], dict[str, object]]: ...
 
 
 @dataclass
@@ -94,6 +102,17 @@ class ReferenceBackend:
         # A zero budget intentionally supplies no proofs; positive reference budgets converge.
         return (beliefs if budget > 0 else {}), {"queries": len(incidents), "engine_steps": None}
 
+    def condition_shortfalls(self, events, budget):
+        queries = marginal_queries(events)
+        return (
+            oracle_event_marginals(events) if budget > 0 else {},
+            {
+                "shortfall_queries": len(queries),
+                "shortfall_statements_added": 0,
+                "shortfall_engine_steps": None,
+            },
+        )
+
 
 class MM2Backend:
     """Persistent adapter for MM2's incremental named-statement API."""
@@ -106,6 +125,8 @@ class MM2Backend:
         self._engine = None
         self._atoms_by_name: dict[str, str] = {}
         self._base_rates: dict[str, float] = {}
+        self._shortfall_supported: bool | None = None
+        self._shortfall_unsupported_reason: str | None = None
         if module is not None:
             self.module = module
             return
@@ -120,7 +141,7 @@ class MM2Backend:
                 "MM2_CHAINER_PYTHONPATH"
             ) from exc
 
-    def _reconcile(self, statements: str) -> dict[str, int]:
+    def _reconcile(self, statements: str, forward_facts: bool = True) -> dict[str, int]:
         cold_start = not self._atoms_by_name
         entries: list[tuple[str, str, str]] = []
         desired: dict[str, str] = {}
@@ -150,7 +171,7 @@ class MM2Backend:
             )
             self._atoms_by_name.update((name, atom) for name, _, atom in additions)
 
-        facts = [] if cold_start else [
+        facts = [] if cold_start or not forward_facts else [
             entry for entry in additions if not _is_rule(entry[1])
         ]
         seeds = [_fact_seed(type_expression) for _, type_expression, _ in facts]
@@ -163,6 +184,80 @@ class MM2Backend:
             "statements_removed": 0,
             "forward_seed_facts": len(seeds),
             "forward_steps": forward_steps,
+        }
+
+    @staticmethod
+    def _result_probability(result) -> float | None:
+        term = result.get("term") if isinstance(result, dict) else None
+        if isinstance(term, dict) and term.get("kind") == "expression":
+            fields = term.get("value") or ()
+            if fields:
+                value = fields[-1]
+                if isinstance(value, dict) and value.get("kind") == "atom":
+                    return finite_probability(value.get("value"))
+        if isinstance(term, str):
+            fields = _fields(term)
+            if len(fields) == 4 and fields[0] == "ShortfallMarginal":
+                return finite_probability(fields[-1])
+        return None
+
+    def condition_shortfalls(self, events, budget):
+        queries = marginal_queries(events)
+        shifts = {event_atom(event): int(event["shift"]) for event in events}
+        if not queries or budget <= 0:
+            return {}, {
+                "shortfall_queries": len(queries),
+                "shortfall_statements_added": 0,
+                "shortfall_engine_steps": None,
+            }
+        if self._engine is None:
+            self._engine = self.module.Engine()
+        if self._shortfall_supported is None:
+            try:
+                probe = self.module.Engine()
+                probe.add_many("stationops-shortfall-probe", "\n".join(SHORTFALL_RULES))
+            except Exception as exc:
+                self._shortfall_supported = False
+                self._shortfall_unsupported_reason = str(exc)
+            else:
+                self._shortfall_supported = True
+        if not self._shortfall_supported:
+            return {}, {
+                "shortfall_queries": len(queries),
+                "shortfall_statements_added": 0,
+                "shortfall_engine_steps": None,
+                "shortfall_supported": False,
+                "shortfall_unsupported_reason": self._shortfall_unsupported_reason,
+            }
+
+        try:
+            counters = self._reconcile(
+                generate_shortfall_statements(events), forward_facts=False
+            )
+        except Exception:
+            self._engine = None
+            self._atoms_by_name.clear()
+            self._base_rates.clear()
+            raise
+        marginals: dict[int, dict[str, float]] = {}
+        for tag, proofs in self._engine.query_many("stationops", queries, budget):
+            event_name, unit = tag.split("|", 1)
+            probability = next(
+                (
+                    value
+                    for value in (self._result_probability(proof) for proof in proofs)
+                    if value is not None
+                ),
+                None,
+            )
+            if probability is not None:
+                marginals.setdefault(shifts[event_name], {})[unit] = probability
+        return marginals, {
+            "shortfall_queries": len(queries),
+            "shortfall_marginal_queries": len(queries),
+            "shortfall_statements_added": counters["statements_added"],
+            "shortfall_engine_steps": None,
+            "shortfall_supported": True,
         }
 
     def _update_base_rates(self, history) -> int:
@@ -283,7 +378,7 @@ class PeTTaChainerBackend:
                 "both source roots and native libraries are available"
             ) from exc
 
-    def _reconcile(self, statements: str) -> dict[str, int]:
+    def _reconcile(self, statements: str, forward_facts: bool = True) -> dict[str, int]:
         entries: list[tuple[str, str, str]] = []
         desired: dict[str, str] = {}
         for atom in (line.strip() for line in statements.splitlines() if line.strip()):
@@ -318,19 +413,71 @@ class PeTTaChainerBackend:
             batch = facts[offset:offset + self._forward_batch_size]
             self._handler.add_atoms_no_check([atom for _, _, atom in batch])
             self._atoms_by_name.update((name, atom) for name, _, atom in batch)
-            seeds = self._handler.select_facts(
-                [_fact_seed(type_expression) for _, type_expression, _ in batch]
-            )
-            steps = self._forward_steps_per_seed * len(seeds)
-            self._handler.forward_chain(seeds, steps=steps)
-            forward_seeds += len(seeds)
-            forward_steps += steps
+            if forward_facts:
+                seeds = self._handler.select_facts(
+                    [_fact_seed(type_expression) for _, type_expression, _ in batch]
+                )
+                steps = self._forward_steps_per_seed * len(seeds)
+                self._handler.forward_chain(seeds, steps=steps)
+                forward_seeds += len(seeds)
+                forward_steps += steps
 
         return {
             "statements_added": len(additions),
             "statements_removed": 0,
             "forward_seed_facts": forward_seeds,
             "forward_steps": forward_steps,
+        }
+
+    _shortfall_re = re.compile(
+        r"\(ShortfallMarginal\s+[^()\s]+\s+[^()\s]+\s+"
+        r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\)"
+    )
+
+    @classmethod
+    def _shortfall_probability(cls, proofs) -> float | None:
+        for proof in proofs or ():
+            match = cls._shortfall_re.search(str(proof))
+            if match is not None:
+                probability = finite_probability(match.group(1))
+                if probability is not None:
+                    return probability
+        return None
+
+    def condition_shortfalls(self, events, budget):
+        queries = marginal_queries(events)
+        shifts = {event_atom(event): int(event["shift"]) for event in events}
+        if not queries or budget <= 0:
+            return {}, {
+                "shortfall_queries": len(queries),
+                "shortfall_statements_added": 0,
+                "shortfall_engine_steps": None,
+            }
+        if self._handler is None:
+            self._handler = self._new_handler()
+        try:
+            counters = self._reconcile(
+                generate_shortfall_statements(events), forward_facts=False
+            )
+        except Exception:
+            self._handler = None
+            self._atoms_by_name.clear()
+            raise
+        marginals: dict[int, dict[str, float]] = {}
+        for tag, query in queries:
+            event_name, unit = tag.split("|", 1)
+            proofs = self._handler.query(
+                f"(: $prf {query} $tv)", steps=budget, timeout_sec=0
+            )
+            probability = self._shortfall_probability(proofs)
+            if probability is not None:
+                marginals.setdefault(shifts[event_name], {})[unit] = probability
+        return marginals, {
+            "shortfall_queries": len(queries),
+            "shortfall_marginal_queries": len(queries),
+            "shortfall_statements_added": counters["statements_added"],
+            "shortfall_engine_steps": None,
+            "shortfall_supported": True,
         }
 
     def infer(self, history, incidents, budget, statements):

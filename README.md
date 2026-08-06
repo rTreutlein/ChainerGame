@@ -1,4 +1,103 @@
-# StationOps: BaseRateTriage
+# StationOps
+
+StationOps now has two complementary surfaces:
+
+- **StationOps-v2** is a hidden-state, multi-shift maintenance simulation for
+  humans and reasoners. It has a browser dashboard, diagnostic and repair
+  actions, scarce credits and parts, production consequences, and a maintenance
+  record containing only facts that were actually discovered.
+- **BaseRateTriage-v0/v1** remain deterministic conformance benchmarks for
+  isolating base-rate, inversion, and incremental-KB behavior.
+
+## Play the station simulation
+
+Start the local dashboard from the repository root:
+
+```sh
+python -m pip install -e .
+stationops game
+```
+
+Then open <http://127.0.0.1:8765>. The server binds only to localhost by
+default. A source-tree run without installation is also supported:
+
+```sh
+PYTHONPATH=src python -m stationops.cli game
+```
+
+Each shift shows only the current modules, their cohort/manufacturer, pressure
+sensor state, criticality, and production value at risk. That last value is a
+knowable impact—the production lost if the module leaks—not a disclosed failure
+probability. The dashboard does not reveal
+the simulator's hidden fault state or a calculated posterior. Inspections
+consume credits and diagnostic slots. Repairs consume credits, repair slots,
+and seal kits. Committing a shift applies maintenance decisions and production
+losses. Inspection or repair can add a confirmed case to the compact maintenance
+log, while an undiagnosed production failure reports only the aggregate loss,
+does not identify the responsible module, and does not become labeled evidence.
+An unrepaired leak persists into later shifts; a diagnosed leak remains visibly
+known until it is repaired.
+
+The default episode lasts five shifts. Credits, parts, production, score, and
+learned maintenance evidence carry through the episode. Useful controls are:
+
+```sh
+stationops game --seed 9 --shifts 8 --modules 12
+stationops game --diagnostic-slots 1 --repair-slots 1 --credits 20
+```
+
+## Test reasoners in the same simulation
+
+Automated runs use the exact same `GameSession`, hidden outcomes, resource
+rules, and learning boundary as the browser game:
+
+```sh
+stationops run --benchmark v2 --backend reference --budget 100
+stationops run --benchmark v2 --backend mm2 --budget 100
+stationops run --benchmark v2 --backend pettachainer --budget 10
+stationops sweep --benchmark v2 --backend reference --budgets 0,1,10,100
+```
+
+The standard controller queries every visible incident with the same budget.
+It combines each chainer's returned belief with public evidence: time since a
+module was last inspected or serviced and exact aggregate production shortfalls.
+When a shortfall can be produced by several combinations of module impacts, the
+controller conditions the chainer probabilities over those combinations rather
+than reading hidden fault identities. It allocates diagnostics by expected value
+of information, so inspection order can differ across reasoners. Confirmed
+inspection results override uncertain beliefs, and the fixed repair allocator
+chooses positive-value repairs subject to the same credits, slots, and kits as a
+human player.
+
+PeTTaChainer performs this conditioning with `WeightedSubsetPosteriorDP`, which
+merges configurations by reachable production loss into reusable prefix and
+postfix tables rather than enumerating fault sets.
+`WeightedSubsetPosteriorMarginal` projects a module probability from those
+tables for a diagnostic decision. StationOps sends the same rules and queries
+to MM2, but the current MM2 native `Compute` implementation does not yet provide
+those two operators; its round counters therefore report
+`shortfall_supported: false` instead of silently substituting the Python
+reference result.
+
+The self-contained MeTTa experiment `examples/shortfall_foldall_vs_dp.metta`
+compares an exhaustive `FoldAll` over complete explanations with an ordinary-rule
+sparse DP chain, including fresh-query search-budget probes and partial
+best-first explanation results:
+
+```sh
+petta examples/shortfall_foldall_vs_dp.metta \
+  | rg 'ExactResult|BudgetProbe|ExplanationBudgetProbe|should'
+```
+
+Each JSON result reports per-shift visible state, returned beliefs, coverage,
+absolute error against the exact empirical reference, Brier score, log loss,
+diagnostic priorities, raw and public-evidence-adjusted beliefs, chosen and
+oracle repairs, decision regret, actual production outcomes, backend counters,
+and aggregate station score. A zero-budget reasoner receives no inferred
+beliefs and therefore cannot schedule a diagnostic or repair unless a fault was
+already established in an earlier shift.
+
+## Base-rate conformance benchmarks
 
 A deterministic, abstract, turn-based benchmark for cohort-conditioned
 maintenance triage. Two cohorts have different empirical seal-leak rates but
@@ -6,7 +105,7 @@ share the same pressure-alarm sensor model. The game asks a reasoner for every
 candidate `PatchPaysOff` goal at the same budget, then independently evaluates
 expected utility and chooses the best feasible repairs.
 
-## Install and run
+### Install and run
 
 Python 3.11+ and the standard library are sufficient for the reference backend:
 
@@ -54,7 +153,7 @@ JSON-compatible per-round and aggregate schema with `backend` set to `human`.
 EOF/quit scores the current round as all-defer, reveals it, and returns a
 partial result with `status` set to `quit`.
 
-## Semantics
+### Semantics
 
 Each cohort has a coherent, explicit labeled contingency table: both positive
 facts and `(Not ...)` facts are emitted, while absence means unknown. The exact
@@ -73,7 +172,7 @@ The shared sensor and payoff rules are emitted once per concrete cohort so
 inverse population folds remain cohort-conditioned instead of pooling histories
 across cohorts or registering overlapping open cache interests.
 
-## Reasoner backends
+### Reasoner backends
 
 MM2-Chainer is not vendored or located by a machine-specific default. Build its
 Python binding under Python 3.13 as documented upstream, then make the installed

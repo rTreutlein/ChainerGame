@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "stationops"
 version = "0.1.0"
-description = "BaseRateTriage-v0 probabilistic maintenance benchmark"
+description = "StationOps hidden-state maintenance simulation and reasoning benchmarks"
 requires-python = ">=3.11"
 
 [project.scripts]

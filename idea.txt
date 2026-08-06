@@ -1,0 +1,726 @@
+# Recommendation: an abstract space-station maintenance and production game
+
+Build **a turn-based station operations game centered on probabilistic maintenance triage**, not a conventional factory builder.
+
+A pure factory builder would mainly test deterministic planning, resource-flow optimization, and perhaps spatial layout. Those are not currently the distinctive strengths of PeTTaChainer or mm2-chainer. A station/refinery setting can retain the factory flavor—production contracts, power allocation, spare parts, throughput—but make the decisive problem:
+
+> Given historical fleet data, noisy observations, uncertain causal rules, limited repair resources, and a finite inference budget, which components should the agent inspect, repair, replace, or leave alone?
+
+That directly exercises:
+
+* base-rate estimation and inversion;
+* uncertain multi-step inference;
+* evidence revision;
+* goal-directed search through a large mostly irrelevant KB;
+* reuse through materialization or forward chaining;
+* allocation of inference effort across competing decisions;
+* anytime decision quality under a strict compute budget.
+
+PeTTaChainer already has the nucleus of this in its base-rate acceptance game: empirical observations establish priors, an observed signal is inverted, and a downstream action is accepted using a payoff-derived threshold. But the current game consists of independent one-shot choices and scores actions almost entirely from returned strength.
+
+I would extend that idea rather than invent an unrelated game.
+
+---
+
+# Game concept: **StationOps**
+
+The player operates a deep-space refinery and life-support station. The station contains abstract modules:
+
+* coolant pumps;
+* power converters;
+* oxygen scrubbers;
+* ore processors;
+* thermal loops;
+* control units.
+
+There is no map. Modules form a dependency graph, but position is irrelevant.
+
+Each module belongs to a **cohort**, such as:
+
+```text
+old / Orion-manufactured / high-load coolant pump
+new / Vesta-manufactured / low-load oxygen scrubber
+```
+
+Cohorts have different fault base rates. Historical resolved cases provide the data from which those rates must be estimated.
+
+## One shift
+
+Each shift has three phases.
+
+### 1. Observation
+
+The simulator creates several incidents:
+
+```text
+Pump P17:
+  cohort: old-Orion-high-load
+  pressure alarm: positive
+  vibration alarm: negative
+  thermal sensor: unavailable
+  production value at risk: 100
+```
+
+The actual fault is hidden.
+
+### 2. Decision
+
+The agent has limited resources:
+
+```text
+2 diagnostic tests
+4 maintenance actions
+3 seal kits
+40 credits
+```
+
+Available actions might be:
+
+```text
+inspect-seal P17
+patch-seal P17
+replace-bearing P17
+recalibrate-sensor P17
+replace-module P17
+defer P17
+```
+
+The standard benchmark policy uses the chainer's beliefs to calculate expected utility and allocate the available actions. An advanced inference controller may additionally decide:
+
+* which incidents to query first;
+* which hypotheses deserve more search;
+* when the result is already decisive;
+* which recurring results to materialize;
+* whether to forward-chain newly observed facts;
+* when another proof is unlikely to change the chosen action.
+
+### 3. Resolution
+
+The simulator applies the actions, resolves failures and production losses, reveals some ground truth, and adds resolved cases to the historical KB.
+
+Time progression remains in the simulator. The logic engine sees a sequence of static snapshots, so the first version does not require a temporal logic.
+
+---
+
+# The central base-rate test
+
+Use the same sensor behavior for two cohorts but sharply different fault rates.
+
+Suppose:
+
+```text
+P(seal leak | old cohort) = 0.05
+P(seal leak | new cohort) = 0.005
+
+P(pressure alarm | seal leak) = 0.90
+P(pressure alarm | no seal leak) = 0.12
+```
+
+After a positive alarm:
+
+[
+P(\text{leak}\mid\text{alarm, old})
+===================================
+
+\frac{0.90\cdot0.05}
+{0.90\cdot0.05+0.12\cdot0.95}
+\approx 0.283
+]
+
+[
+P(\text{leak}\mid\text{alarm, new})
+===================================
+
+\frac{0.90\cdot0.005}
+{0.90\cdot0.005+0.12\cdot0.995}
+\approx 0.036
+]
+
+Now give the seal repair:
+
+```text
+avoided loss when needed:       100
+unnecessary-repair penalty:      10
+action cost:                       5
+```
+
+Repair is worthwhile when:
+
+[
+p\cdot100-(1-p)\cdot10-5 > 0
+]
+
+or:
+
+[
+p > \frac{10+5}{100+10}\approx0.136
+]
+
+The correct decisions are therefore:
+
+```text
+old cohort + alarm: repair
+new cohort + alarm: do not repair
+```
+
+A reasoner that ignores base rates treats the two incidents similarly and necessarily loses value. This should be the first conformance fixture.
+
+---
+
+# Logic representation
+
+Keep the core benchmark inside the restricted common subset supported by both systems:
+
+* ordinary predicates;
+* `STV`;
+* `CTV`;
+* `Implication`;
+* `Premises`;
+* `Conclusions`;
+* initially only simple conjunction and negation.
+
+Avoid `Inheritance`, custom computations, distributions, and explicit temporal terms in the main track. Those can be optional feature tracks later. mm2-chainer already supports the relevant common forms, queries, forward chaining, and base-rate configuration.
+
+## Historical cases
+
+Use explicit positive **and negative** labeled facts. Missing facts must mean unknown, not false.
+
+```metta
+(: hist-leak-001
+   (SealLeak old-orion-pump history-001)
+   (STV 1.0 1.0))
+
+(: hist-leak-002
+   (SealLeak old-orion-pump history-002)
+   (STV 0.0 1.0))
+
+(: hist-pressure-001
+   (PressureAlarm old-orion-pump history-001)
+   (STV 1.0 1.0))
+```
+
+Including the cohort in every relevant predicate is important:
+
+```metta
+(SealLeak $cohort $unit)
+(PressureAlarm $cohort $unit)
+```
+
+Otherwise the antecedent may have a cohort-specific prior while the conclusion's base rate is estimated globally.
+
+## Causal sensor rule
+
+```metta
+(: leak-causes-pressure-alarm
+   (Implication
+      (Premises
+         (SealLeak $cohort $unit))
+      (Conclusions
+         (PressureAlarm $cohort $unit)))
+   (CTV
+      (STV 0.90 0.99)
+      (STV 0.12 0.99)))
+```
+
+The two CTV branches represent the positive rate with and without the fault.
+
+## Current observation
+
+```metta
+(: current-pressure-alarm
+   (PressureAlarm old-orion-pump pump-17)
+   (STV 1.0 1.0))
+```
+
+The alarm fact should normally be crisp: the system knows that the alarm fired. Its sensitivity and false-positive rate belong in the causal rule, avoiding double-counting uncertainty.
+
+## Diagnostic query
+
+```metta
+(: $proof
+   (SealLeak old-orion-pump pump-17)
+   $tv)
+```
+
+## Downstream action query
+
+To preserve the end-to-end structure of the existing acceptance game, add another layer:
+
+```metta
+(: leak-makes-patch-pay
+   (Implication
+      (Premises
+         (SealLeak $cohort $unit))
+      (Conclusions
+         (PatchPaysOff $cohort $unit)))
+   (CTV
+      (STV 0.98 0.99)
+      (STV 0.02 0.99)))
+```
+
+Then the actual agent query can be:
+
+```metta
+(: $proof
+   (PatchPaysOff old-orion-pump pump-17)
+   $tv)
+```
+
+That forces the proof to traverse:
+
+```text
+historical base rates
+        ↓
+inversion of fault → symptom
+        ↓
+current fault belief
+        ↓
+fault → action payoff
+        ↓
+station decision
+```
+
+This is almost exactly the existing acceptance-game kernel, but now embedded in a scalable sequential decision problem.
+
+---
+
+# What should make it a real game rather than a classification benchmark
+
+## Multiple simultaneous incidents
+
+A shift should contain many incidents, while the agent can repair only a few. The result is not merely “was each prediction correct?” but “did the agent spend its scarce resources on the right cases?”
+
+For incident (i) and action (a):
+
+[
+EU(i,a)
+=======
+
+## p_{i,a} B_{i,a}
+
+## (1-p_{i,a})C^\text{false}_{i,a}
+
+C^\text{action}_{i,a}
+]
+
+The standard controller chooses the highest-value compatible actions subject to repair slots, spare inventory, and credits.
+
+This controller should remain fixed when comparing the two chainers. It is deliberately small so the benchmark measures inference rather than planning implementation.
+
+## Production and criticality
+
+Modules contribute to:
+
+* life support;
+* energy generation;
+* refinery throughput;
+* contract completion.
+
+A coolant pump feeding life support might have a loss of 500, while an ore grinder has a loss of 30. This gives an inference controller a reason to devote more computation to some goals than others.
+
+Initially, encode this as externally supplied action payoffs. Later, generate an abstract dependency DAG:
+
+```text
+pump failure
+  → cooling degradation
+    → reactor derating
+      → contract failure
+```
+
+That raises proof depth without introducing spatial reasoning.
+
+## Diagnostics
+
+A diagnostic action reveals another noisy fact:
+
+```text
+inspect-seal P17
+  → returns seal-residue-positive or seal-residue-negative
+```
+
+Tests cost money or consume a diagnostic slot. The exact oracle can calculate value of information:
+
+[
+VOI(T)
+======
+
+## \sum_r P(r\mid e)\max_a EU(a\mid e,r)
+
+## \max_a EU(a\mid e)
+
+C_T
+]
+
+This creates a meaningful role for uncertainty and confidence. I would add diagnostics only after the basic repair game works, because value-of-information policies introduce another layer that could obscure initial base-rate failures.
+
+---
+
+# Benchmark tracks
+
+Use one generator with progressively harder tracks rather than separate unrelated benchmarks.
+
+| Track                            | Main question                                                                                          |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| **0. Conformance**               | Do both implementations produce the expected base rate, posterior, and action on small coherent cases? |
+| **1. Base-rate diagnosis**       | Does a positive observation get interpreted differently in rare and common cohorts?                    |
+| **2. Causal depth and evidence** | Can the system follow longer chains and combine multiple observations?                                 |
+| **3. Station triage**            | Does correct inference produce high expected utility under limited repair resources?                   |
+| **4. Continual operation**       | Are newly resolved cases incorporated correctly and efficiently without rebuilding the KB?             |
+| **5. Inference control**         | How quickly does the chosen action approach the oracle action as the inference budget grows?           |
+| **6. Optional extensions**       | Pattern mining, numeric distributions, taxonomy/inheritance, and explicit temporal rules.              |
+
+## Independent scale parameters
+
+Do not define only `small`, `medium`, and `large`. Keep the sources of difficulty independently adjustable:
+
+| Parameter                         | What it tests                               |
+| --------------------------------- | ------------------------------------------- |
+| historical cases per cohort       | base-rate aggregation scale                 |
+| number of cohorts                 | number of independently cached priors       |
+| fault types                       | candidate hypotheses and rule indexing      |
+| sensors per fault                 | alternative proof paths and evidence fusion |
+| causal depth                      | backward search depth                       |
+| distractor rules per useful rule  | scheduler and premise prefiltering          |
+| concurrent incidents              | multi-goal control and batching             |
+| independent proofs per conclusion | revision and marginal-proof scheduling      |
+| shifts                            | incremental updates and cleanup             |
+| query budget                      | anytime behavior                            |
+| distribution shift                | adaptation of base rates                    |
+
+Useful initial sweeps would be logarithmic:
+
+```text
+history per cohort: 10, 100, 1,000, 10,000
+causal depth:        1, 2, 4, 8, 16
+distractor ratio:    0, 10, 100
+incidents:           1, 10, 100
+```
+
+The generator should be capable of going much larger without changing the rules of the game.
+
+---
+
+# Ground truth and verifiability
+
+The simulator must be independent of the PLN formulas.
+
+For the first track, use a conventional binary generative model with known priors, sensitivities, and false-positive rates. The oracle computes exact Bayes posteriors directly.
+
+For conformance fixtures, generate **coherent contingency tables**, not independently rounded marginal sequences. Given (H) historical cases, construct counts for:
+
+```text
+fault and alarm
+fault and no alarm
+no fault and alarm
+no fault and no alarm
+```
+
+from the same underlying probabilities. This prevents accidental inconsistencies between the supplied CTV and the empirical base rates.
+
+For game runs, use fixed seeded samples. Record both:
+
+* the empirical oracle, based on the exact history shown to the reasoner;
+* the population oracle, based on the hidden generator parameters.
+
+That separates inference error from ordinary finite-sample estimation error.
+
+For action comparison, primary scoring should use expected utility from the hidden model. A secondary “playthrough score” can use pre-sampled outcomes for human readability. Expected utility is much less noisy.
+
+---
+
+# Metrics
+
+Do not reduce the benchmark to one score initially.
+
+## Decision metrics
+
+**Expected utility** is the main game result.
+
+Also report normalized regret:
+
+[
+\text{regret}
+=============
+
+EU(\text{oracle action})-EU(\text{chosen action})
+]
+
+A normalized station score can compare against `do nothing`:
+
+[
+\frac{EU(\text{agent})-EU(\text{do nothing})}
+{EU(\text{oracle})-EU(\text{do nothing})}
+]
+
+## Probability metrics
+
+For every queried node:
+
+* absolute error against the oracle posterior;
+* Brier score;
+* log loss with sensible clipping;
+* base-rate error before current observations are applied.
+
+Score strength and confidence separately. Strength has a straightforward probability interpretation in this game. Confidence should initially be reported diagnostically—error versus confidence, evidence-count curves, and ranking reliability—rather than forcing it into a possibly incorrect probabilistic interpretation.
+
+The current runtime explicitly maintains base rates by folding matching facts and attaches confidence based on accumulated evidence, so history size and confidence behavior are natural benchmark dimensions.
+
+## Systems metrics
+
+Record:
+
+```text
+wall time
+requested query steps
+unifications
+writes
+transitions
+peak memory
+agenda maximum
+rules considered
+proofs completed
+base-rate cache hits and misses
+base-rate fold contributions
+materialized-result reuse
+```
+
+mm2 already records steps, unifications, writes, transitions, and elapsed nanoseconds internally.
+
+Requested `steps` should remain a behavioral compatibility metric, not the sole cross-engine performance unit. mm2 internally maps legacy query steps into groups of runtime executions.
+
+## Anytime metric
+
+At budgets:
+
+```text
+1, 2, 4, 8, 16, 32, ...
+```
+
+record the currently chosen action and its oracle regret.
+
+The central inference-control graph should be:
+
+```text
+decision regret
+      versus
+native operations or wall time
+```
+
+Useful summaries are:
+
+* operations until the first profitable action is found;
+* operations until regret is below a threshold;
+* area under regret versus log-compute;
+* final regret at a fixed deadline.
+
+This measures whether a scheduler finds **decision-relevant** proofs early, not merely whether it eventually finds every proof.
+
+PeTTaChainer already has confidence-based expected scoring, marginal-proof scoring, and bounded agenda pruning, so this game can turn those mechanisms into an externally meaningful quality curve.
+
+---
+
+# Benchmark architecture
+
+A separate repository is preferable, for example:
+
+```text
+stationops-benchmark/
+  stationops/
+    simulator.py
+    generator.py
+    oracle.py
+    policy.py
+    scoring.py
+  backends/
+    base.py
+    petta.py
+    mm2.py
+  agents/
+    random.py
+    base_rate_only.py
+    exhaustive.py
+    budgeted.py
+    human.py
+    llm.py
+  fixtures/
+  configs/
+  tests/
+```
+
+A separate repository prevents either implementation from defining the benchmark semantics.
+
+## Common backend interface
+
+Normalize both engines behind something like:
+
+```python
+class ReasonerBackend(Protocol):
+    def reset(self) -> None: ...
+    def add_many(self, statements: list[str]) -> None: ...
+    def remove(self, statement_names: list[str]) -> None: ...
+    def query(self, goal: str, steps: int) -> Belief: ...
+    def query_many(self, goals: list[str], steps: int) -> list[Belief]: ...
+    def materialize(self, goal: str, steps: int) -> Belief: ...
+    def forward(self, seeds: list[str], steps: int) -> None: ...
+    def cached_base_rate(self, pattern: str) -> Belief | None: ...
+    def stats(self) -> ExecutionStats: ...
+```
+
+Both implementations already expose most of this surface. PeTTaChainer has add, named removal, backward query, fact selection, and forward chaining.  mm2's Rust and Python APIs add structured results, `query_many`, materialization, forward chaining, base-rate access, and universe-size configuration.
+
+The first small API work should therefore be:
+
+1. expose mm2's existing `last_execution_stats` through its Python binding;
+2. add equivalent semantic counters to PeTTaChainer;
+3. add a convenient `cached_base_rate` method to the PeTTa Python wrapper;
+4. normalize returned truth values and proof metadata.
+
+Do not score exact proof strings. The two implementations can normalize proofs differently while reaching equivalent beliefs, and mm2's documentation already treats some proof-tree differences as presentation-level differences.
+
+## Python first, native performance second
+
+A Python orchestrator is the simplest common layer because both projects already have Python interfaces. The simulator and oracle should not run inside the timed query section.
+
+For mm2-specific maximum-throughput measurements, add a native Rust runner later using exactly the same generated episode files.
+
+---
+
+# Standard and advanced agent modes
+
+## Standard policy
+
+The fixed standard policy should:
+
+1. query every candidate `ActionPaysOff` goal with the same configured budget;
+2. convert returned strength into expected value;
+3. choose the best feasible set of actions;
+4. use no engine-specific introspection.
+
+This isolates the reasoner.
+
+## Inference-control policy
+
+The advanced policy may control:
+
+* query ordering;
+* budget allocation per incident;
+* early stopping;
+* batching;
+* materialization;
+* forward seeding;
+* reuse of recurring subgoals;
+* base-rate refresh timing.
+
+This is where future scheduler experiments should compete.
+
+A particularly valuable workload contains:
+
+* obvious high-value incidents that should be solved immediately;
+* high-stakes cases close to a decision boundary;
+* low-stakes cases with deep proofs;
+* many tempting but irrelevant high-confidence branches;
+* repeated subgoals shared across incidents.
+
+The best controller should spend computation where another proof is most likely to change station utility.
+
+---
+
+# Continual-learning track
+
+At the end of each shift, resolved incidents become historical evidence:
+
+```metta
+(: resolved-leak-shift17-p17
+   (SealLeak old-orion-pump resolved-17-p17)
+   (STV 1.0 1.0))
+```
+
+The next shift should reuse the same KB.
+
+This directly tests:
+
+* base-rate cache invalidation;
+* incremental sufficient statistics;
+* replacement of revised observations;
+* cleanup of temporary query state;
+* materialized proof reuse;
+* performance after many shifts.
+
+Both systems support named statement removal, making transient current-state observations practical without resetting the whole engine.
+
+Also include a distribution-shift mode:
+
+```text
+shifts 1–50:  seal leak rate = 2%
+shifts 51–100: seal leak rate = 12%
+```
+
+Report both adaptation speed and cumulative utility. This will reveal whether old evidence overwhelms current conditions and whether a windowed or hierarchical base-rate mechanism is eventually needed.
+
+---
+
+# How benchmark failures should guide future work
+
+| Result                                               | Likely focus                                                    |
+| ---------------------------------------------------- | --------------------------------------------------------------- |
+| Wrong base rates with a large query budget           | fold semantics, cohort conditioning, explicit-negative handling |
+| Correct priors but wrong posteriors                  | inversion formulas or inconsistent causal encoding              |
+| Correct unlimited result but poor low-budget utility | scheduler and inference-control policy                          |
+| Performance collapses with irrelevant rules          | indexing, specialization, premise prefiltering                  |
+| Repeated incidents are unnecessarily expensive       | base-rate caching, materialization, shared subgoals             |
+| New resolved cases require near-full recomputation   | incremental sufficient statistics                               |
+| Multiple sensors worsen calibration                  | evidence dependence and revision semantics                      |
+| Single queries are fast but many incidents are slow  | batching and fair multi-goal scheduling                         |
+| Utility is poor despite accurate beliefs             | action/payoff controller rather than chainer                    |
+| Long runs accumulate memory or stale answers         | query cleanup and retraction correctness                        |
+
+This separation is one of the main advantages over a generic synthetic proof benchmark: it says **why** an optimization matters.
+
+---
+
+# Recommended first vertical slice
+
+Implement only this before adding a full station economy:
+
+```text
+2 cohorts
+1 binary fault
+1 binary sensor
+1 fault-specific repair
+1 defer action
+explicit labeled history
+100 current incidents
+limited repair slots
+exact Bayesian oracle
+PeTTa and mm2 adapters
+fixed query-budget sweep
+JSONL result log
+```
+
+Required assertions:
+
+1. Each engine's computed cohort base rate matches the empirical history.
+2. The same alarm produces different posteriors in the two cohorts.
+3. The action threshold lies between those posteriors.
+4. The correct high-budget policy repairs one cohort and defers the other.
+5. Adding irrelevant facts and rules does not change the high-budget result.
+6. Increasing the budget monotonically approaches the high-budget decision quality, apart from explicitly documented anytime non-monotonicity.
+7. Adding one resolved case updates the relevant cohort but not unrelated cohorts.
+8. PeTTa and mm2 decisions agree even when their proof structures differ.
+
+Then add, in order:
+
+```text
+multiple fault/action pairs
+multiple incidents and repair allocation
+causal depth
+distractor rules
+repeated shifts and cache reuse
+multiple sensors and evidence overlap
+diagnostic actions
+dependency cascades
+numeric distributions
+explicit temporal reasoning
+```
+
+The immediate implementation target should therefore be **“BaseRateTriage-v0”**, built by generalizing the existing acceptance-game model into two cohorts, many current decisions, and a shared cross-engine oracle. That produces a useful correctness benchmark almost immediately, while every subsequent station mechanic adds a controlled dimension of inference difficulty rather than unrelated game complexity.
