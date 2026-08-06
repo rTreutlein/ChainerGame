@@ -3,6 +3,11 @@ import os
 import unittest
 from unittest.mock import patch
 
+from stationops.actions import (
+    ActionCandidate,
+    generate_action_statements,
+    reference_action_proposals,
+)
 from stationops.backends import ReferenceBackend
 from stationops.game import (
     GameConfig,
@@ -11,6 +16,7 @@ from stationops.game import (
     decision_beliefs,
     diagnostic_plan,
     new_fault_probability,
+    run_action_loop,
     run_game_episode,
     sensor_rates,
 )
@@ -30,6 +36,68 @@ def without_timing(value):
 
 
 class GameSessionTests(unittest.TestCase):
+    def test_action_rules_distinguish_observation_and_intervention_values(self):
+        candidates = [ActionCandidate("shift-01-M01", 0.5, 40)]
+        proposals = reference_action_proposals(
+            "decision-s01-step00",
+            candidates,
+            inspection_cost=2,
+            repair_cost=5,
+            unnecessary_repair_penalty=8,
+        )
+        values = {proposal.action: proposal.utility for proposal in proposals}
+        self.assertEqual(values, {"Repair": 11.0, "Inspect": 4.5})
+
+        source = generate_action_statements(
+            "decision-s01-step00",
+            candidates,
+            inspection_cost=2,
+            repair_cost=5,
+            unnecessary_repair_penalty=8,
+        )
+        self.assertIn("(RepairValue $context $incident $utility)", source)
+        self.assertIn("(InspectionValue $context $incident $utility)", source)
+        self.assertIn(
+            "(ActionProposal $context (Repair $incident) $utility $confidence)",
+            source,
+        )
+        self.assertIn(
+            "(ActionProposal $context (Inspect $incident) $utility $confidence)",
+            source,
+        )
+
+    def test_action_loop_requeries_after_observation_before_repair(self):
+        config = GameConfig(
+            shifts=1,
+            modules=1,
+            diagnostic_slots=1,
+            repair_slots=1,
+        )
+        session = GameSession(config)
+        incident = session._incidents[0]
+        session._module_faults[incident.module.id] = True
+        session._faults[incident.id] = True
+        backend = ReferenceBackend(session.logic_config)
+
+        inspections, _, repairs, counters, trace, effective = run_action_loop(
+            backend, session, {incident.id: 0.5}, 1
+        )
+
+        self.assertEqual(inspections, {incident.id: "seal leak confirmed"})
+        self.assertEqual(effective[incident.id], 1.0)
+        self.assertEqual(repairs, [incident.id])
+        self.assertEqual(counters["action_queries"], 2)
+        self.assertEqual(
+            [row["context"] for row in trace],
+            ["decision-s01-step00", "decision-s01-step01"],
+        )
+        final_repair = next(
+            row
+            for row in trace[-1]["proposals"]
+            if row["action"] == "Repair" and row["incident_id"] == incident.id
+        )
+        self.assertEqual(final_repair["utility"], incident.module.value_at_risk - 5)
+
     def test_hidden_rates_are_shared_by_visible_equipment_features(self):
         session = GameSession(GameConfig(modules=10))
         old_rates = {

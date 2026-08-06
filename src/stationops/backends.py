@@ -13,6 +13,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from .actions import (
+    ActionCandidate,
+    ActionProposal,
+    generate_action_statements,
+    reference_action_proposals,
+)
 from .config import Config
 from .models import HistoryCase, Incident
 from .oracle import empirical_feature_priors, posterior
@@ -111,12 +117,68 @@ def _fact_seed(type_expression: str) -> str:
     return type_expression
 
 
+_number_pattern = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+_action_proposal_re = re.compile(
+    rf"\(ActionProposal\s+([^()\s]+)\s+"
+    rf"\((InspectForLearning|Inspect|Repair)\s+([^()\s]+)\)\s+"
+    rf"({_number_pattern})\s+({_number_pattern})\)"
+)
+
+
+def _term_source(term) -> str:
+    """Render the small public term shape returned by either Python adapter."""
+    if isinstance(term, str):
+        return term
+    if isinstance(term, dict):
+        kind = term.get("kind")
+        value = term.get("value")
+        if kind == "atom":
+            return str(value)
+        if kind == "variable":
+            return f"${value}"
+        if kind == "expression" and isinstance(value, (list, tuple)):
+            return "(" + " ".join(_term_source(item) for item in value) + ")"
+    return str(term)
+
+
+def _action_proposals_from_proofs(proofs) -> list[ActionProposal]:
+    proposals = []
+    for proof in proofs or ():
+        term = proof.get("term") if isinstance(proof, dict) else proof
+        match = _action_proposal_re.search(_term_source(term))
+        if match is None:
+            continue
+        context, action, incident_id, utility, confidence = match.groups()
+        values = (float(utility), float(confidence))
+        if not all(math.isfinite(value) for value in values):
+            continue
+        proposals.append(ActionProposal(
+            context=context,
+            action=action,
+            incident_id=incident_id,
+            utility=values[0],
+            confidence=values[1],
+        ))
+    return proposals
+
+
 class ReasonerBackend(Protocol):
     name: str
 
     def infer(
         self, history: list[HistoryCase], incidents: list[Incident], budget: int, statements: str
     ) -> tuple[dict[str, float], dict[str, object]]: ...
+
+    def propose_actions(
+        self,
+        context: str,
+        candidates: list[ActionCandidate],
+        budget: int,
+        *,
+        inspection_cost: float,
+        repair_cost: float,
+        unnecessary_repair_penalty: float,
+    ) -> tuple[list[ActionProposal], dict[str, object]]: ...
 
 
 @dataclass
@@ -157,6 +219,30 @@ class ReferenceBackend:
             },
         )
 
+    def propose_actions(
+        self,
+        context,
+        candidates,
+        budget,
+        *,
+        inspection_cost,
+        repair_cost,
+        unnecessary_repair_penalty,
+    ):
+        proposals = reference_action_proposals(
+            context,
+            candidates,
+            inspection_cost=inspection_cost,
+            repair_cost=repair_cost,
+            unnecessary_repair_penalty=unnecessary_repair_penalty,
+        )
+        return proposals, {
+            "action_queries": 1 if candidates else 0,
+            "action_proposals": len(proposals),
+            "action_statements_added": 0,
+            "action_engine_steps": None,
+        }
+
 
 class MM2Backend:
     """Persistent adapter for MM2's incremental named-statement API."""
@@ -174,6 +260,9 @@ class MM2Backend:
         self.config = config
         self.sensor_knowledge = sensor_knowledge or {}
         self._engine = None
+        self._action_engine = None
+        self._action_atoms_by_name: dict[str, str] = {}
+        self._action_context: str | None = None
         self._atoms_by_name: dict[str, str] = {}
         self._base_rates: dict[str, float] = {}
         self._shortfall_supported: bool | None = None
@@ -435,6 +524,83 @@ class MM2Backend:
         })
         return beliefs, counters
 
+    def propose_actions(
+        self,
+        context,
+        candidates,
+        budget,
+        *,
+        inspection_cost,
+        repair_cost,
+        unnecessary_repair_penalty,
+    ):
+        if not candidates or budget <= 0:
+            return [], {
+                "action_queries": 1 if candidates else 0,
+                "action_proposals": 0,
+                "action_statements_added": 0,
+                "action_engine_steps": None,
+            }
+        if self._action_engine is None or self._action_context != context:
+            self._action_engine = self.module.Engine()
+            self._action_atoms_by_name.clear()
+            self._action_context = context
+        statements = generate_action_statements(
+            context,
+            candidates,
+            inspection_cost=inspection_cost,
+            repair_cost=repair_cost,
+            unnecessary_repair_penalty=unnecessary_repair_penalty,
+        )
+        entries = []
+        for atom in (line.strip() for line in statements.splitlines() if line.strip()):
+            name, type_expression = _statement_parts(atom)
+            previous = self._action_atoms_by_name.get(name)
+            if previous is not None and previous != atom:
+                raise ValueError(f"cannot replace action statement: {name}")
+            if previous is None:
+                entries.append((name, type_expression, atom))
+        try:
+            if entries:
+                self._action_engine.add_many(
+                    "stationops-actions",
+                    "\n".join(atom for _, _, atom in entries),
+                )
+                self._action_atoms_by_name.update(
+                    (name, atom) for name, _, atom in entries
+                )
+            facts = [entry for entry in entries if not _is_rule(entry[1])]
+            seeds = [_fact_seed(type_expression) for _, type_expression, _ in facts]
+            forward_steps = len(seeds) * self._forward_steps_per_seed
+            if seeds:
+                self._action_engine.forward_chain(
+                    "stationops-actions", seeds, forward_steps
+                )
+        except Exception:
+            self._action_engine = None
+            self._action_atoms_by_name.clear()
+            self._action_context = None
+            raise
+        query = f"(ActionProposal {context} $action $utility $confidence)"
+        results = self._action_engine.query_many(
+            "stationops-actions", [(context, query)], budget
+        )
+        proposals = []
+        for _, proofs in results:
+            proposals.extend(_action_proposals_from_proofs(proofs))
+        execution_stats = _engine_execution_stats(self._action_engine)
+        return proposals, {
+            "action_queries": 1,
+            "action_proposals": len(proposals),
+            "action_statements_added": len(entries),
+            "action_forward_seed_facts": len(seeds),
+            "action_forward_steps": forward_steps,
+            "action_engine_steps": (
+                execution_stats.get("steps") if execution_stats else None
+            ),
+            "action_engine_stats": execution_stats,
+        }
+
 
 class PeTTaChainerBackend:
     """Persistent StationOps adapter for PeTTaChainer's supported Python API.
@@ -463,6 +629,9 @@ class PeTTaChainerBackend:
         self.config = config
         self.sensor_knowledge = sensor_knowledge or {}
         self._handler = None
+        self._action_handler = None
+        self._action_atoms_by_name: dict[str, str] = {}
+        self._action_context: str | None = None
         self._atoms_by_name: dict[str, str] = {}
         self._shortfall_cache: dict[str, float] = {}
         if module is not None:
@@ -686,3 +855,86 @@ class PeTTaChainerBackend:
             "engine_steps": None,
         })
         return beliefs, counters
+
+    def propose_actions(
+        self,
+        context,
+        candidates,
+        budget,
+        *,
+        inspection_cost,
+        repair_cost,
+        unnecessary_repair_penalty,
+    ):
+        if not candidates or budget <= 0:
+            return [], {
+                "action_queries": 1 if candidates else 0,
+                "action_proposals": 0,
+                "action_statements_added": 0,
+                "action_engine_steps": None,
+            }
+        if self._action_handler is None or self._action_context != context:
+            self._action_handler = self._new_handler()
+            self._action_atoms_by_name.clear()
+            self._action_context = context
+        statements = generate_action_statements(
+            context,
+            candidates,
+            inspection_cost=inspection_cost,
+            repair_cost=repair_cost,
+            unnecessary_repair_penalty=unnecessary_repair_penalty,
+        )
+        entries = []
+        for atom in (line.strip() for line in statements.splitlines() if line.strip()):
+            name, type_expression = _statement_parts(atom)
+            previous = self._action_atoms_by_name.get(name)
+            if previous is not None and previous != atom:
+                raise ValueError(f"cannot replace action statement: {name}")
+            if previous is None:
+                entries.append((name, type_expression, atom))
+        rules = [entry for entry in entries if _is_rule(entry[1])]
+        facts = [entry for entry in entries if not _is_rule(entry[1])]
+        try:
+            if rules:
+                self._action_handler.add_atoms_no_check(
+                    [atom for _, _, atom in rules]
+                )
+                self._action_atoms_by_name.update(
+                    (name, atom) for name, _, atom in rules
+                )
+            forward_seed_facts = 0
+            forward_steps = 0
+            for offset in range(0, len(facts), self._forward_batch_size):
+                batch = facts[offset:offset + self._forward_batch_size]
+                self._action_handler.add_atoms_no_check(
+                    [atom for _, _, atom in batch]
+                )
+                self._action_atoms_by_name.update(
+                    (name, atom) for name, _, atom in batch
+                )
+                seeds = self._action_handler.select_facts(
+                    [_fact_seed(type_expression) for _, type_expression, _ in batch]
+                )
+                steps = self._forward_steps_per_seed * len(seeds)
+                if seeds:
+                    self._action_handler.forward_chain(seeds, steps=steps)
+                forward_seed_facts += len(seeds)
+                forward_steps += steps
+        except Exception:
+            self._action_handler = None
+            self._action_atoms_by_name.clear()
+            self._action_context = None
+            raise
+        query = (
+            f"(: $prf (ActionProposal {context} $action $utility $confidence) $tv)"
+        )
+        proofs = self._action_handler.query(query, steps=budget, timeout_sec=0)
+        proposals = _action_proposals_from_proofs(proofs)
+        return proposals, {
+            "action_queries": 1,
+            "action_proposals": len(proposals),
+            "action_statements_added": len(entries),
+            "action_forward_seed_facts": forward_seed_facts,
+            "action_forward_steps": forward_steps,
+            "action_engine_steps": None,
+        }

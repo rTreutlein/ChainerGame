@@ -12,6 +12,7 @@ import time
 from collections import Counter
 from dataclasses import asdict, dataclass
 
+from .actions import ActionCandidate, ActionProposal, reference_action_proposals
 from .backends import MM2Backend, PeTTaChainerBackend, ReferenceBackend
 from .config import Config
 from .metta import generate_statements
@@ -758,6 +759,240 @@ def diagnostic_plan(
     return selected, priorities
 
 
+def _action_candidates(
+    session: GameSession, beliefs: dict[str, float]
+) -> list[ActionCandidate]:
+    """Build the explicit numeric bridge from diagnosis TVs to action rules."""
+    sample_counts = Counter(
+        (case.cohort, case.equipment_type) for case in session.history
+    )
+    modes = sensor_knowledge(session.config)
+    return [
+        ActionCandidate(
+            incident_id=item.id,
+            probability=(
+                beliefs.get(item.id)
+                if isinstance(beliefs.get(item.id), (int, float))
+                and math.isfinite(beliefs[item.id])
+                else None
+            ),
+            production_at_risk=item.module.value_at_risk,
+            inspection_eligible=(
+                item.id not in session._inspected
+                and item.module.id not in session._known_fault_modules
+            ),
+            learning_samples=(
+                sample_counts[(item.module.cohort, item.module.equipment_type)]
+                if item.id not in session._inspected
+                and item.module.id not in session._known_fault_modules
+                and modes[item.module.equipment_type] in {"positive", "induced"}
+                else None
+            ),
+        )
+        for item in session._incidents
+    ]
+
+
+def _query_action_proposals(
+    backend,
+    session: GameSession,
+    context: str,
+    beliefs: dict[str, float],
+    budget: int,
+) -> tuple[list[ActionProposal], dict[str, object]]:
+    candidates = _action_candidates(session, beliefs)
+    proposer = getattr(backend, "propose_actions", None)
+    arguments = {
+        "inspection_cost": session.config.inspection_cost,
+        "repair_cost": session.config.repair_cost,
+        "unnecessary_repair_penalty": session.config.unnecessary_repair_penalty,
+    }
+    if callable(proposer):
+        return proposer(context, candidates, budget, **arguments)
+    # Small test/demonstration backends written against the older diagnosis-only
+    # protocol retain the exact reference action semantics.
+    proposals = reference_action_proposals(context, candidates, **arguments)
+    return proposals, {
+        "action_queries": 1 if candidates else 0,
+        "action_proposals": len(proposals),
+        "action_statements_added": 0,
+        "action_engine_steps": None,
+        "action_fallback": True,
+    }
+
+
+def _merge_action_counters(
+    total: dict[str, object], update: dict[str, object]
+) -> None:
+    for key, value in update.items():
+        if key in {
+            "action_queries",
+            "action_proposals",
+            "action_statements_added",
+            "action_forward_seed_facts",
+            "action_forward_steps",
+            "action_engine_steps",
+        } and isinstance(value, (int, float)):
+            total[key] = total.get(key, 0) + value
+        else:
+            total[key] = value
+
+
+def run_action_loop(
+    backend,
+    session: GameSession,
+    beliefs: dict[str, float],
+    budget: int,
+) -> tuple[
+    dict[str, str],
+    dict[str, float],
+    list[str],
+    dict,
+    list[dict],
+    dict[str, float],
+]:
+    """Observe, re-query, then select interventions from generic proposals."""
+    effective_beliefs = dict(beliefs)
+    inspection_results: dict[str, str] = {}
+    diagnostic_priorities: dict[str, float] = {}
+    counters: dict[str, object] = {}
+    trace = []
+    step = 0
+    final_proposals: list[ActionProposal] | None = None
+
+    while (
+        len(session._inspected) < session.config.diagnostic_slots
+        and (
+            session.config.inspection_cost == 0
+            or session.credits >= session.config.inspection_cost
+        )
+    ):
+        context = f"decision-s{session.shift_index + 1:02d}-step{step:02d}"
+        proposals, action_counters = _query_action_proposals(
+            backend, session, context, effective_beliefs, budget
+        )
+        _merge_action_counters(counters, action_counters)
+        for proposal in proposals:
+            if proposal.action == "Inspect":
+                diagnostic_priorities.setdefault(
+                    proposal.incident_id, proposal.utility
+                )
+        valued = sorted(
+            (
+                proposal.utility,
+                session._incident(proposal.incident_id).module.value_at_risk,
+                proposal.incident_id,
+            )
+            for proposal in proposals
+            if proposal.action == "Inspect"
+            and proposal.utility > 0
+            and proposal.incident_id not in session._inspected
+            and session._incident(proposal.incident_id).module.id
+            not in session._known_fault_modules
+        )
+        if valued:
+            _, _, incident_id = min(
+                valued, key=lambda row: (-row[0], -row[1], row[2])
+            )
+            selection_kind = "value-of-information"
+        else:
+            learning_probes = [
+                proposal
+                for proposal in proposals
+                if proposal.action == "InspectForLearning"
+                and proposal.incident_id not in session._inspected
+                and session._incident(proposal.incident_id).module.id
+                not in session._known_fault_modules
+            ]
+            selected_probe = min(
+                learning_probes,
+                key=lambda proposal: (-proposal.utility, proposal.incident_id),
+                default=None,
+            )
+            incident_id = (
+                selected_probe.incident_id if selected_probe is not None else None
+            )
+            selection_kind = "learning-probe"
+        trace.append({
+            "context": context,
+            "proposals": [
+                {
+                    "action": proposal.action,
+                    "incident_id": proposal.incident_id,
+                    "utility": proposal.utility,
+                    "confidence": proposal.confidence,
+                }
+                for proposal in proposals
+            ],
+            "selected": (
+                {
+                    "action": (
+                        "Inspect" if selection_kind == "value-of-information"
+                        else "InspectForLearning"
+                    ),
+                    "incident_id": incident_id,
+                    "reason": selection_kind,
+                }
+                if incident_id is not None
+                else None
+            ),
+        })
+        if incident_id is None:
+            final_proposals = proposals
+            break
+        result = session.inspect(incident_id)
+        inspection_results[incident_id] = result["result"]
+        effective_beliefs[incident_id] = (
+            1.0 if session._faults[incident_id] else 0.0
+        )
+        step += 1
+
+    if final_proposals is None:
+        context = f"decision-s{session.shift_index + 1:02d}-step{step:02d}"
+        final_proposals, action_counters = _query_action_proposals(
+            backend, session, context, effective_beliefs, budget
+        )
+        _merge_action_counters(counters, action_counters)
+        trace.append({
+            "context": context,
+            "proposals": [
+                {
+                    "action": proposal.action,
+                    "incident_id": proposal.incident_id,
+                    "utility": proposal.utility,
+                    "confidence": proposal.confidence,
+                }
+                for proposal in final_proposals
+            ],
+            "selected": None,
+        })
+
+    repair_candidates = sorted(
+        (
+            proposal.utility,
+            proposal.incident_id,
+        )
+        for proposal in final_proposals
+        if proposal.action == "Repair" and proposal.utility > 0
+    )
+    repairs = [
+        incident_id
+        for _, incident_id in sorted(
+            repair_candidates, key=lambda row: (-row[0], row[1])
+        )[:session.repair_capacity()]
+    ]
+    if trace:
+        trace[-1]["selected_repairs"] = repairs
+    return (
+        inspection_results,
+        diagnostic_priorities,
+        repairs,
+        counters,
+        trace,
+        effective_beliefs,
+    )
+
+
 def _decision_utility(
     repairs: list[str],
     beliefs: dict[str, float],
@@ -951,26 +1186,24 @@ def run_game_episode(
         oracle_controller_beliefs, _ = decision_beliefs(
             session, oracle_beliefs, oracle_shortfalls
         )
-        inspection_ids, diagnostic_priorities = diagnostic_plan(
-            session, controller_beliefs
-        )
         oracle_inspection_ids, _ = diagnostic_plan(
             session, oracle_controller_beliefs
         )
-        inspection_results = {}
-        for incident_id in inspection_ids:
-            inspection_results[incident_id] = session.inspect(incident_id)["result"]
+        (
+            inspection_results,
+            diagnostic_priorities,
+            repairs,
+            action_counters,
+            action_trace,
+            effective_beliefs,
+        ) = run_action_loop(backend, session, controller_beliefs, budget)
+        counters.update(action_counters)
 
-        effective_beliefs = dict(controller_beliefs)
         effective_oracle = dict(oracle_controller_beliefs)
-        for incident_id in inspection_ids:
+        for incident_id in inspection_results:
             observed = 1.0 if truth[incident_id] else 0.0
-            effective_beliefs[incident_id] = observed
             effective_oracle[incident_id] = observed
 
-        repairs = allocate_repairs(
-            station_incidents, effective_beliefs, config, session.repair_capacity()
-        )
         oracle_repairs = allocate_repairs(
             station_incidents, effective_oracle, config, session.repair_capacity()
         )
@@ -1004,6 +1237,7 @@ def run_game_episode(
             "belief_metrics": metrics,
             "inspections": inspection_results,
             "diagnostic_priorities": diagnostic_priorities,
+            "action_trace": action_trace,
             "oracle_inspection_plan": oracle_inspection_ids,
             "chosen_repairs": repairs,
             "oracle_repairs": oracle_repairs,

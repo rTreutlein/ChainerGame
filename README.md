@@ -142,16 +142,38 @@ The minimal MM2 induction probe can be run directly:
   '(Inheritance (PressureAlarm old coolant-pump) (SealLeak old coolant-pump))'
 ```
 
-The standard controller queries every visible incident with the same budget.
-It combines each chainer's returned belief with public evidence: time since a
-module was last inspected or serviced and exact aggregate production shortfalls.
-When a shortfall can be produced by several combinations of module impacts, the
-controller conditions the chainer probabilities over those combinations rather
-than reading hidden fault identities. It allocates diagnostics by expected value
-of information, so inspection order can differ across reasoners. Confirmed
-inspection results override uncertain beliefs, and the fixed repair allocator
-chooses positive-value repairs subject to the same credits, slots, and kits as a
-human player.
+The standard controller first queries every visible incident with the same
+diagnosis budget. It combines each returned belief with public evidence: time
+since a module was last inspected or serviced and exact aggregate production
+shortfalls. When a shortfall can be produced by several combinations of module
+impacts, the controller conditions the probabilities over those combinations
+rather than reading hidden fault identities.
+
+The resulting probabilities are then asserted under one immutable decision
+context and the chainer receives a single open query:
+
+```metta
+(ActionProposal decision-s03-step00 $action $utility $confidence)
+```
+
+Generic MeTTa rules derive structured `(Inspect $incident)`,
+`(InspectForLearning $incident)`, and `(Repair $incident)` actions.
+`RepairValue` is expected avoided production minus unnecessary-repair loss and
+repair cost. `InspectionValue` is the incremental value of a perfect observation
+before the best immediate repair/defer choice. A learning probe is ranked from
+the number of resolved samples and production at risk. Python only applies the
+action lifecycle and physical constraints: observations precede interventions,
+and credits, diagnostic slots, repair slots, and seal kits remain simulator
+state.
+
+After every inspection its public result is inserted into a fresh context as a
+0/1 leak probability and the same open query runs again. The action workspace
+contains only that current context, so obsolete decision steps and earlier
+shifts cannot consume search budget or influence the answer. The longer-lived
+diagnosis KB still retains resolved history for induction. Ordinary rule
+premises cannot bind a proof STV's strength as a numeric term in both chainers,
+so the context-scoped `LeakProbability` fact is the explicit adapter boundary;
+valuation after that boundary is performed by the chainer.
 
 PeTTaChainer performs this conditioning with `WeightedSubsetPosteriorDP`, which
 merges configurations by reachable production loss into reusable prefix and
@@ -180,9 +202,10 @@ petta examples/shortfall_foldall_vs_dp.metta \
 
 Each JSON result reports per-shift visible state, returned beliefs, coverage,
 absolute error against the exact empirical reference, Brier score, log loss,
-diagnostic priorities, raw and public-evidence-adjusted beliefs, chosen and
-oracle repairs, decision regret, actual production outcomes, backend counters,
-and aggregate station score. A zero-budget reasoner receives no inferred
+diagnostic priorities, the complete context-by-context `action_trace`, raw and
+public-evidence-adjusted beliefs, chosen and oracle repairs, decision regret,
+actual production outcomes, backend counters, and aggregate station score. A
+zero-budget reasoner receives no inferred
 beliefs and therefore schedules no evidence-driven action. It may still use an
 otherwise-idle diagnostic slot to explore a type whose inverse relation must be
 learned; only a confirmed inspection or an already-known fault can then cause a
@@ -276,7 +299,7 @@ MM2_CHAINER_PYTHONPATH=/path/to/site-packages \
   python -m stationops.cli run --backend mm2 --budget 100
 ```
 
-The adapter keeps one MM2 engine for the episode. Each round adds only newly
+The adapter keeps one MM2 diagnosis engine for the episode. Each round adds only newly
 named statements; knowledge from earlier rounds remains in the append-only KB.
 A repeated name with different content is rejected instead of retracting the
 old statement. An incident's alarm retains the same statement name when its
@@ -299,6 +322,13 @@ fields `null`. Live conformance uses the same maximum absolute belief error of
 the binding is unavailable; controlled engine tests always verify that wrong or
 empty MM2 results change or remove decisions.
 
+Action valuation uses a separate MM2 engine containing only the current
+decision context. It is rebuilt after an observation, preventing irrelevant
+past action facts from making a fixed budget deteriorate over time. Action
+counters report the open queries, proposals, inserted context statements,
+forward seeds, and native execution snapshot separately from diagnosis and
+shortfall work.
+
 PeTTaChainer is an explicitly selected peer backend; StationOps never switches
 to it automatically when MM2 is unavailable. Install PeTTaChainer and its
 commit-locked PeTTa dependency as documented upstream. Make the
@@ -313,7 +343,7 @@ python -m stationops.cli run --backend pettachainer \
   --pettachainer-path /path/to/PeTTaChainer --budget 10
 ```
 
-The adapter creates one isolated PeTTaChainer knowledge base per episode and
+The adapter creates one isolated PeTTaChainer diagnosis knowledge base per episode and
 retains it across that episode's rounds. Each round's public view contributes
 only newly named statements; disappeared statements remain as earlier
 knowledge, and a repeated name with different content is rejected. Rules are
@@ -330,6 +360,10 @@ remains `null` because the API does not expose total internal execution steps.
 `statements_removed` remains zero under the append-only adapter contract.
 The strongest returned proof STV supplies each action belief; a missing proof
 remains a missing belief, not numeric zero. Oracle beliefs remain scoring-only.
+Each action query runs in a separate current-context PeTTaChainer workspace for
+the same relevance and bounded-search semantics as MM2; observation results are
+carried forward explicitly by the next context rather than retaining stale
+action facts.
 
 `PETTACHAINER_PYTHONPATH` is consumed by the StationOps adapter; Python itself
 does not interpret that variable. To validate canonical source checkouts by
