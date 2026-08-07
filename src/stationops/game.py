@@ -811,7 +811,11 @@ def _query_action_proposals(
         return proposer(context, candidates, budget, **arguments)
     # Small test/demonstration backends written against the older diagnosis-only
     # protocol retain the exact reference action semantics.
-    proposals = reference_action_proposals(context, candidates, **arguments)
+    proposals = (
+        reference_action_proposals(context, candidates, **arguments)
+        if budget > 0
+        else []
+    )
     return proposals, {
         "action_queries": 1 if candidates else 0,
         "action_proposals": len(proposals),
@@ -873,7 +877,7 @@ def run_action_loop(
         )
         _merge_action_counters(counters, action_counters)
         for proposal in proposals:
-            if proposal.action == "Inspect":
+            if proposal.action == "Inspect" and proposal.rationale == "Diagnostic":
                 diagnostic_priorities.setdefault(
                     proposal.incident_id, proposal.utility
                 )
@@ -885,6 +889,7 @@ def run_action_loop(
             )
             for proposal in proposals
             if proposal.action == "Inspect"
+            and proposal.rationale == "Diagnostic"
             and proposal.utility > 0
             and proposal.incident_id not in session._inspected
             and session._incident(proposal.incident_id).module.id
@@ -899,7 +904,8 @@ def run_action_loop(
             learning_probes = [
                 proposal
                 for proposal in proposals
-                if proposal.action == "InspectForLearning"
+                if proposal.action == "Inspect"
+                and proposal.rationale == "Learning"
                 and proposal.incident_id not in session._inspected
                 and session._incident(proposal.incident_id).module.id
                 not in session._known_fault_modules
@@ -921,15 +927,13 @@ def run_action_loop(
                     "incident_id": proposal.incident_id,
                     "utility": proposal.utility,
                     "confidence": proposal.confidence,
+                    "rationale": proposal.rationale,
                 }
                 for proposal in proposals
             ],
             "selected": (
                 {
-                    "action": (
-                        "Inspect" if selection_kind == "value-of-information"
-                        else "InspectForLearning"
-                    ),
+                    "action": "Inspect",
                     "incident_id": incident_id,
                     "reason": selection_kind,
                 }
@@ -961,6 +965,7 @@ def run_action_loop(
                     "incident_id": proposal.incident_id,
                     "utility": proposal.utility,
                     "confidence": proposal.confidence,
+                    "rationale": proposal.rationale,
                 }
                 for proposal in final_proposals
             ],
@@ -1127,10 +1132,12 @@ def run_game_episode(
     mm2_path: str | None = None,
     pettachainer_path: str | None = None,
     shortfall_budget: int | None = None,
+    action_budget: int | None = None,
 ) -> dict:
     """Run the standard controller through the same simulation used by humans."""
     config = config or GameConfig()
     shortfall_budget = budget if shortfall_budget is None else shortfall_budget
+    action_budget = budget if action_budget is None else action_budget
     session = GameSession(config)
     models = {
         equipment_type: sensor_rates(config, equipment_type)
@@ -1196,7 +1203,7 @@ def run_game_episode(
             action_counters,
             action_trace,
             effective_beliefs,
-        ) = run_action_loop(backend, session, controller_beliefs, budget)
+        ) = run_action_loop(backend, session, controller_beliefs, action_budget)
         counters.update(action_counters)
 
         effective_oracle = dict(oracle_controller_beliefs)
@@ -1259,6 +1266,7 @@ def run_game_episode(
         "backend": backend.name,
         "budget_per_shift": budget,
         "diagnosis_budget_per_shift": budget,
+        "action_budget_per_query": action_budget,
         "shortfall_budget_per_shift": shortfall_budget,
         "rounds": rounds,
         "aggregate": {

@@ -154,7 +154,44 @@ seconds. An earlier ten-shift all-induced MM2 run with 40 initial cases per
 cohort took 196.31 seconds, demonstrating why longer exact-induction runs need
 query reuse or materialization before they become routine CI benchmarks.
 
+## Declarative action-query budget rerun
+
+Run on 2026-08-07 after moving diagnostic and repair valuation behind the
+context-scoped `ActionProposal` query. The tested revisions were MM2-Chainer
+`ff0b068`, PeTTaChainer `72d3ed6`, and MORK `6d908e0`. Diagnosis probabilities
+are explicit numeric inputs to this action query; MeTTa rules derive the single
+physical `Inspect` action with either `Diagnostic` or `Learning` rationale, and
+the `Repair` action with `Intervention` rationale.
+
+A four-candidate isolated query showed distinct backend knees. MM2 returned
+only learning-supported inspection proposals at budgets 1--30, added all four
+repair proposals at 40, and first returned all three diagnostic inspection
+proposals at 100. PeTTaChainer returned the complete nine-proposal set at
+budget 1; larger budgets did not add answers.
+
+The harder closed-loop fixture used seed 7, six shifts, ten modules, 20 initial
+cases per cohort, and the mixed sensor model:
+
+| Backend | Diagnosis / action / shortfall budget | Diagnosis | Shortfall | Empty action queries | Action proposals | Normalized score | Regret | Wall time |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| MM2 | 1 / 40 / 50 | 60 / 60 | 41 / 44 | 0 | 303 | 0.7501 | 117.26 | 70.10 s |
+| MM2 | 1 / 100 / 50 | 60 / 60 | 32 / 32 | 0 | 445 | 0.9882 | 5.07 | 134.67 s |
+| PeTTaChainer | 300 / 1 / 300 | 60 / 60 | 30 / 32 | 0 | 445 | 0.9882 | 5.07 | 90.70 s |
+
+MM2 action budget 40 was sufficient for a two-shift/four-module smoke test but
+failed on the full trajectory because it omitted diagnostic-value proposals.
+Budget 100 is therefore the current complete-action calibration for this MM2
+fixture. PeTTaChainer needs only action budget 1. These are deliberately
+separate from each backend's diagnosis and shortfall budgets. The increased
+wall times relative to earlier runs are real: action selection now performs up
+to three fresh chainer searches per shift instead of calculating utilities in
+Python.
+
 ## Latest MM2 budget-degradation stress test
+
+The following 2026-08-06 results predate declarative action queries: utilities
+were still calculated in Python, so their wall times exclude the action-search
+cost measured in the newer section above.
 
 Run on 2026-08-06 with MM2-Chainer `ff0b068` and MORK `dd23929`. MM2 now shares
 one native search allowance across Compute waves and batches ground inheritance

@@ -54,12 +54,24 @@ def main(argv=None):
         )
         p.add_argument("--budget", type=int, default=100)
         p.add_argument(
+            "--action-budget",
+            type=int,
+            help="v2 ActionProposal query budget; defaults to --budget",
+        )
+        p.add_argument(
             "--shortfall-budget",
             type=int,
             help="v2 aggregate-loss query budget; defaults to --budget",
         )
         p.add_argument("--budgets", default="1,10,100")
         if name == "stress":
+            p.add_argument(
+                "--action-budgets",
+                help=(
+                    "comma-separated v2 action-query budgets; defaults to pairing "
+                    "each diagnosis budget with the same action budget"
+                ),
+            )
             p.add_argument("--shortfall-budgets", default="10,20,50,100")
             p.add_argument("--seeds", default="7")
             p.add_argument(
@@ -132,6 +144,11 @@ def main(argv=None):
             [int(value) for value in args.seeds.split(",")],
             args.mm2_path,
             args.pettachainer_path,
+            action_budgets=(
+                [int(value) for value in args.action_budgets.split(",")]
+                if args.action_budgets
+                else ([args.action_budget] if args.action_budget is not None else None)
+            ),
             on_run=emit,
         )
         print(json.dumps(
@@ -158,6 +175,7 @@ def main(argv=None):
                 args.mm2_path,
                 args.pettachainer_path,
                 shortfall_budget=args.shortfall_budget,
+                action_budget=args.action_budget,
             )
         print(json.dumps(result, sort_keys=True))
 

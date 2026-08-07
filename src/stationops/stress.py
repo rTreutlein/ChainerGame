@@ -36,6 +36,7 @@ def summarize_stress_episode(result: dict) -> dict:
         "seed": result["config"]["seed"],
         "backend": result["backend"],
         "diagnosis_budget": result["diagnosis_budget_per_shift"],
+        "action_budget": result["action_budget_per_query"],
         "shortfall_budget": result["shortfall_budget_per_shift"],
         "wall_time_seconds": result["wall_time_seconds"],
         "diagnosis_expected": expected,
@@ -52,6 +53,17 @@ def summarize_stress_episode(result: dict) -> dict:
         ),
         "shortfall_cache_hits": _sum_optional(
             row["backend_counters"].get("shortfall_cache_hits") for row in rounds
+        ),
+        "action_queries": sum(len(row["action_trace"]) for row in rounds),
+        "action_empty_queries": sum(
+            not trace["proposals"]
+            for row in rounds
+            for trace in row["action_trace"]
+        ),
+        "action_proposals": sum(
+            len(trace["proposals"])
+            for row in rounds
+            for trace in row["action_trace"]
         ),
         "normalized_score": result["aggregate"]["normalized_score"],
         "regret": result["aggregate"]["regret"],
@@ -72,6 +84,10 @@ def summarize_stress_episode(result: dict) -> dict:
             ),
             "shortfall_unifications": work_total(
                 "shortfall_engine_stats", "unifications"
+            ),
+            "action_steps": _sum_optional(
+                row["backend_counters"].get("action_engine_steps")
+                for row in rounds
             ),
         },
         "shifts": [
@@ -103,21 +119,28 @@ def summarize_stress_episode(result: dict) -> dict:
 def summarize_budget_curve(runs: list[dict]) -> list[dict]:
     grouped = {}
     for run in runs:
-        key = (run["diagnosis_budget"], run["shortfall_budget"])
+        key = (
+            run["diagnosis_budget"],
+            run["action_budget"],
+            run["shortfall_budget"],
+        )
         grouped.setdefault(key, []).append(run)
 
     curve = []
-    for (diagnosis_budget, shortfall_budget), points in grouped.items():
+    for (diagnosis_budget, action_budget, shortfall_budget), points in grouped.items():
         def distribution(field: str) -> dict:
             values = [point[field] for point in points]
             return {"mean": mean(values), "min": min(values), "max": max(values)}
 
         curve.append({
             "diagnosis_budget": diagnosis_budget,
+            "action_budget": action_budget,
             "shortfall_budget": shortfall_budget,
             "runs": len(points),
             "diagnosis_coverage": distribution("diagnosis_coverage"),
             "shortfall_coverage": distribution("shortfall_coverage"),
+            "action_empty_queries": distribution("action_empty_queries"),
+            "action_proposals": distribution("action_proposals"),
             "normalized_score": distribution("normalized_score"),
             "regret": distribution("regret"),
             "wall_time_seconds": distribution("wall_time_seconds"),
@@ -133,36 +156,52 @@ def run_stress_sweep(
     seeds: list[int],
     mm2_path: str | None = None,
     pettachainer_path: str | None = None,
+    action_budgets: list[int] | None = None,
     on_run: Callable[[dict], None] | None = None,
 ) -> dict:
-    if not diagnosis_budgets or not shortfall_budgets or not seeds:
+    if (
+        not diagnosis_budgets
+        or not shortfall_budgets
+        or not seeds
+        or action_budgets == []
+    ):
         raise ValueError("stress budgets and seeds cannot be empty")
-    if any(value < 0 for value in diagnosis_budgets + shortfall_budgets):
+    if any(
+        value < 0
+        for value in diagnosis_budgets + shortfall_budgets + (action_budgets or [])
+    ):
         raise ValueError("stress budgets cannot be negative")
 
     runs = []
     for seed in seeds:
         seeded_config = replace(config, seed=seed)
         for diagnosis_budget in diagnosis_budgets:
-            for shortfall_budget in shortfall_budgets:
-                result = run_game_episode(
-                    seeded_config,
-                    backend,
-                    diagnosis_budget,
-                    mm2_path,
-                    pettachainer_path,
-                    shortfall_budget=shortfall_budget,
-                )
-                summary = summarize_stress_episode(result)
-                runs.append(summary)
-                if on_run is not None:
-                    on_run(summary)
+            selected_action_budgets = action_budgets or [diagnosis_budget]
+            for action_budget in selected_action_budgets:
+                for shortfall_budget in shortfall_budgets:
+                    result = run_game_episode(
+                        seeded_config,
+                        backend,
+                        diagnosis_budget,
+                        mm2_path,
+                        pettachainer_path,
+                        shortfall_budget=shortfall_budget,
+                        action_budget=action_budget,
+                    )
+                    summary = summarize_stress_episode(result)
+                    runs.append(summary)
+                    if on_run is not None:
+                        on_run(summary)
     return {
         "benchmark": "StationOps-v2-stress",
-        "schema_version": 1,
+        "schema_version": 2,
         "config": config.to_dict(),
         "backend": backend,
         "diagnosis_budgets": diagnosis_budgets,
+        "action_budgets": action_budgets,
+        "action_budget_mode": (
+            "explicit" if action_budgets is not None else "same-as-diagnosis"
+        ),
         "shortfall_budgets": shortfall_budgets,
         "seeds": seeds,
         "budget_curve": summarize_budget_curve(runs),

@@ -59,7 +59,7 @@ ACTION_RULES = (
     "(LeakProbability $context $incident $_probability) "
     "(BeliefConfidence $context $incident $confidence) "
     "(RepairValue $context $incident $utility)) "
-    "(ActionProposal $context (Repair $incident) $utility $confidence)) "
+    "(ActionProposal $context (Repair $incident) $utility $confidence Intervention)) "
     "(CTV (STV 1 1) (STV 0 1)))",
     "(: proposeInspection "
     "(Implication "
@@ -67,14 +67,14 @@ ACTION_RULES = (
     "(LeakProbability $context $incident $_probability) "
     "(BeliefConfidence $context $incident $confidence) "
     "(InspectionValue $context $incident $utility)) "
-    "(ActionProposal $context (Inspect $incident) $utility $confidence)) "
+    "(ActionProposal $context (Inspect $incident) $utility $confidence Diagnostic)) "
     "(CTV (STV 1 1) (STV 0 1)))",
     "(: proposeLearningProbe "
     "(Implication "
     "(And (LearningProbeCandidate $context $incident $sampleCount $risk) "
     "(Compute * ($sampleCount 1000) -> $samplePenalty) "
     "(Compute - ($risk $samplePenalty) -> $priority)) "
-    "(ActionProposal $context (InspectForLearning $incident) $priority 1)) "
+    "(ActionProposal $context (Inspect $incident) $priority 1 Learning)) "
     "(CTV (STV 1 1) (STV 0 1)))",
 )
 
@@ -96,6 +96,7 @@ class ActionProposal:
     incident_id: str
     utility: float
     confidence: float
+    rationale: str
 
 
 def _number(value: float) -> str:
@@ -175,6 +176,7 @@ def reference_action_proposals(
                 candidate.incident_id,
                 repair_value,
                 candidate.confidence,
+                "Intervention",
             ))
             leak_repair_value = max(0.0, candidate.production_at_risk - repair_cost)
             if candidate.inspection_eligible and leak_repair_value > 0:
@@ -189,13 +191,15 @@ def reference_action_proposals(
                     candidate.incident_id,
                     inspection_value,
                     candidate.confidence,
+                    "Diagnostic",
                 ))
         if candidate.learning_samples is not None:
             proposals.append(ActionProposal(
                 context,
-                "InspectForLearning",
+                "Inspect",
                 candidate.incident_id,
                 candidate.production_at_risk - 1000 * candidate.learning_samples,
                 1.0,
+                "Learning",
             ))
     return proposals

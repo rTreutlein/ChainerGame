@@ -120,8 +120,8 @@ def _fact_seed(type_expression: str) -> str:
 _number_pattern = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
 _action_proposal_re = re.compile(
     rf"\(ActionProposal\s+([^()\s]+)\s+"
-    rf"\((InspectForLearning|Inspect|Repair)\s+([^()\s]+)\)\s+"
-    rf"({_number_pattern})\s+({_number_pattern})\)"
+    rf"\((Inspect|Repair)\s+([^()\s]+)\)\s+"
+    rf"({_number_pattern})\s+({_number_pattern})\s+([^()\s]+)\)"
 )
 
 
@@ -148,7 +148,7 @@ def _action_proposals_from_proofs(proofs) -> list[ActionProposal]:
         match = _action_proposal_re.search(_term_source(term))
         if match is None:
             continue
-        context, action, incident_id, utility, confidence = match.groups()
+        context, action, incident_id, utility, confidence, rationale = match.groups()
         values = (float(utility), float(confidence))
         if not all(math.isfinite(value) for value in values):
             continue
@@ -158,6 +158,7 @@ def _action_proposals_from_proofs(proofs) -> list[ActionProposal]:
             incident_id=incident_id,
             utility=values[0],
             confidence=values[1],
+            rationale=rationale,
         ))
     return proposals
 
@@ -229,12 +230,16 @@ class ReferenceBackend:
         repair_cost,
         unnecessary_repair_penalty,
     ):
-        proposals = reference_action_proposals(
-            context,
-            candidates,
-            inspection_cost=inspection_cost,
-            repair_cost=repair_cost,
-            unnecessary_repair_penalty=unnecessary_repair_penalty,
+        proposals = (
+            reference_action_proposals(
+                context,
+                candidates,
+                inspection_cost=inspection_cost,
+                repair_cost=repair_cost,
+                unnecessary_repair_penalty=unnecessary_repair_penalty,
+            )
+            if budget > 0
+            else []
         )
         return proposals, {
             "action_queries": 1 if candidates else 0,
@@ -581,7 +586,9 @@ class MM2Backend:
             self._action_atoms_by_name.clear()
             self._action_context = None
             raise
-        query = f"(ActionProposal {context} $action $utility $confidence)"
+        query = (
+            f"(ActionProposal {context} $action $utility $confidence $rationale)"
+        )
         results = self._action_engine.query_many(
             "stationops-actions", [(context, query)], budget
         )
@@ -926,7 +933,8 @@ class PeTTaChainerBackend:
             self._action_context = None
             raise
         query = (
-            f"(: $prf (ActionProposal {context} $action $utility $confidence) $tv)"
+            f"(: $prf (ActionProposal {context} $action $utility "
+            f"$confidence $rationale) $tv)"
         )
         proofs = self._action_handler.query(query, steps=budget, timeout_sec=0)
         proposals = _action_proposals_from_proofs(proofs)

@@ -45,8 +45,14 @@ class GameSessionTests(unittest.TestCase):
             repair_cost=5,
             unnecessary_repair_penalty=8,
         )
-        values = {proposal.action: proposal.utility for proposal in proposals}
-        self.assertEqual(values, {"Repair": 11.0, "Inspect": 4.5})
+        values = {
+            (proposal.action, proposal.rationale): proposal.utility
+            for proposal in proposals
+        }
+        self.assertEqual(
+            values,
+            {("Repair", "Intervention"): 11.0, ("Inspect", "Diagnostic"): 4.5},
+        )
 
         source = generate_action_statements(
             "decision-s01-step00",
@@ -58,12 +64,23 @@ class GameSessionTests(unittest.TestCase):
         self.assertIn("(RepairValue $context $incident $utility)", source)
         self.assertIn("(InspectionValue $context $incident $utility)", source)
         self.assertIn(
-            "(ActionProposal $context (Repair $incident) $utility $confidence)",
+            "(ActionProposal $context (Repair $incident) $utility $confidence Intervention)",
             source,
         )
         self.assertIn(
-            "(ActionProposal $context (Inspect $incident) $utility $confidence)",
+            "(ActionProposal $context (Inspect $incident) $utility $confidence Diagnostic)",
             source,
+        )
+        learning = reference_action_proposals(
+            "decision-s01-step00",
+            [ActionCandidate("shift-01-M02", None, 65, learning_samples=3)],
+            inspection_cost=2,
+            repair_cost=5,
+            unnecessary_repair_penalty=8,
+        )
+        self.assertEqual(
+            [(proposal.action, proposal.rationale) for proposal in learning],
+            [("Inspect", "Learning")],
         )
 
     def test_action_loop_requeries_after_observation_before_repair(self):
@@ -331,19 +348,34 @@ class AutomatedGameTests(unittest.TestCase):
             self.assertIsNotNone(round_["belief_metrics"]["brier_score"])
             self.assertNotIn("fault", json.dumps(round_["visible_incidents"]))
 
-    def test_zero_budget_repairs_only_confirmed_or_known_faults(self):
-        result = run_game_episode(budget=0)
+    def test_zero_diagnosis_budget_repairs_only_confirmed_or_known_faults(self):
+        result = run_game_episode(budget=0, action_budget=1)
         for round_ in result["rounds"]:
             self.assertEqual(round_["belief_metrics"]["coverage"], 0.0)
             self.assertTrue(set(round_["chosen_repairs"]).issubset(round_["inspections"]))
 
-    def test_diagnosis_and_shortfall_budgets_are_independent(self):
+    def test_zero_action_budget_returns_no_action_proposals(self):
+        result = run_game_episode(
+            GameConfig(shifts=1, modules=4),
+            budget=1,
+            action_budget=0,
+        )
+        self.assertTrue(
+            all(
+                not row["proposals"]
+                for row in result["rounds"][0]["action_trace"]
+            )
+        )
+        self.assertEqual(result["rounds"][0]["chosen_repairs"], [])
+
+    def test_diagnosis_action_and_shortfall_budgets_are_independent(self):
         class RecordingBackend:
             name = "recording"
 
             def __init__(self, config):
                 self.reference = ReferenceBackend(config)
                 self.diagnosis_budgets = []
+                self.action_budgets = []
                 self.shortfall_budgets = []
 
             def infer(self, history, incidents, budget, statements):
@@ -354,15 +386,28 @@ class AutomatedGameTests(unittest.TestCase):
                 self.shortfall_budgets.append(budget)
                 return self.reference.condition_shortfalls(events, budget)
 
+            def propose_actions(self, context, candidates, budget, **costs):
+                self.action_budgets.append(budget)
+                return self.reference.propose_actions(
+                    context, candidates, budget, **costs
+                )
+
         config = GameConfig(shifts=2, modules=4)
         backend = RecordingBackend(config.logic_config())
         with patch("stationops.game._backend", return_value=backend):
             result = run_game_episode(
-                config, "reference", budget=3, shortfall_budget=7
+                config,
+                "reference",
+                budget=3,
+                shortfall_budget=7,
+                action_budget=11,
             )
         self.assertEqual(backend.diagnosis_budgets, [3, 3])
         self.assertEqual(backend.shortfall_budgets, [7, 7])
+        self.assertTrue(backend.action_budgets)
+        self.assertTrue(all(value == 11 for value in backend.action_budgets))
         self.assertEqual(result["diagnosis_budget_per_shift"], 3)
+        self.assertEqual(result["action_budget_per_query"], 11)
         self.assertEqual(result["shortfall_budget_per_shift"], 7)
 
     def test_backend_receives_only_pre_shift_history_and_visible_incidents(self):
@@ -395,7 +440,11 @@ class AutomatedGameTests(unittest.TestCase):
         if not path:
             self.skipTest("set MM2_CHAINER_PYTHONPATH for live StationOps-v2 conformance")
         result = run_game_episode(
-            GameConfig(shifts=2, modules=4), "mm2", 100, mm2_path=path
+            GameConfig(shifts=2, modules=4),
+            "mm2",
+            100,
+            mm2_path=path,
+            action_budget=100,
         )
         self.assertGreaterEqual(
             min(round_["belief_metrics"]["coverage"] for round_ in result["rounds"]),
@@ -411,6 +460,7 @@ class AutomatedGameTests(unittest.TestCase):
             "pettachainer",
             300,
             pettachainer_path=os.environ.get("PETTACHAINER_PYTHONPATH"),
+            action_budget=1,
         )
         self.assertGreaterEqual(
             min(round_["belief_metrics"]["coverage"] for round_ in result["rounds"]),

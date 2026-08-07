@@ -58,27 +58,33 @@ rules, and learning boundary as the browser game:
 
 ```sh
 stationops run --benchmark v2 --backend reference --budget 100
-stationops run --benchmark v2 --backend mm2 --budget 1 --shortfall-budget 50
-stationops run --benchmark v2 --backend pettachainer --budget 300 --shortfall-budget 300
+stationops run --benchmark v2 --backend mm2 --budget 1 \
+  --action-budget 100 --shortfall-budget 50
+stationops run --benchmark v2 --backend pettachainer --budget 300 \
+  --action-budget 1 --shortfall-budget 300
 stationops sweep --benchmark v2 --backend reference --budgets 0,1,10,100
 ```
 
-V2 keeps diagnosis and aggregate-loss budgets separate because a native step
-does not represent equivalent work in MM2 and PeTTaChainer. The values above
-are current six-shift fixture-specific calibration points, not cross-backend
-units or safe defaults for larger workloads.
+V2 keeps diagnosis, action, and aggregate-loss budgets separate because their
+rules have different search depths and a native step does not represent
+equivalent work in MM2 and PeTTaChainer. The values above are current
+six-shift fixture-specific calibration points, not cross-backend units or safe
+defaults for larger workloads. If `--action-budget` is omitted it defaults to
+`--budget` for compatibility, which is not the calibrated choice above.
 
 Use the dedicated stress sweep to measure how gracefully a backend loses proof
 coverage and decision quality when its budget is insufficient:
 
 ```sh
 stationops stress --backend mm2 --budgets 1 \
+  --action-budgets 100 \
   --shortfall-budgets 10,20,30,40,50,75,100 \
   --seeds 7,11,19 --shifts 6 --modules 10 \
   --initial-history-per-cohort 20 --stream
 
 # A deliberately hard closed-loop workload, protected by an external cap.
 timeout 180s stationops stress --backend mm2 --budgets 1 \
+  --action-budgets 100 \
   --shortfall-budgets 25 --seeds 7 --shifts 12 --modules 20 \
   --initial-history-per-cohort 40 --learning-window 4 --stream
 ```
@@ -87,12 +93,12 @@ timeout 180s stationops stress --backend mm2 --budgets 1 \
 so earlier results survive if a later point becomes intractable. The final
 `stress-summary` contains the same points together plus a `budget_curve` with
 cross-seed mean, minimum, and maximum coverage, score, regret, and wall time.
-Each point reports diagnosis and aggregate-shortfall coverage, score, regret,
-logical versus actually executed shortfall queries, cache hits, per-shift
-deterioration, and, when exposed by the backend, native steps, transitions, and
-unifications. Runs are intentionally interactive: an under-budget decision can
-leave faults unresolved, which increases the number of ambiguous
-candidates—and therefore the workload—in later shifts.
+Each point reports diagnosis, action-query, and aggregate-shortfall work,
+score, regret, logical versus actually executed shortfall queries, cache hits,
+per-shift deterioration, and, when exposed by the backend, native steps,
+transitions, and unifications. Runs are intentionally interactive: an
+under-budget decision can leave faults unresolved, which increases the number
+of ambiguous candidates—and therefore the workload—in later shifts.
 
 StationOps-v2 defaults to a mixed information model:
 
@@ -121,9 +127,11 @@ feature group so learning cannot permanently starve itself.
 Long runs expose windowed learning metrics and the public data behind them:
 
 ```sh
-stationops run --benchmark v2 --backend mm2 --budget 1 --shortfall-budget 50 \
+stationops run --benchmark v2 --backend mm2 --budget 1 \
+  --action-budget 100 --shortfall-budget 50 \
   --sensor-knowledge mixed --shifts 30 --learning-window 5
-stationops run --benchmark v2 --backend pettachainer --budget 300 --shortfall-budget 300 \
+stationops run --benchmark v2 --backend pettachainer --budget 300 \
+  --action-budget 1 --shortfall-budget 300 \
   --sensor-knowledge induced --shifts 30 --learning-window 5
 ```
 
@@ -153,11 +161,13 @@ The resulting probabilities are then asserted under one immutable decision
 context and the chainer receives a single open query:
 
 ```metta
-(ActionProposal decision-s03-step00 $action $utility $confidence)
+(ActionProposal decision-s03-step00 $action $utility $confidence $rationale)
 ```
 
-Generic MeTTa rules derive structured `(Inspect $incident)`,
-`(InspectForLearning $incident)`, and `(Repair $incident)` actions.
+Generic MeTTa rules derive the physical `(Inspect $incident)` and
+`(Repair $incident)` actions. The separate rationale is `Diagnostic`,
+`Learning`, or `Intervention`; learning and diagnosis never masquerade as
+different simulator operations.
 `RepairValue` is expected avoided production minus unnecessary-repair loss and
 repair cost. `InspectionValue` is the incremental value of a perfect observation
 before the best immediate repair/defer choice. A learning probe is ranked from
