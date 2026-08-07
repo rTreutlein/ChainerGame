@@ -216,9 +216,38 @@ Multi-root search therefore reduces end-to-end runtime substantially while
 exposing a useful partial-search quality curve. Budget 600 reproduces the
 recorded policy and score in about 37% of the prior wall time despite three
 missing diagnosis proofs. More budget improves aggregate proof coverage but
-does not monotonically complete every diagnosis in this closed-loop run. The
-next useful optimization is shared or incremental member-inheritance work,
-rather than returning to per-root budgets or eagerly saturating the KB.
+does not monotonically complete every diagnosis in this closed-loop run. This
+result motivated sharing the member-inheritance producers beneath distinct
+roots rather than returning to per-root budgets or eagerly saturating the KB.
+
+### Shared member-inheritance producer follow-up
+
+PeTTaChainer `0877a94` shares one open `Member` producer for each distinct
+concept requested by compatible inheritance folds. This is effective when
+several relation pairs reuse a concept. The StationOps first-shift fixture does
+not: its eight learned relations contain sixteen distinct concepts because the
+cohort, equipment type, and observed alarm state are part of each concept.
+Consequently, no producer is reused and the additional producer/subscriber
+goals add search overhead.
+
+The isolated complete-coverage knee moved from budget 500 on `2dcfae4` to 600
+on `0877a94`. At budget 470 the returned count changed from 9/10 to 8/10; at
+500 it changed from 10/10 to 9/10. Warm budget-600 time was essentially
+unchanged at 3.87 seconds versus 3.98 seconds before the optimization.
+
+The same six-shift closed-loop fixture produced:
+
+| PeTTaChainer revision / diagnosis budget | Diagnosis | Shortfall | Normalized score | Regret | Wall time |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `2dcfae4` / 600 | 57 / 60 | 30 / 32 | 0.9882 | 5.07 | 33.63 s |
+| `0877a94` / 600 | 58 / 60 | 49 / 51 | 0.9666 | 15.07 | 37.40 s |
+| `0877a94` / 800 | 56 / 60 | 30 / 32 | 0.9882 | 5.07 | 47.14 s |
+
+Budget 800 recovers the previous policy and score but remains slower than the
+pre-optimization multi-root run. The next optimization should therefore either
+share the outer object/domain enumeration across several distinct concepts or
+avoid installing producer/subscriber machinery when a batch contains no reused
+concepts. A per-concept producer alone does not help this workload.
 
 ## Latest MM2 budget-degradation stress test
 

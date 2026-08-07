@@ -60,7 +60,7 @@ rules, and learning boundary as the browser game:
 stationops run --benchmark v2 --backend reference --budget 100
 stationops run --benchmark v2 --backend mm2 --budget 1 \
   --action-budget 100 --shortfall-budget 50
-stationops run --benchmark v2 --backend pettachainer --budget 600 \
+stationops run --benchmark v2 --backend pettachainer --budget 800 \
   --action-budget 1 --shortfall-budget 300
 stationops sweep --benchmark v2 --backend reference --budgets 0,1,10,100
 ```
