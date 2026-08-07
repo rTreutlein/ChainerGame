@@ -249,6 +249,22 @@ share the outer object/domain enumeration across several distinct concepts or
 avoid installing producer/subscriber machinery when a batch contains no reused
 concepts. A per-concept producer alone does not help this workload.
 
+PeTTaChainer `62b56a4` implements the second option: shared producers are now
+installed only for concepts with at least two inheritance-pair consumers. The
+StationOps disjoint roots retain their original direct expansion path. The
+isolated curve returned to 9/10 at budget 470 and 10/10 at 500; the budget-500
+truth metrics exactly matched `2dcfae4`. Warm budget-600 time was 3.89 seconds.
+
+The six-shift budget-600 rerun returned 57/60 diagnoses and 30/32 shortfall
+marginals, with normalized score 0.9882, regret 5.07, and wall time 34.90
+seconds. The coverage, decisions, score, and regret exactly recover the
+pre-regression multi-root result; its 1.27-second wall-time difference from the
+earlier 33.63-second observation is small residual overhead or run variance.
+The calibrated PeTTaChainer diagnosis budget is therefore restored to 600.
+Shared producers remain available for overlapping concept batches, while a
+future improvement for this disjoint workload would need to share the outer
+object/domain enumeration itself.
+
 ## Latest MM2 budget-degradation stress test
 
 The following 2026-08-06 results predate declarative action queries: utilities

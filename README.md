@@ -60,7 +60,7 @@ rules, and learning boundary as the browser game:
 stationops run --benchmark v2 --backend reference --budget 100
 stationops run --benchmark v2 --backend mm2 --budget 1 \
   --action-budget 100 --shortfall-budget 50
-stationops run --benchmark v2 --backend pettachainer --budget 800 \
+stationops run --benchmark v2 --backend pettachainer --budget 600 \
   --action-budget 1 --shortfall-budget 300
 stationops sweep --benchmark v2 --backend reference --budgets 0,1,10,100
 ```
@@ -130,7 +130,7 @@ Long runs expose windowed learning metrics and the public data behind them:
 stationops run --benchmark v2 --backend mm2 --budget 1 \
   --action-budget 100 --shortfall-budget 50 \
   --sensor-knowledge mixed --shifts 30 --learning-window 5
-stationops run --benchmark v2 --backend pettachainer --budget 300 \
+stationops run --benchmark v2 --backend pettachainer --budget 600 \
   --action-budget 1 --shortfall-budget 300 \
   --sensor-knowledge induced --shifts 30 --learning-window 5
 ```
