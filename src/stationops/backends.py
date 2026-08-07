@@ -822,7 +822,7 @@ class PeTTaChainerBackend:
             self._atoms_by_name.clear()
             raise
 
-        beliefs = {}
+        goals = []
         for incident in incidents:
             if (
                 incident.equipment_type is not None
@@ -840,11 +840,21 @@ class PeTTaChainerBackend:
                 if incident.equipment_type is not None:
                     fields += f"{incident.equipment_type} "
                 goal = f"(SealLeak {fields}{incident.id})"
-            proofs = self._handler.query(
-                f"(: $prf {goal} $tv)",
-                steps=budget,
-                timeout_sec=0,
-            )
+            goals.append(f"(: $prf {goal} $tv)")
+
+        query_many = getattr(self._handler, "query_many", None)
+        if callable(query_many):
+            proof_batches = query_many(goals, steps=budget, timeout_sec=0)
+        else:
+            # Keep older PeTTaChainer releases usable while preferring the
+            # shared-arena API whenever it is available.
+            proof_batches = [
+                self._handler.query(goal, steps=budget, timeout_sec=0)
+                for goal in goals
+            ]
+
+        beliefs = {}
+        for incident, proofs in zip(incidents, proof_batches, strict=True):
             strength = self._strongest_strength(proofs)
             if strength is not None:
                 beliefs[incident.id] = strength

@@ -187,6 +187,39 @@ wall times relative to earlier runs are real: action selection now performs up
 to three fresh chainer searches per shift instead of calculating utilities in
 Python.
 
+## PeTTaChainer shared multi-root diagnosis
+
+Run on 2026-08-07 with PeTTaChainer `2dcfae4`. StationOps now submits all
+incident diagnosis roots through `query_many`, whose expansion budget is shared
+by the entire batch. The previous adapter called `query` once per incident, so
+its nominal budget was multiplied by ten in this fixture.
+
+In the isolated first shift, the old sequential adapter returned all ten
+diagnoses at budget 47 in 3.30 seconds. With one honest shared allowance, the
+multi-root adapter returned 2/10 at budgets 40--100, 3/10 at 300, 6/10 at 400,
+9/10 at 470, and 10/10 at 500. The roots have little exact overlap: the eight
+learned sensor relations differ by cohort, equipment type, or alarm state. The
+main immediate saving therefore comes from compiling and running one arena,
+not from collapsing identical roots.
+
+The six-shift, ten-module, seed-7 closed-loop comparison used action budget 1
+and shortfall budget 300:
+
+| Diagnosis mode / budget | Diagnosis | Shortfall | Normalized score | Regret | Wall time |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Sequential / 300 (`72d3ed6`) | 60 / 60 | 30 / 32 | 0.9882 | 5.07 | 90.70 s |
+| Multi-root / 500 | 58 / 60 | 49 / 51 | 0.9666 | 15.07 | 29.46 s |
+| Multi-root / 600 | 57 / 60 | 30 / 32 | 0.9882 | 5.07 | 33.63 s |
+| Multi-root / 1000 | 58 / 60 | 32 / 32 | 0.9882 | 5.07 | 55.80 s |
+
+Multi-root search therefore reduces end-to-end runtime substantially while
+exposing a useful partial-search quality curve. Budget 600 reproduces the
+recorded policy and score in about 37% of the prior wall time despite three
+missing diagnosis proofs. More budget improves aggregate proof coverage but
+does not monotonically complete every diagnosis in this closed-loop run. The
+next useful optimization is shared or incremental member-inheritance work,
+rather than returning to per-root budgets or eagerly saturating the KB.
+
 ## Latest MM2 budget-degradation stress test
 
 The following 2026-08-06 results predate declarative action queries: utilities

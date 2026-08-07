@@ -60,7 +60,7 @@ rules, and learning boundary as the browser game:
 stationops run --benchmark v2 --backend reference --budget 100
 stationops run --benchmark v2 --backend mm2 --budget 1 \
   --action-budget 100 --shortfall-budget 50
-stationops run --benchmark v2 --backend pettachainer --budget 300 \
+stationops run --benchmark v2 --backend pettachainer --budget 600 \
   --action-budget 1 --shortfall-budget 300
 stationops sweep --benchmark v2 --backend reference --budgets 0,1,10,100
 ```
@@ -358,10 +358,12 @@ retains it across that episode's rounds. Each round's public view contributes
 only newly named statements; disappeared statements remain as earlier
 knowledge, and a repeated name with different content is rejected. Rules are
 added before facts. Newly added facts are selected in batches of 100 and receive
-two bounded forward agenda steps per seed before grounded `SealLeak` or learned
-inheritance-relation queries run in incident order. This updates provisional
-base-rate caches while keeping inference explicitly finite and the KB
-append-only.
+two bounded forward agenda steps per seed before grounded `SealLeak` and learned
+inheritance-relation goals enter one shared multi-root query. The diagnosis
+budget is one total expansion allowance for that batch rather than a fresh
+allowance for every incident. PeTTaChainer versions without `query_many` retain
+the older sequential-query fallback. This updates provisional base-rate caches
+while keeping inference explicitly finite and the KB append-only.
 
 The query budget maps to backward PeTTaChainer steps and does not include this
 reported forward work. Round counters include `statements_added`,

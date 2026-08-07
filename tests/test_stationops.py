@@ -456,6 +456,55 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(positive_counters["induced_queries"], 0)
         self.assertEqual(positive_counters["learned_relation_queries"], 1)
 
+    def test_pettachainer_batches_diagnoses_in_one_shared_query_budget(self):
+        class Handler:
+            instances = []
+
+            def __init__(self):
+                self.batches = []
+                self.__class__.instances.append(self)
+
+            def add_atoms_no_check(self, atoms):
+                pass
+
+            def select_facts(self, terms):
+                return list(terms)
+
+            def forward_chain(self, facts, steps):
+                return []
+
+            def query(self, query, steps, timeout_sec):
+                raise AssertionError("sequential query fallback should not run")
+
+            def query_many(self, queries, steps, timeout_sec):
+                self.batches.append((list(queries), steps, timeout_sec))
+                return [
+                    ["(: first-proof (SealLeak old first) (STV .25 1))"],
+                    ["(: second-proof (SealLeak new second) (STV .75 1))"],
+                ]
+
+        backend = PeTTaChainerBackend(
+            Config(), module=SimpleNamespace(PeTTaChainer=Handler)
+        )
+        incidents = [
+            Incident("first", "old", True),
+            Incident("second", "new", False),
+        ]
+
+        beliefs, counters = backend.infer([], incidents, 23, "")
+
+        self.assertEqual(beliefs, {"first": .25, "second": .75})
+        self.assertEqual(counters["queries"], 2)
+        self.assertEqual(
+            Handler.instances[0].batches,
+            [
+                ([
+                    "(: $prf (SealLeak old first) $tv)",
+                    "(: $prf (SealLeak new second) $tv)",
+                ], 23, 0)
+            ],
+        )
+
     def test_pettachainer_adds_named_deltas_rules_first_without_retractions(self):
         class Handler:
             instances = []
