@@ -9,6 +9,7 @@ from stationops.actions import (
     reference_action_proposals,
 )
 from stationops.backends import ReferenceBackend
+from stationops.config import Config
 from stationops.game import (
     GameConfig,
     GameSession,
@@ -20,6 +21,7 @@ from stationops.game import (
     run_game_episode,
     sensor_rates,
 )
+from stationops.models import HistoryCase, Incident
 from stationops.web import GameApplication, INDEX_HTML
 
 
@@ -212,7 +214,13 @@ class GameSessionTests(unittest.TestCase):
 
     def test_anonymous_loss_conditions_next_shift_beliefs_by_module_impact(self):
         session = GameSession(
-            GameConfig(shifts=2, modules=10, old_prior=0.0, new_prior=0.0)
+            GameConfig(
+                shifts=2,
+                modules=10,
+                old_prior=0.0,
+                new_prior=0.0,
+                dependency_graph=False,
+            )
         )
         incident = next(item for item in session._incidents if item.module.id == "M09")
         session._module_faults["M09"] = True
@@ -315,8 +323,106 @@ class GameSessionTests(unittest.TestCase):
         session = GameSession(GameConfig(modules=3, repair_slots=1))
         beliefs = {item.id: 0.5 for item in session._incidents}
         chosen = allocate_repairs(session._incidents, beliefs, session.config, 1)
-        highest_value = max(session._incidents, key=lambda item: item.module.value_at_risk)
+        highest_value = max(
+            session._incidents, key=lambda item: item.production_at_risk
+        )
         self.assertEqual(chosen, [highest_value.id])
+
+    def test_public_dependency_graph_and_transitive_risk_are_visible(self):
+        session = GameSession(
+            GameConfig(modules=5, old_prior=0.0, new_prior=0.0)
+        )
+        state = session.public_state()
+        self.assertEqual(
+            state["dependency_graph"],
+            [
+                {"upstream": "M03", "downstream": "M01"},
+                {"upstream": "M03", "downstream": "M02"},
+                {"upstream": "M01", "downstream": "M04"},
+                {"upstream": "M04", "downstream": "M05"},
+            ],
+        )
+        rows = {row["module_id"]: row for row in state["incidents"]}
+        self.assertEqual(rows["M03"]["production_value"], 90)
+        self.assertEqual(rows["M03"]["production_at_risk"], 380)
+        self.assertEqual(rows["M01"]["production_at_risk"], 245)
+        self.assertEqual(rows["M05"]["production_at_risk"], 55)
+
+    def test_root_repair_restores_downstream_production_but_symptom_repair_does_not(self):
+        config = GameConfig(
+            shifts=1,
+            modules=5,
+            old_prior=0.0,
+            new_prior=0.0,
+            diagnostic_slots=1,
+            repair_slots=1,
+        )
+        symptom_session = GameSession(config)
+        symptom_session._module_faults["M03"] = True
+        symptom = next(
+            item for item in symptom_session._incidents if item.module.id == "M05"
+        )
+        symptom_session.inspect(symptom.id)
+        symptom_report = symptom_session.commit([symptom.id])["report"]
+        self.assertEqual(symptom_report["symptom_repairs"], 1)
+        self.assertEqual(symptom_report["production_recovered"], 0)
+        self.assertEqual(symptom_report["production_loss"], 380)
+
+        root_session = GameSession(config)
+        root_session._module_faults["M03"] = True
+        root = next(item for item in root_session._incidents if item.module.id == "M03")
+        root_session._faults[root.id] = True
+        root_report = root_session.commit([root.id])["report"]
+        self.assertEqual(root_report["root_cause_repairs"], 1)
+        self.assertEqual(root_report["production_recovered"], 380)
+        self.assertEqual(root_report["production_loss"], 0)
+
+    def test_dependency_rules_form_a_multi_hop_causal_chain(self):
+        session = GameSession(GameConfig(modules=5, sensor_knowledge="full"))
+        source = session.logic_statements()
+        self.assertIn(
+            "(Implication (SealLeak old power-converter shift-01-M03) "
+            "(Unavailable shift-01 M03))",
+            source,
+        )
+        self.assertIn(
+            "(Implication (Unavailable shift-01 M03) "
+            "(Unavailable shift-01 M01))",
+            source,
+        )
+        self.assertIn(
+            "(Implication (Unavailable shift-01 M04) "
+            "(Unavailable shift-01 M05))",
+            source,
+        )
+        self.assertIn(
+            "(Implication (Unavailable shift-01 M05) "
+            "(PressureAlarm old ore-feed-pump shift-01-M05))",
+            source,
+        )
+
+    def test_reference_oracle_conditions_jointly_on_dependency_chain(self):
+        history = [
+            HistoryCase(f"h-{index}", "old", index < 10, index < 10, "pump")
+            for index in range(100)
+        ]
+        graph = [
+            Incident("a", "old", True, "pump", "M1"),
+            Incident("b", "old", True, "pump", "M2", ("M1",)),
+            Incident("c", "old", True, "pump", "M3", ("M2",)),
+        ]
+        independent = [
+            Incident(item.id, item.cohort, item.alarm, item.equipment_type)
+            for item in graph
+        ]
+        backend = ReferenceBackend(
+            Config(sensitivity=0.9, false_positive_rate=0.1)
+        )
+        graph_beliefs, counters = backend.infer(history, graph, 1, "")
+        independent_beliefs, _ = backend.infer(history, independent, 1, "")
+        self.assertEqual(counters["exact_dependency_components"], 1)
+        self.assertGreater(graph_beliefs["a"], independent_beliefs["a"])
+        self.assertLess(graph_beliefs["c"], independent_beliefs["c"])
 
 
 class AutomatedGameTests(unittest.TestCase):

@@ -69,6 +69,26 @@ def summarize_stress_episode(result: dict) -> dict:
         "regret": result["aggregate"]["regret"],
         "station_score": result["aggregate"]["station_score"],
         "total_production": result["aggregate"]["total_production"],
+        "production_recovered": result["aggregate"].get("production_recovered", 0),
+        "root_cause_repairs": result["aggregate"].get("root_cause_repairs", 0),
+        "symptom_repairs": result["aggregate"].get("symptom_repairs", 0),
+        "causal_diagnosis": {
+            label: {
+                "modules": sum(
+                    row.get("causal_diagnosis_metrics", {}).get(label, {}).get("modules", 0)
+                    for row in rounds
+                ),
+                "diagnoses": sum(
+                    row.get("causal_diagnosis_metrics", {}).get(label, {}).get("diagnoses", 0)
+                    for row in rounds
+                ),
+            }
+            for label in sorted({
+                label
+                for row in rounds
+                for label in row.get("causal_diagnosis_metrics", {})
+            })
+        },
         "learning_curve": result["aggregate"]["learning_curve"],
         "backend_work": {
             "diagnosis_steps": work_total("diagnosis_engine_stats", "steps"),

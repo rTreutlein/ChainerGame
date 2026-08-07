@@ -117,6 +117,19 @@ def _fact_seed(type_expression: str) -> str:
     return type_expression
 
 
+def _forward_fact(entry: tuple[str, str, str]) -> bool:
+    """Whether a newly public fact should enter incremental forward work.
+
+    A resolved shift leak is a historical label.  It remains queryable and is
+    represented in the shared-state induction table, but replaying it through
+    that shift's now-obsolete availability graph creates irrelevant old outage
+    proofs.  PeTTaChainer also rejects one such mixed ``no-tv`` proof during a
+    later multi-root query, so keep these labels lazy.
+    """
+    name, _, _ = entry
+    return not name.startswith("leak-shift-")
+
+
 _number_pattern = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
 _action_proposal_re = re.compile(
     rf"\(ActionProposal\s+([^()\s]+)\s+"
@@ -197,6 +210,15 @@ class ReferenceBackend:
         )
 
     def infer(self, history, incidents, budget, statements):
+        if budget <= 0:
+            return {}, {"queries": len(incidents), "engine_steps": None}
+        if any(item.module_id is not None for item in incidents):
+            beliefs = self._graph_beliefs(history, incidents)
+            return beliefs, {
+                "queries": len(incidents),
+                "engine_steps": None,
+                "exact_dependency_components": self._dependency_component_count(incidents),
+            }
         priors = empirical_feature_priors(history)
         beliefs = {
             x.id: posterior(
@@ -206,8 +228,88 @@ class ReferenceBackend:
             )
             for x in incidents
         }
-        # A zero budget intentionally supplies no proofs; positive reference budgets converge.
-        return (beliefs if budget > 0 else {}), {"queries": len(incidents), "engine_steps": None}
+        return beliefs, {"queries": len(incidents), "engine_steps": None}
+
+    @staticmethod
+    def _components(incidents: list[Incident]) -> list[list[Incident]]:
+        by_module = {
+            item.module_id: item for item in incidents if item.module_id is not None
+        }
+        neighbors = {module_id: set() for module_id in by_module}
+        for item in incidents:
+            if item.module_id is None:
+                continue
+            for upstream in item.upstream_module_ids:
+                if upstream in neighbors:
+                    neighbors[item.module_id].add(upstream)
+                    neighbors[upstream].add(item.module_id)
+        components = []
+        remaining = set(by_module)
+        while remaining:
+            start = min(remaining)
+            stack = [start]
+            found = set()
+            while stack:
+                module_id = stack.pop()
+                if module_id in found:
+                    continue
+                found.add(module_id)
+                stack.extend(neighbors[module_id] - found)
+            remaining -= found
+            components.append([by_module[module_id] for module_id in sorted(found)])
+        return components
+
+    @classmethod
+    def _dependency_component_count(cls, incidents: list[Incident]) -> int:
+        return len(cls._components(incidents))
+
+    def _graph_beliefs(self, history, incidents) -> dict[str, float]:
+        """Exact inference by enumerating each bounded equipment train.
+
+        Dependency components contain at most five local fault variables, so
+        this is O(number of modules) despite jointly conditioning every alarm
+        in a train.  It is the scoring oracle, not an implementation strategy
+        offered to the tested chainers.
+        """
+        priors = empirical_feature_priors(history)
+        result = {}
+        for component in self._components(incidents):
+            indexes = {item.module_id: index for index, item in enumerate(component)}
+            denominator = 0.0
+            numerators = [0.0] * len(component)
+            for mask in range(1 << len(component)):
+                local_fault = [bool(mask & (1 << index)) for index in range(len(component))]
+                unavailable: dict[str, bool] = {}
+
+                def is_unavailable(item: Incident) -> bool:
+                    module_id = item.module_id
+                    if module_id in unavailable:
+                        return unavailable[module_id]
+                    value = local_fault[indexes[module_id]] or any(
+                        is_unavailable(component[indexes[upstream]])
+                        for upstream in item.upstream_module_ids
+                        if upstream in indexes
+                    )
+                    unavailable[module_id] = value
+                    return value
+
+                weight = 1.0
+                for index, item in enumerate(component):
+                    prior = priors[(item.cohort, item.equipment_type)]
+                    weight *= prior if local_fault[index] else 1.0 - prior
+                    sensitivity, false_positive = self._sensor_rates(item.equipment_type)
+                    alarm_probability = (
+                        sensitivity if is_unavailable(item) else false_positive
+                    )
+                    weight *= alarm_probability if item.alarm else 1.0 - alarm_probability
+                denominator += weight
+                for index, fault in enumerate(local_fault):
+                    if fault:
+                        numerators[index] += weight
+            for item, numerator in zip(component, numerators, strict=True):
+                if denominator > 0:
+                    result[item.id] = numerator / denominator
+        return result
 
     def condition_shortfalls(self, events, budget):
         queries = marginal_queries(events)
@@ -318,7 +420,9 @@ class MM2Backend:
             self._atoms_by_name.update((name, atom) for name, _, atom in additions)
 
         facts = [] if cold_start or not forward_facts else [
-            entry for entry in additions if not _is_rule(entry[1])
+            entry
+            for entry in additions
+            if not _is_rule(entry[1]) and _forward_fact(entry)
         ]
         seeds = [_fact_seed(type_expression) for _, type_expression, _ in facts]
         forward_steps = len(seeds) * self._forward_steps_per_seed
@@ -701,7 +805,11 @@ class PeTTaChainerBackend:
 
         additions = [entry for entry in entries if entry[0] not in self._atoms_by_name]
         rules = [entry for entry in additions if _is_rule(entry[1])]
-        facts = [entry for entry in additions if not _is_rule(entry[1])]
+        facts = [
+            entry
+            for entry in additions
+            if not _is_rule(entry[1]) and _forward_fact(entry)
+        ]
 
         if rules:
             self._handler.add_atoms_no_check([atom for _, _, atom in rules])

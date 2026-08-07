@@ -25,10 +25,11 @@ default. A source-tree run without installation is also supported:
 PYTHONPATH=src python -m stationops.cli game
 ```
 
-Each shift shows only the current modules, their cohort/manufacturer, pressure
-sensor state, criticality, and production value at risk. That last value is a
-knowable impact—the production lost if the module leaks—not a disclosed failure
-probability. New-fault and sensor behavior is shared by visible cohort and
+Each shift shows the public acyclic dependency map plus the current modules,
+their cohort/manufacturer, pressure sensor state, criticality, own production,
+and production at risk. The last value includes every transitive downstream
+consumer that would be starved by this module; it is knowable impact, not a
+disclosed failure probability. New-fault and sensor behavior is shared by visible cohort and
 equipment type, not arbitrary per-module constants. This lets a resolved
 coolant-pump case inform later coolant pumps. Failure hazards remain hidden;
 the dashboard reveals only the configured full or partial sensor documentation.
@@ -39,8 +40,12 @@ and seal kits. Committing a shift applies maintenance decisions and production
 losses. Inspection or repair can add a confirmed case to the compact maintenance
 log, while an undiagnosed production failure reports only the aggregate loss,
 does not identify the responsible module, and does not become labeled evidence.
-An unrepaired leak persists into later shifts; a diagnosed leak remains visibly
-known until it is repaired.
+An upstream leak can therefore create several downstream pressure alarms and
+one union-shaped production loss. Inspecting a downstream symptom reports its
+local seal as intact; repairing it wastes resources, while repairing the root
+restores every consumer that has no other active upstream fault. An unrepaired
+leak persists into later shifts; a diagnosed leak remains visibly known until
+it is repaired.
 
 The default episode lasts five shifts. Credits, parts, production, score, and
 learned maintenance evidence carry through the episode. Useful controls are:
@@ -49,6 +54,7 @@ learned maintenance evidence carry through the episode. Useful controls are:
 stationops game --seed 9 --shifts 8 --modules 12
 stationops game --diagnostic-slots 1 --repair-slots 1 --credits 20
 stationops game --sensor-knowledge induced --shifts 30
+stationops game --independent-modules  # legacy additive comparison
 ```
 
 ## Test reasoners in the same simulation
@@ -68,9 +74,11 @@ stationops sweep --benchmark v2 --backend reference --budgets 0,1,10,100
 V2 keeps diagnosis, action, and aggregate-loss budgets separate because their
 rules have different search depths and a native step does not represent
 equivalent work in MM2 and PeTTaChainer. The values above are current
-six-shift fixture-specific calibration points, not cross-backend units or safe
-defaults for larger workloads. If `--action-budget` is omitted it defaults to
-`--budget` for compatibility, which is not the calibrated choice above.
+independent-module calibration points, not cross-backend units or safe defaults
+for larger workloads. Aggregate-loss queries are intentionally idle in the
+default graph mode because its outage closures overlap. If `--action-budget`
+is omitted it defaults to `--budget` for compatibility, which is not the
+calibrated choice above.
 
 Use the dedicated stress sweep to measure how gracefully a backend loses proof
 coverage and decision quality when its budget is insufficient:
@@ -99,6 +107,25 @@ per-shift deterioration, and, when exposed by the backend, native steps,
 transitions, and unifications. Runs are intentionally interactive: an
 under-budget decision can leave faults unresolved, which increases the number
 of ambiguous candidates—and therefore the workload—in later shifts.
+
+The default topology repeats a bounded five-module equipment train:
+
+```text
+power converter -> coolant pump -> thermal loop -> ore feed
+               \-> oxygen scrubber
+```
+
+The logic view contains concrete `SealLeak -> Unavailable`, transitive
+`Unavailable -> Unavailable`, and, for fully calibrated sensors,
+`Unavailable -> PressureAlarm` implications for each shift. A downstream
+diagnosis can therefore require four causal rule applications. Positive-only
+and undocumented sensor endpoints remain unknown rather than inventing the
+inverse base rate needed to compose them. The exact reference backend jointly enumerates the at-most-five
+local faults in each independent train, keeping oracle work linear in the total
+number of modules. Tested chainers receive only the public rules and alarms.
+Results are broken down into root, downstream-distance, and healthy diagnosis
+coverage, and report production recovered, root-cause repairs, and wasted
+symptom repairs.
 
 StationOps-v2 defaults to a mixed information model:
 
@@ -155,7 +182,11 @@ diagnosis budget. It combines each returned belief with public evidence: time
 since a module was last inspected or serviced and exact aggregate production
 shortfalls. When a shortfall can be produced by several combinations of module
 impacts, the controller conditions the probabilities over those combinations
-rather than reading hidden fault identities.
+rather than reading hidden fault identities. That exact subset-sum conditioner
+is used only with `--independent-modules`: dependency losses are unions of
+overlapping downstream closures, not sums of independent candidate impacts.
+Graph-mode reports remain public and anonymous, but are deliberately not fed
+into the old `WeightedSubsetPosteriorDP` model.
 
 The resulting probabilities are then asserted under one immutable decision
 context and the chainer receives a single open query:
@@ -185,7 +216,8 @@ premises cannot bind a proof STV's strength as a numeric term in both chainers,
 so the context-scoped `LeakProbability` fact is the explicit adapter boundary;
 valuation after that boundary is performed by the chainer.
 
-PeTTaChainer performs this conditioning with `WeightedSubsetPosteriorDP`, which
+In independent-module mode, PeTTaChainer performs this conditioning with
+`WeightedSubsetPosteriorDP`, which
 merges configurations by reachable production loss into reusable prefix and
 postfix tables rather than enumerating fault sets.
 `WeightedSubsetPosteriorMarginal` projects a module probability from those

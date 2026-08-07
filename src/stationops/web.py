@@ -73,6 +73,7 @@ INDEX_HTML = r"""<!doctype html>
       <div id="rules" class="muted side-section"></div>
       <div id="message"></div>
       <button id="commit" class="primary commit">Commit selected repairs</button>
+      <div class="side-section"><h2>Dependency map</h2><div id="topology"></div></div>
       <div class="side-section"><h2>Confirmed maintenance log</h2><div id="log"></div></div>
       <div class="side-section"><h2>Production shortfalls</h2><div id="shortfalls"></div></div>
       <div class="side-section" id="report"></div>
@@ -104,7 +105,9 @@ function render(s) {
     info.innerHTML=`<h3>${item.module_id} · ${item.description}</h3><div class="tags">
       <span class="tag">${item.cohort}</span><span class="tag ${item.alarm?'alarm':''}">${item.sensor}</span>
       <span class="tag">${item.sensor_knowledge}</span><span class="tag ${item.criticality}">${item.criticality}</span>
-      <span class="tag">production at risk ${item.value_at_risk}</span></div>
+      <span class="tag">own production ${item.production_value}</span>
+      <span class="tag">production at risk ${item.production_at_risk}</span></div>
+      <div class="muted">${item.upstream_modules.length?`Receives from ${item.upstream_modules.join(', ')}`:'No upstream dependency'}${item.downstream_modules.length?` · Feeds ${item.downstream_modules.join(', ')}`:''}</div>
       ${item.inspection?`<div class="inspection">DIAGNOSTIC: ${item.inspection}</div>`:''}`;
     const actions=document.createElement('div'); actions.className='actions';
     const inspect=document.createElement('button'); inspect.textContent='Inspect';
@@ -122,12 +125,15 @@ function render(s) {
   const rows=Object.entries(s.maintenance_log).map(([cohort,x])=>
     `<div class="log-row"><span>${cohort}</span><span>${x.confirmed_leaks} leaks / ${x.confirmed_cases} cases</span></div>`).join('');
   el('log').innerHTML=rows||'<span class="muted">No confirmed cases yet</span>';
+  el('topology').innerHTML=s.dependency_graph.length?s.dependency_graph.map(x=>
+    `<div class="log-row"><span>${x.upstream}</span><span>→ ${x.downstream}</span></div>`).join(''):
+    '<span class="muted">Modules are independent.</span>';
   el('shortfalls').innerHTML=s.production_shortfalls.length?s.production_shortfalls.map(x=>
     `<div class="log-row"><span>Shift ${x.shift}</span><span>−${x.production_loss}</span></div>`).join(''):
     '<span class="muted">No unexplained production loss.</span>';
   el('rules').textContent=`Inspection: ${s.inspection_cost} credits · Repair: ${s.repair_cost} credits + 1 seal kit`;
   if(s.last_report){const r=s.last_report;el('report').innerHTML=`<h2>Shift ${r.shift} report</h2>
-    <div>Production: ${r.production} / ${r.maximum_production}</div><div>Maintenance cost: ${r.maintenance_cost}</div>
+    <div>Production: ${r.production} / ${r.maximum_production}</div><div>Recovered by repairs: ${r.production_recovered}</div><div>Maintenance cost: ${r.maintenance_cost}</div>
     <div class="${r.production_loss?'bad':'good'}">Production loss: ${r.production_loss}</div>
     <ul>${r.outcomes.map(x=>`<li>${x.module_id}: ${x.result}</li>`).join('')}
     ${r.production_event?`<li>${r.production_event}</li>`:''}

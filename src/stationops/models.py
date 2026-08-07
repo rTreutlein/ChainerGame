@@ -17,6 +17,8 @@ class Incident:
     cohort: str
     alarm: bool
     equipment_type: str | None = None
+    module_id: str | None = None
+    upstream_module_ids: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -33,6 +33,7 @@ def _game_config(args):
         initial_credits=args.credits,
         sensor_knowledge=args.sensor_knowledge,
         learning_window=args.learning_window,
+        dependency_graph=not args.independent_modules,
     )
 
 
@@ -91,6 +92,11 @@ def main(argv=None):
             default="mixed",
         )
         p.add_argument("--learning-window", type=int, default=10)
+        p.add_argument(
+            "--independent-modules",
+            action="store_true",
+            help="disable the StationOps dependency graph for legacy comparison",
+        )
     game = sub.add_parser("game")
     game.add_argument("--seed", type=int, default=7)
     game.add_argument("--shifts", type=int, default=5)
@@ -105,6 +111,11 @@ def main(argv=None):
         default="mixed",
     )
     game.add_argument("--learning-window", type=int, default=10)
+    game.add_argument(
+        "--independent-modules",
+        action="store_true",
+        help="disable the StationOps dependency graph for legacy comparison",
+    )
     game.add_argument("--host", default="127.0.0.1")
     game.add_argument("--port", type=int, default=8765)
     args = parser.parse_args(argv)

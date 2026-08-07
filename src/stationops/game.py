@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass
 from .actions import ActionCandidate, ActionProposal, reference_action_proposals
 from .backends import MM2Backend, PeTTaChainerBackend, ReferenceBackend
 from .config import Config
-from .metta import generate_statements
+from .metta import generate_dependency_statements, generate_statements
 from .models import HistoryCase, Incident
 from .oracle import (
     belief_error_metrics,
@@ -81,6 +81,7 @@ class GameConfig:
     false_positive_rate: float = 0.15
     sensor_knowledge: str = "mixed"
     learning_window: int = 10
+    dependency_graph: bool = True
 
     def __post_init__(self):
         positive = {
@@ -149,13 +150,16 @@ class StationIncident:
     id: str
     module: StationModule
     alarm: bool
+    production_at_risk: int
 
-    def logic_incident(self) -> Incident:
+    def logic_incident(self, upstream_module_ids: tuple[str, ...] = ()) -> Incident:
         return Incident(
             self.id,
             self.module.cohort,
             self.alarm,
             self.module.equipment_type,
+            self.module.id,
+            upstream_module_ids,
         )
 
 
@@ -178,6 +182,39 @@ def _modules(count: int) -> tuple[StationModule, ...]:
             )
         )
     return tuple(result)
+
+
+def dependency_edges(
+    modules: tuple[StationModule, ...], enabled: bool = True
+) -> tuple[tuple[str, str], ...]:
+    """Return ``(downstream, upstream)`` edges for a public acyclic forest.
+
+    Every five-module equipment train has one power source feeding coolant and
+    oxygen, with coolant feeding the thermal loop and then the ore feed.  The
+    repeated bounded component keeps exact oracle inference linear in station
+    size while causal proof depth grows to four rules.
+    """
+    if not enabled:
+        return ()
+    ids = {module.id for module in modules}
+    edges = []
+    for offset in range(0, len(modules), len(EQUIPMENT_TYPES)):
+        block = modules[offset:offset + len(EQUIPMENT_TYPES)]
+        if len(block) < 2:
+            continue
+        by_type = {module.equipment_type: module.id for module in block}
+        planned = (
+            ("coolant-pump", "power-converter"),
+            ("oxygen-scrubber", "power-converter"),
+            ("thermal-loop-pump", "coolant-pump"),
+            ("ore-feed-pump", "thermal-loop-pump"),
+        )
+        for downstream_type, upstream_type in planned:
+            downstream = by_type.get(downstream_type)
+            upstream = by_type.get(upstream_type)
+            if downstream in ids and upstream in ids:
+                edges.append((downstream, upstream))
+    return tuple(edges)
 
 
 def _bounded_probability(value: float) -> float:
@@ -249,6 +286,25 @@ class GameSession:
         self.config = config or GameConfig()
         self.logic_config = self.config.logic_config()
         self.modules = _modules(self.config.modules)
+        self.dependencies = dependency_edges(
+            self.modules, self.config.dependency_graph
+        )
+        self._upstream_by_module: dict[str, tuple[str, ...]] = {
+            module.id: tuple(
+                upstream
+                for downstream, upstream in self.dependencies
+                if downstream == module.id
+            )
+            for module in self.modules
+        }
+        self._downstream_by_module: dict[str, tuple[str, ...]] = {
+            module.id: tuple(
+                downstream
+                for downstream, upstream in self.dependencies
+                if upstream == module.id
+            )
+            for module in self.modules
+        }
         self.history = _generate_game_history(self.config)
         self.shift_index = 0
         self.credits = self.config.initial_credits
@@ -263,6 +319,7 @@ class GameSession:
         self._shortfall_events: list[dict] = []
         self._incidents: tuple[StationIncident, ...] = ()
         self._faults: dict[str, bool] = {}
+        self._unavailable_modules: set[str] = set()
         self._inspected: dict[str, bool] = {}
         self._inspection_spend = 0
         self._last_report: dict | None = None
@@ -282,13 +339,25 @@ class GameSession:
             prior = new_fault_probability(self.config, module)
             fault = self._module_faults[module.id] or self._rng.random() < prior
             self._module_faults[module.id] = fault
+        self._unavailable_modules = self._availability_closure(self._module_faults)
+        for module in self.modules:
+            fault = self._module_faults[module.id]
             sensitivity, false_positive = sensor_rates(
                 self.config, module.equipment_type
             )
-            alarm_rate = sensitivity if fault else false_positive
+            alarm_rate = (
+                sensitivity
+                if module.id in self._unavailable_modules
+                else false_positive
+            )
             alarm = self._rng.random() < alarm_rate
             incident_id = f"shift-{self.shift_index + 1:02d}-{module.id}"
-            incidents.append(StationIncident(incident_id, module, alarm))
+            incidents.append(StationIncident(
+                incident_id,
+                module,
+                alarm,
+                self.production_at_risk(module.id),
+            ))
             faults[incident_id] = fault
         self._incidents = tuple(incidents)
         self._faults = faults
@@ -297,11 +366,54 @@ class GameSession:
 
     @property
     def incidents(self) -> list[Incident]:
-        return [item.logic_incident() for item in self._incidents]
+        return [
+            item.logic_incident(self._upstream_by_module[item.module.id])
+            for item in self._incidents
+        ]
 
     @property
     def maximum_production(self) -> int:
         return sum(module.value_at_risk for module in self.modules)
+
+    def _availability_closure(self, faults: dict[str, bool]) -> set[str]:
+        unavailable = {module_id for module_id, fault in faults.items() if fault}
+        changed = True
+        while changed:
+            changed = False
+            for downstream, upstream in self.dependencies:
+                if upstream in unavailable and downstream not in unavailable:
+                    unavailable.add(downstream)
+                    changed = True
+        return unavailable
+
+    def affected_modules(self, module_id: str) -> set[str]:
+        """Return the module plus every transitive consumer of its output."""
+        return self._availability_closure({
+            module.id: module.id == module_id for module in self.modules
+        })
+
+    def production_at_risk(self, module_id: str) -> int:
+        affected = self.affected_modules(module_id)
+        return sum(
+            module.value_at_risk for module in self.modules if module.id in affected
+        )
+
+    def causal_distance(self, module_id: str) -> int | None:
+        """Distance from the closest active local fault to this module."""
+        frontier = [(module_id, 0)]
+        visited = set()
+        while frontier:
+            current, distance = frontier.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+            if self._module_faults.get(current, False):
+                return distance
+            frontier.extend(
+                (upstream, distance + 1)
+                for upstream in self._upstream_by_module.get(current, ())
+            )
+        return None
 
     def _incident(self, incident_id: str) -> StationIncident:
         for item in self._incidents:
@@ -321,6 +433,8 @@ class GameSession:
         """Return everything a human controller is allowed to observe."""
         incidents = []
         for item in self._incidents if self.status == "active" else ():
+            upstream = self._upstream_by_module[item.module.id]
+            downstream = self._downstream_by_module[item.module.id]
             row = {
                 "id": item.id,
                 "module_id": item.module.id,
@@ -334,6 +448,10 @@ class GameSession:
                 ),
                 "criticality": item.module.criticality,
                 "value_at_risk": item.module.value_at_risk,
+                "production_value": item.module.value_at_risk,
+                "production_at_risk": item.production_at_risk,
+                "upstream_modules": list(upstream),
+                "downstream_modules": list(downstream),
             }
             if item.id in self._inspected:
                 row["inspection"] = "seal leak confirmed" if self._inspected[item.id] else "seal intact"
@@ -359,6 +477,10 @@ class GameSession:
             "total_production": self.total_production,
             "maintenance_log": self.maintenance_summary(),
             "production_shortfalls": list(self._shortfall_log),
+            "dependency_graph": [
+                {"upstream": upstream, "downstream": downstream}
+                for downstream, upstream in self.dependencies
+            ],
             "incidents": incidents,
             "last_report": self._last_report,
         }
@@ -424,6 +546,12 @@ class GameSession:
             "shift": self.shift_index + 1,
             "production_loss": production_loss,
         })
+        # WeightedSubsetPosteriorDP models additive independent losses.  In a
+        # dependency graph, two faults can have overlapping downstream outage
+        # closures, so conditioning this report with that fold would be wrong.
+        # Keep the anonymous public report, but do not create a legacy event.
+        if self.dependencies:
+            return
         known_loss = sum(
             item.module.value_at_risk
             for item in self._incidents
@@ -482,9 +610,8 @@ class GameSession:
         known_before = set(self._known_fault_modules)
         confirmed: dict[str, HistoryCase] = {}
         outcomes = []
-        production_loss = 0
+        unavailable_before = self._availability_closure(self._module_faults)
         unnecessary_repairs = 0
-        actual_incremental_utility = 0.0
         for item in self._incidents:
             fault = self._faults[item.id]
             repaired = item.id in repairs
@@ -493,13 +620,9 @@ class GameSession:
                 self.seal_kits -= 1
                 if fault:
                     result = "leak patched; production protected"
-                    actual_incremental_utility += item.module.value_at_risk - self.config.repair_cost
                 else:
                     result = "seal was intact; repair was unnecessary"
                     unnecessary_repairs += 1
-                    actual_incremental_utility -= (
-                        self.config.repair_cost + self.config.unnecessary_repair_penalty
-                    )
                 outcomes.append({"module_id": item.module.id, "incident_id": item.id, "result": result})
                 confirmed[item.id] = HistoryCase(
                     item.id,
@@ -516,7 +639,6 @@ class GameSession:
                     "status": "leak patched" if fault else "seal serviced intact",
                 }
             elif fault:
-                production_loss += item.module.value_at_risk
                 if item.id in self._inspected:
                     confirmed[item.id] = HistoryCase(
                         item.id,
@@ -534,9 +656,27 @@ class GameSession:
                     item.module.equipment_type,
                 )
 
+        unavailable_after = self._availability_closure(self._module_faults)
+        self._unavailable_modules = unavailable_after
+        production_loss = sum(
+            module.value_at_risk
+            for module in self.modules
+            if module.id in unavailable_after
+        )
+        loss_before_repairs = sum(
+            module.value_at_risk
+            for module in self.modules
+            if module.id in unavailable_before
+        )
+        production_recovered = loss_before_repairs - production_loss
         production = self.maximum_production - production_loss
         maintenance_cost = len(repairs) * self.config.repair_cost + self._inspection_spend
         false_repair_cost = unnecessary_repairs * self.config.unnecessary_repair_penalty
+        actual_incremental_utility = (
+            production_recovered
+            - len(repairs) * self.config.repair_cost
+            - false_repair_cost
+        )
         shift_score = production - maintenance_cost - false_repair_cost
         self.total_production += production
         self.station_score += shift_score
@@ -552,6 +692,17 @@ class GameSession:
             "unnecessary_repair_penalty": false_repair_cost,
             "shift_score": shift_score,
             "actual_incremental_utility": actual_incremental_utility,
+            "production_recovered": production_recovered,
+            "root_cause_repairs": sum(
+                self._faults[item.id] and item.id in repairs
+                for item in self._incidents
+            ),
+            "symptom_repairs": sum(
+                not self._faults[item.id]
+                and item.module.id in unavailable_before
+                and item.id in repairs
+                for item in self._incidents
+            ),
             "repairs": sorted(repairs),
             "production_event": (
                 "one or more unresolved equipment faults reduced station production"
@@ -594,6 +745,16 @@ class GameSession:
                 },
             )
         ]
+        if self.dependencies:
+            lines.append(generate_dependency_statements(
+                self.incidents,
+                shift=self.shift_index + 1,
+                sensor_knowledge=sensor_knowledge(self.config),
+                sensor_models={
+                    equipment_type: sensor_rates(self.config, equipment_type)
+                    for equipment_type, _ in EQUIPMENT_TYPES
+                },
+            ))
         lines.extend(
             f"(: known-leak-{item.id} "
             f"(SealLeak {item.module.cohort} {item.module.equipment_type} {item.id}) "
@@ -606,7 +767,7 @@ class GameSession:
 
 def repair_increment(probability: float, incident: StationIncident, config: GameConfig) -> float:
     return (
-        probability * incident.module.value_at_risk
+        probability * incident.production_at_risk
         - (1.0 - probability) * config.unnecessary_repair_penalty
         - config.repair_cost
     )
@@ -705,7 +866,7 @@ def diagnostic_value(
     """Expected gain from a perfect seal inspection before the repair decision."""
     act_now = max(0.0, repair_increment(probability, incident, config))
     act_after_inspection = probability * max(
-        0.0, incident.module.value_at_risk - config.repair_cost
+        0.0, incident.production_at_risk - config.repair_cost
     )
     return act_after_inspection - act_now - config.inspection_cost
 
@@ -721,7 +882,7 @@ def diagnostic_plan(
     }
     candidates = sorted(
         (
-            (value, item.module.value_at_risk, item.id)
+            (value, item.production_at_risk, item.id)
             for item in session._incidents
             if (value := priorities.get(item.id, float("-inf"))) > 0
         ),
@@ -747,7 +908,7 @@ def diagnostic_plan(
         exploration = sorted(
             (
                 sample_counts[(item.module.cohort, item.module.equipment_type)],
-                -item.module.value_at_risk,
+                -item.production_at_risk,
                 item.id,
             )
             for item in session._incidents
@@ -776,7 +937,7 @@ def _action_candidates(
                 and math.isfinite(beliefs[item.id])
                 else None
             ),
-            production_at_risk=item.module.value_at_risk,
+            production_at_risk=item.production_at_risk,
             inspection_eligible=(
                 item.id not in session._inspected
                 and item.module.id not in session._known_fault_modules
@@ -884,7 +1045,7 @@ def run_action_loop(
         valued = sorted(
             (
                 proposal.utility,
-                session._incident(proposal.incident_id).module.value_at_risk,
+                session._incident(proposal.incident_id).production_at_risk,
                 proposal.incident_id,
             )
             for proposal in proposals
@@ -1028,6 +1189,35 @@ def _probability_metrics(beliefs: dict[str, float], truth: dict[str, bool]) -> d
             if clipped else None
         ),
     }
+
+
+def _causal_diagnosis_metrics(
+    session: GameSession, beliefs: dict[str, float]
+) -> dict[str, dict]:
+    """Break diagnosis quality out by root, propagated symptom, and healthy state."""
+    groups: dict[str, dict[str, bool]] = {}
+    for item in session._incidents:
+        distance = session.causal_distance(item.module.id)
+        label = (
+            "healthy" if distance is None else "root" if distance == 0
+            else f"downstream-{distance}"
+        )
+        groups.setdefault(label, {})[item.id] = session._faults[item.id]
+    result = {}
+    for label, truth in sorted(groups.items()):
+        valid = {
+            incident_id: beliefs[incident_id]
+            for incident_id in truth
+            if isinstance(beliefs.get(incident_id), (int, float))
+            and math.isfinite(beliefs[incident_id])
+        }
+        result[label] = {
+            "modules": len(truth),
+            "diagnoses": len(valid),
+            "coverage": len(valid) / len(truth) if truth else 1.0,
+            **_probability_metrics(valid, truth),
+        }
+    return result
 
 
 def _backend(
@@ -1218,6 +1408,7 @@ def run_game_episode(
         oracle_utility = _decision_utility(
             oracle_repairs, effective_oracle, station_incidents, config
         )
+        causal_metrics = _causal_diagnosis_metrics(session, beliefs)
         resolution = session.commit(repairs, effective_beliefs)
         metrics = belief_error_metrics(beliefs, oracle_beliefs)
         metrics.update(_probability_metrics(beliefs, truth))
@@ -1232,6 +1423,10 @@ def run_game_episode(
                     "alarm": item.alarm,
                     "criticality": item.module.criticality,
                     "value_at_risk": item.module.value_at_risk,
+                    "production_at_risk": item.production_at_risk,
+                    "upstream_modules": list(
+                        session._upstream_by_module[item.module.id]
+                    ),
                 }
                 for item in station_incidents
             ],
@@ -1242,6 +1437,7 @@ def run_game_episode(
             "belief_evidence": belief_evidence,
             "shortfall_marginals": shortfall_marginals,
             "belief_metrics": metrics,
+            "causal_diagnosis_metrics": causal_metrics,
             "inspections": inspection_results,
             "diagnostic_priorities": diagnostic_priorities,
             "action_trace": action_trace,
@@ -1276,6 +1472,15 @@ def run_game_episode(
             "normalized_score": 1.0 if oracle == 0 else max(0.0, expected / oracle),
             "station_score": session.station_score,
             "total_production": session.total_production,
+            "production_recovered": sum(
+                round_["resolution"]["production_recovered"] for round_ in rounds
+            ),
+            "root_cause_repairs": sum(
+                round_["resolution"]["root_cause_repairs"] for round_ in rounds
+            ),
+            "symptom_repairs": sum(
+                round_["resolution"]["symptom_repairs"] for round_ in rounds
+            ),
             "confirmed_history_size": len(session.history),
             "learning_curve": learning_curve,
             "early_to_late_brier_improvement": (

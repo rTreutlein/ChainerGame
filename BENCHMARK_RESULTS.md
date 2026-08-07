@@ -357,3 +357,46 @@ before the next shift, while unresolved marginals remained unfinished searches.
 This isolates the next scaling problem: preserving/resuming the partial DP work
 and reusing it across closely related event revisions, rather than merely
 remembering completed top-level answers.
+
+## Dependency-graph diagnosis baseline
+
+Run on 2026-08-07 with MM2-Chainer `cf9d31c`, PeTTaChainer `2dcfae4`, and
+MORK `6d908e0`. The new default seed-7 fixture used one shift, ten modules,
+twenty initial cases per cohort, and the mixed sensor model. Each repeated
+five-module DAG has four edges and a maximum causal path of three dependency
+edges between the initiating seal leak and the final ore-feed alarm.
+
+| Backend / budget | Returned | Mean absolute error vs joint oracle | Wall time |
+| --- | ---: | ---: | ---: |
+| MM2 / 1 | 10 / 10 | 0.11407 | 1.42 s |
+| MM2 / 2 | 10 / 10 | 0.11407 | 1.42 s |
+| MM2 / 10 | 10 / 10 | 0.11443 | 1.53 s |
+| PeTTaChainer / 100 | 2 / 10 | partial | 5.38 s |
+| PeTTaChainer / 600 | 10 / 10 | 0.11069 | 3.18 s |
+| PeTTaChainer / 1200 | 10 / 10 | 0.11122 | 8.00 s |
+
+The sampled state had a local leak at M09 and a propagated symptom at M10;
+both modules alarmed. The exact bounded-component oracle assigned M09 a
+0.94119 leak probability after jointly conditioning the train. MM2 returned
+0.50725 and PeTTaChainer 0.50724, essentially the old local-sensor result.
+Both chainers therefore retain their prior proof-coverage behavior but do not
+yet combine correlated downstream evidence into the local root posterior. This
+is the intended first graph benchmark gap: returning all ten local diagnoses is
+not the same as solving the causal diagnosis.
+
+The five-shift closed-loop PeTTaChainer run at diagnosis budget 600 and action
+budget 1 completed in 24.22 seconds. Per-shift diagnosis coverage was
+`1.0, 0.8, 0.8, 0.8, 0.8`; normalized score was 0.93849 with 60.20 expected
+decision regret. It recovered 165 production through two root-cause repairs
+and also spent three repairs on downstream symptoms. The exact reference
+controller happened to make the same physical root/symptom repairs and produced
+the same 1,255 total production on this seed, despite its 1.0 normalized score.
+This is why the graph report keeps posterior error, expected regret, actual
+production recovery, and symptom repairs as separate measurements.
+
+A closed-loop MM2 timing was attempted with both action budgets 100 and 1. A
+single current-context `ActionProposal` query did not complete within a minute
+even with `--independent-modules`, while the isolated graph diagnosis above
+completed in 1.45 seconds. The run was stopped and no closed-loop score is
+reported. This isolates the stall to the action path in the current MM2
+checkout rather than attributing it to the new causal graph.

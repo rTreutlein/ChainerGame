@@ -571,6 +571,44 @@ class BenchmarkTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "append-only PeTTaChainer"):
             backend.infer([], [], 1, "(: fact-a (A) (STV .5 1))")
 
+    def test_pettachainer_keeps_resolved_shift_leaks_out_of_forward_replay(self):
+        class Handler:
+            def __init__(self):
+                self.forwarded = []
+
+            def add_atoms_no_check(self, atoms):
+                pass
+
+            def select_facts(self, terms):
+                return list(terms)
+
+            def forward_chain(self, facts, steps):
+                self.forwarded.extend(facts)
+
+            def query_many(self, queries, steps, timeout_sec):
+                return [[] for _ in queries]
+
+        backend = PeTTaChainerBackend(
+            Config(), module=SimpleNamespace(PeTTaChainer=Handler)
+        )
+        backend.infer([], [], 1, "(: initial (A) (STV 1 1))")
+        backend._handler.forwarded.clear()
+        backend.infer(
+            [],
+            [],
+            1,
+            "\n".join((
+                "(: initial (A) (STV 1 1))",
+                "(: leak-shift-01-M01 (SealLeak old pump shift-01-M01) (STV 0 1))",
+                "(: state-leak-shift-01-M01 (Inheritance (State shift-01-M01) "
+                "(SealLeak old pump)) (STV 0 1))",
+            )),
+        )
+        self.assertEqual(
+            backend._handler.forwarded,
+            ["(Inheritance (State shift-01-M01) (SealLeak old pump))"],
+        )
+
     def test_pettachainer_unavailable_error_is_actionable(self):
         with patch("stationops.backends.importlib.import_module", side_effect=ImportError):
             with self.assertRaises(BackendUnavailable) as caught:

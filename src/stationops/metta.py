@@ -127,3 +127,79 @@ def generate_statements(
             f"(ArchivedNoise{i} $x)) (CTV (STV 0.5 1) (STV 0 1)))"
         )
     return "\n".join(lines)
+
+
+def generate_dependency_statements(
+    incidents: list[Incident],
+    *,
+    shift: int,
+    sensor_knowledge: dict[str, str],
+    sensor_models: dict[str, tuple[float, float]],
+) -> str:
+    """Emit the public topology and the causal availability chain for one shift.
+
+    Rules are concrete at the shift boundary so both chainer implementations
+    exercise the same small common language.  A diagnosis can travel backwards
+    from a downstream alarm through any number of ``Unavailable`` edges to the
+    local seal fault that could have initiated the outage.
+    """
+    by_module = {
+        item.module_id: item for item in incidents if item.module_id is not None
+    }
+    context = f"shift-{shift:02d}"
+    lines = []
+    for item in incidents:
+        if item.module_id is None:
+            continue
+        arguments = _arguments(item)
+        lines.append(
+            f"(: local-outage-{item.id} "
+            f"(Implication (SealLeak {arguments}) "
+            f"(Unavailable {context} {item.module_id})) "
+            f"(CTV (STV 1 1) (STV 0 1)))"
+        )
+        mode = (
+            sensor_knowledge.get(item.equipment_type, "full")
+            if item.equipment_type is not None
+            else "full"
+        )
+        sensitivity, false_positive = sensor_models.get(
+            item.equipment_type, (1.0, 0.0)
+        )
+        if mode == "full":
+            truth_value = (
+                f"(CTV (STV {_number(sensitivity)} 1) "
+                f"(STV {_number(false_positive)} 1))"
+            )
+        elif mode in {"positive", "induced"}:
+            # There are no public availability labels from which to learn this
+            # relation yet.  A positive-only STV also cannot be composed with
+            # the deterministic CTV availability edges by both backends: PeTTa
+            # correctly surfaces the missing inverse base rate as ``no-tv``.
+            # The topology remains usable once a fully characterized sensor on
+            # the path supplies an endpoint.
+            truth_value = None
+        else:
+            raise ValueError(f"unknown sensor knowledge mode: {mode}")
+        if truth_value is not None:
+            lines.append(
+                f"(: outage-alarm-{item.id} "
+                f"(Implication (Unavailable {context} {item.module_id}) "
+                f"(PressureAlarm {arguments})) {truth_value})"
+            )
+
+    for downstream in incidents:
+        if downstream.module_id is None:
+            continue
+        for upstream_id in downstream.upstream_module_ids:
+            if upstream_id not in by_module:
+                continue
+            lines.extend((
+                f"(: topology-{context}-{upstream_id}-{downstream.module_id} "
+                f"(DependsOn {downstream.module_id} {upstream_id}) (STV 1 1))",
+                f"(: propagate-{context}-{upstream_id}-{downstream.module_id} "
+                f"(Implication (Unavailable {context} {upstream_id}) "
+                f"(Unavailable {context} {downstream.module_id})) "
+                f"(CTV (STV 1 1) (STV 0 1)))",
+            ))
+    return "\n".join(lines)
