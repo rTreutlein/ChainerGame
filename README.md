@@ -361,9 +361,10 @@ added before facts. Newly added facts are selected in batches of 100 and receive
 two bounded forward agenda steps per seed before grounded `SealLeak` and learned
 inheritance-relation goals enter one shared multi-root query. The diagnosis
 budget is one total expansion allowance for that batch rather than a fresh
-allowance for every incident. PeTTaChainer versions without `query_many` retain
-the older sequential-query fallback. This updates provisional base-rate caches
-while keeping inference explicitly finite and the KB append-only.
+allowance for every incident. The pinned PeTTaChainer version provides
+`query_many` as part of the required backend contract. This updates provisional
+base-rate caches while keeping inference explicitly finite and the KB
+append-only.
 
 The query budget maps to backward PeTTaChainer steps and does not include this
 reported forward work. Round counters include `statements_added`,

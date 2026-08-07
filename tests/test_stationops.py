@@ -313,14 +313,15 @@ class BenchmarkTests(unittest.TestCase):
                 self.forwarded = (list(facts), steps)
                 return []
 
-            def query(self, query, steps, timeout_sec):
-                self.queries.append((query, steps, timeout_sec))
-                if "old-alarm" in query:
-                    return [
+            def query_many(self, queries, steps, timeout_sec):
+                self.queries.append((list(queries), steps, timeout_sec))
+                return [
+                    [],
+                    [
                         "(: weak (PatchPaysOff old old-alarm) (STV 0.2 1))",
                         "(: strong (PatchPaysOff old old-alarm) (STV 0.8 1))",
-                    ]
-                return []
+                    ],
+                ]
 
         cfg = Config(repair_slots=2)
         backend = PeTTaChainerBackend(
@@ -353,20 +354,16 @@ class BenchmarkTests(unittest.TestCase):
             {"new-alarm": "defer", "old-alarm": "repair"},
         )
         self.assertEqual(
-            [query for query, _, _ in Handler.instances[-1].queries],
+            Handler.instances[-1].queries,
             [
-                "(: $prf (SealLeak new new-alarm) $tv)",
-                "(: $prf (SealLeak old old-alarm) $tv)",
+                ([
+                    "(: $prf (SealLeak new new-alarm) $tv)",
+                    "(: $prf (SealLeak old old-alarm) $tv)",
+                ], 17, 0),
             ],
         )
         self.assertEqual(Handler.instances[-1].atoms, ["(: fact (A) (STV 1 1))"])
         self.assertEqual(Handler.instances[-1].forwarded, (["(A)"], 2))
-        self.assertTrue(
-            all(
-                steps == 17 and timeout == 0
-                for _, steps, timeout in Handler.instances[-1].queries
-            )
-        )
 
     def test_pettachainer_snapshots_reuse_handler_and_zero_budget_is_empty(self):
         class Handler:
@@ -388,9 +385,14 @@ class BenchmarkTests(unittest.TestCase):
             def forward_chain(self, facts, steps):
                 return []
 
-            def query(self, query, steps, timeout_sec):
-                incident_id = "second" if "second" in query else "first"
-                return [f"(: proof (PatchPaysOff old {incident_id}) (STV .4 1e0))"]
+            def query_many(self, queries, steps, timeout_sec):
+                return [
+                    [
+                        f"(: proof (PatchPaysOff old "
+                        f"{'second' if 'second' in query else 'first'}) (STV .4 1e0))"
+                    ]
+                    for query in queries
+                ]
 
         backend = PeTTaChainerBackend(
             Config(), module=SimpleNamespace(PeTTaChainer=Handler)
@@ -423,9 +425,9 @@ class BenchmarkTests(unittest.TestCase):
             def forward_chain(self, facts, steps):
                 return []
 
-            def query(self, query, steps, timeout_sec):
-                self.queries.append(query)
-                return ["(: induced relation (STV .42 .7))"]
+            def query_many(self, queries, steps, timeout_sec):
+                self.queries.append(list(queries))
+                return [["(: induced relation (STV .42 .7))"] for _ in queries]
 
         backend = PeTTaChainerBackend(
             Config(),
@@ -442,8 +444,10 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(
             Handler.instances[0].queries,
             [
-                "(: $prf (Inheritance (PressureAlarm old thermal-loop-pump) "
-                "(SealLeak old thermal-loop-pump)) $tv)"
+                [
+                    "(: $prf (Inheritance (PressureAlarm old thermal-loop-pump) "
+                    "(SealLeak old thermal-loop-pump)) $tv)"
+                ]
             ],
         )
 
@@ -472,9 +476,6 @@ class BenchmarkTests(unittest.TestCase):
 
             def forward_chain(self, facts, steps):
                 return []
-
-            def query(self, query, steps, timeout_sec):
-                raise AssertionError("sequential query fallback should not run")
 
             def query_many(self, queries, steps, timeout_sec):
                 self.batches.append((list(queries), steps, timeout_sec))
@@ -772,8 +773,11 @@ class V1BenchmarkTests(unittest.TestCase):
             def forward_chain(self, facts, steps):
                 self.forwarded.append((list(facts), steps))
                 return []
-            def query(self, query, steps, timeout_sec):
-                return ["(: proof (PatchPaysOff x y) (STV .2 1))"]
+            def query_many(self, queries, steps, timeout_sec):
+                return [
+                    ["(: proof (PatchPaysOff x y) (STV .2 1))"]
+                    for _ in queries
+                ]
         backend_module = SimpleNamespace(PeTTaChainer=Handler)
         real = PeTTaChainerBackend
         with patch("stationops.v1.PeTTaChainerBackend",

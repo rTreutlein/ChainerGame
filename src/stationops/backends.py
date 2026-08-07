@@ -842,16 +842,11 @@ class PeTTaChainerBackend:
                 goal = f"(SealLeak {fields}{incident.id})"
             goals.append(f"(: $prf {goal} $tv)")
 
-        query_many = getattr(self._handler, "query_many", None)
-        if callable(query_many):
-            proof_batches = query_many(goals, steps=budget, timeout_sec=0)
-        else:
-            # Keep older PeTTaChainer releases usable while preferring the
-            # shared-arena API whenever it is available.
-            proof_batches = [
-                self._handler.query(goal, steps=budget, timeout_sec=0)
-                for goal in goals
-            ]
+        proof_batches = (
+            self._handler.query_many(goals, steps=budget, timeout_sec=0)
+            if goals
+            else []
+        )
 
         beliefs = {}
         for incident, proofs in zip(incidents, proof_batches, strict=True):
