@@ -382,21 +382,22 @@ class GameSessionTests(unittest.TestCase):
         source = session.logic_statements()
         self.assertIn(
             "(Implication (SealLeak old power-converter shift-01-M03) "
-            "(Unavailable shift-01 M03))",
+            "(LocalProblemCause shift-01 M03))",
             source,
         )
         self.assertIn(
-            "(Implication (Unavailable shift-01 M03) "
-            "(Unavailable shift-01 M01))",
+            "(Exists ($cause) (ProblemCause shift-01 M01 $cause)) "
+            "(Or (LocalProblemCause shift-01 M01) "
+            "(ProblemDependency shift-01 M01))",
             source,
         )
         self.assertIn(
-            "(Implication (Unavailable shift-01 M04) "
-            "(Unavailable shift-01 M05))",
+            "(Implication (Problem shift-01 M04) "
+            "(ProblemDependency shift-01 M05)",
             source,
         )
         self.assertIn(
-            "(Implication (Unavailable shift-01 M05) "
+            "(Implication (Problem shift-01 M05) "
             "(PressureAlarm old ore-feed-pump shift-01-M05))",
             source,
         )

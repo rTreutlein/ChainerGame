@@ -152,7 +152,11 @@ class StationIncident:
     alarm: bool
     production_at_risk: int
 
-    def logic_incident(self, upstream_module_ids: tuple[str, ...] = ()) -> Incident:
+    def logic_incident(
+        self,
+        upstream_module_ids: tuple[str, ...] = (),
+        problem_context: str | None = None,
+    ) -> Incident:
         return Incident(
             self.id,
             self.module.cohort,
@@ -160,6 +164,7 @@ class StationIncident:
             self.module.equipment_type,
             self.module.id,
             upstream_module_ids,
+            problem_context,
         )
 
 
@@ -367,7 +372,10 @@ class GameSession:
     @property
     def incidents(self) -> list[Incident]:
         return [
-            item.logic_incident(self._upstream_by_module[item.module.id])
+            item.logic_incident(
+                self._upstream_by_module[item.module.id],
+                f"shift-{self.shift_index + 1:02d}" if self.dependencies else None,
+            )
             for item in self._incidents
         ]
 

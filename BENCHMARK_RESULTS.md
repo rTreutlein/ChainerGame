@@ -400,3 +400,33 @@ even with `--independent-modules`, while the isolated graph diagnosis above
 completed in 1.45 seconds. The run was stopped and no closed-loop score is
 reported. This isolates the stall to the action path in the current MM2
 checkout rather than attributing it to the new causal graph.
+
+### Explicit problem-state OR follow-up
+
+The dependency model now distinguishes a module's local fault from a propagated
+problem. A local leak produces `LocalProblemCause`; an upstream `Problem`
+produces `ProblemDependency`; an existential cause fold builds the literal
+`(Or LocalProblemCause ProblemDependency)`; and that disjunction produces the
+module's `Problem` and alarm. Fully calibrated graph diagnoses now query the
+context-scoped local cause, avoiding the former direct `SealLeak` shortcut.
+
+On the same seed-7 fixture with fully calibrated sensors, the exact joint oracle
+assigned M09 a local-leak probability of 0.94119 and M10 a probability of
+0.28271. The live results were:
+
+| Backend / budget | Returned | M09 | M10 | Mean absolute error | Wall time |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Joint oracle | 10 / 10 | 0.94119 | 0.28271 | 0 | reference |
+| MM2 / 100 | 10 / 10 | 0.73052 | 0.44532 | 0.05292 | 3.49 s |
+| PeTTaChainer / 600 | 9 / 10 | 0.73052 | 0.45454 | partial | 6.61 s |
+| PeTTaChainer / 2000 | 10 / 10 | 0.73052 | 0.45454 | 0.09487 | 6.71 s |
+
+This exposed two distinct remaining inference issues. MM2 can prove
+`Problem(shift-01, M09)` as a root query, but cannot use that aggregate proof as
+the premise needed to prove `ProblemDependency(shift-01, M10)`. Increasing the
+MM2 budget did more work without changing M09's result. PeTTaChainer can compose
+that premise and prove the downstream dependency, but a grounded
+`LocalProblemCause(shift-01, M09)` query still returns only its direct local
+evidence rather than fusing the inverted downstream observation. Thus the
+explicit state model improves the marginal and makes the missing proof paths
+observable, but neither backend yet reaches the joint causal posterior.

@@ -19,6 +19,7 @@ class Incident:
     equipment_type: str | None = None
     module_id: str | None = None
     upstream_module_ids: Tuple[str, ...] = ()
+    problem_context: str | None = None
 
 
 @dataclass(frozen=True)

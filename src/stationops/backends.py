@@ -568,6 +568,15 @@ class MM2Backend:
 
     def _incident_query(self, incident: Incident) -> str:
         if (
+            incident.problem_context is not None
+            and incident.module_id is not None
+            and self.sensor_knowledge.get(incident.equipment_type, "full") == "full"
+        ):
+            return (
+                f"(LocalProblemCause {incident.problem_context} "
+                f"{incident.module_id})"
+            )
+        if (
             incident.equipment_type is not None
             and self.sensor_knowledge.get(incident.equipment_type)
             in {"positive", "induced"}
@@ -933,6 +942,16 @@ class PeTTaChainerBackend:
         goals = []
         for incident in incidents:
             if (
+                incident.problem_context is not None
+                and incident.module_id is not None
+                and self.sensor_knowledge.get(incident.equipment_type, "full")
+                == "full"
+            ):
+                goal = (
+                    f"(LocalProblemCause {incident.problem_context} "
+                    f"{incident.module_id})"
+                )
+            elif (
                 incident.equipment_type is not None
                 and self.sensor_knowledge.get(incident.equipment_type)
                 in {"positive", "induced"}

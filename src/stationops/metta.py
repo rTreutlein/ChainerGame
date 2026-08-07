@@ -139,9 +139,11 @@ def generate_dependency_statements(
     """Emit the public topology and the causal availability chain for one shift.
 
     Rules are concrete at the shift boundary so both chainer implementations
-    exercise the same small common language.  A diagnosis can travel backwards
-    from a downstream alarm through any number of ``Unavailable`` edges to the
-    local seal fault that could have initiated the outage.
+    exercise the same small common language.  Local leaks and upstream
+    dependencies produce distinct cause atoms. Existential premises combine
+    variable fan-in with ``OrFormula`` and materialize the literal
+    ``(Or LocalProblemCause ProblemDependency)`` required by backward OR
+    projection.
     """
     by_module = {
         item.module_id: item for item in incidents if item.module_id is not None
@@ -152,12 +154,52 @@ def generate_dependency_statements(
         if item.module_id is None:
             continue
         arguments = _arguments(item)
-        lines.append(
-            f"(: local-outage-{item.id} "
-            f"(Implication (SealLeak {arguments}) "
-            f"(Unavailable {context} {item.module_id})) "
-            f"(CTV (STV 1 1) (STV 0 1)))"
+        upstream_ids = tuple(
+            upstream_id
+            for upstream_id in item.upstream_module_ids
+            if upstream_id in by_module
         )
+        if upstream_ids:
+            lines.extend((
+                f"(: local-problem-cause-{item.id} "
+                f"(Implication (SealLeak {arguments}) "
+                f"(LocalProblemCause {context} {item.module_id})) "
+                f"(CTV (STV 1 1) (STV 0 1)))",
+                f"(: local-as-problem-cause-{item.id} "
+                f"(Implication (LocalProblemCause {context} {item.module_id}) "
+                f"(ProblemCause {context} {item.module_id} LocalLeak)) "
+                f"(CTV (STV 1 1) (STV 0 1)))",
+                f"(: dependency-as-problem-cause-{item.id} "
+                f"(Implication (ProblemDependency {context} {item.module_id}) "
+                f"(ProblemCause {context} {item.module_id} Dependency)) "
+                f"(CTV (STV 1 1) (STV 0 1)))",
+                f"(: combine-problem-causes-{item.id} "
+                f"(Implication "
+                f"(Exists ($cause) "
+                f"(ProblemCause {context} {item.module_id} $cause)) "
+                f"(Or (LocalProblemCause {context} {item.module_id}) "
+                f"(ProblemDependency {context} {item.module_id}))) "
+                f"(CTV (STV 1 1) (STV 0 1)))",
+                f"(: problem-from-disjunction-{item.id} "
+                f"(Implication "
+                f"(Or (LocalProblemCause {context} {item.module_id}) "
+                f"(ProblemDependency {context} {item.module_id})) "
+                f"(Problem {context} {item.module_id})) "
+                f"(CTV (STV 1 1) (STV 0 1)))",
+            ))
+        else:
+            lines.append(
+                f"(: local-problem-cause-{item.id} "
+                f"(Implication (SealLeak {arguments}) "
+                f"(LocalProblemCause {context} {item.module_id})) "
+                f"(CTV (STV 1 1) (STV 0 1)))"
+            )
+            lines.append(
+                f"(: root-problem-{item.id} "
+                f"(Implication (LocalProblemCause {context} {item.module_id}) "
+                f"(Problem {context} {item.module_id})) "
+                f"(CTV (STV 1 1) (STV 0 1)))"
+            )
         mode = (
             sensor_knowledge.get(item.equipment_type, "full")
             if item.equipment_type is not None
@@ -183,8 +225,8 @@ def generate_dependency_statements(
             raise ValueError(f"unknown sensor knowledge mode: {mode}")
         if truth_value is not None:
             lines.append(
-                f"(: outage-alarm-{item.id} "
-                f"(Implication (Unavailable {context} {item.module_id}) "
+                f"(: problem-alarm-{item.id} "
+                f"(Implication (Problem {context} {item.module_id}) "
                 f"(PressureAlarm {arguments})) {truth_value})"
             )
 
@@ -197,9 +239,10 @@ def generate_dependency_statements(
             lines.extend((
                 f"(: topology-{context}-{upstream_id}-{downstream.module_id} "
                 f"(DependsOn {downstream.module_id} {upstream_id}) (STV 1 1))",
-                f"(: propagate-{context}-{upstream_id}-{downstream.module_id} "
-                f"(Implication (Unavailable {context} {upstream_id}) "
-                f"(Unavailable {context} {downstream.module_id})) "
+                f"(: dependency-problem-cause-{context}-{upstream_id}-{downstream.module_id} "
+                f"(Implication "
+                f"(Problem {context} {upstream_id}) "
+                f"(ProblemDependency {context} {downstream.module_id})) "
                 f"(CTV (STV 1 1) (STV 0 1)))",
             ))
     return "\n".join(lines)

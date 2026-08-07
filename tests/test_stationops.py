@@ -506,6 +506,76 @@ class BenchmarkTests(unittest.TestCase):
             ],
         )
 
+    def test_graph_diagnosis_queries_the_context_scoped_local_cause(self):
+        graph_incident = Incident(
+            "shift-01-M09",
+            "old",
+            True,
+            "thermal-loop-pump",
+            "M09",
+            ("M06",),
+            "shift-01",
+        )
+        mm2 = MM2Backend(
+            Config(),
+            module=SimpleNamespace(),
+            sensor_knowledge={"thermal-loop-pump": "full"},
+        )
+        self.assertEqual(
+            mm2._incident_query(graph_incident),
+            "(LocalProblemCause shift-01 M09)",
+        )
+
+        induced = MM2Backend(
+            Config(),
+            module=SimpleNamespace(),
+            sensor_knowledge={"thermal-loop-pump": "induced"},
+        )
+        self.assertEqual(
+            induced._incident_query(graph_incident),
+            "(Inheritance (PressureAlarm old thermal-loop-pump) "
+            "(SealLeak old thermal-loop-pump))",
+        )
+
+    def test_pettachainer_graph_query_uses_local_problem_cause(self):
+        class Handler:
+            def __init__(self):
+                self.queries = []
+
+            def add_atoms_no_check(self, atoms):
+                pass
+
+            def select_facts(self, terms):
+                return list(terms)
+
+            def forward_chain(self, facts, steps):
+                return []
+
+            def query_many(self, queries, steps, timeout_sec):
+                self.queries.append(list(queries))
+                return [["(: proof (LocalProblemCause shift-01 M09) (STV .7 1))"]]
+
+        backend = PeTTaChainerBackend(
+            Config(),
+            module=SimpleNamespace(PeTTaChainer=Handler),
+            sensor_knowledge={"thermal-loop-pump": "full"},
+        )
+        incident = Incident(
+            "shift-01-M09",
+            "old",
+            True,
+            "thermal-loop-pump",
+            "M09",
+            ("M06",),
+            "shift-01",
+        )
+        beliefs, _ = backend.infer([], [incident], 20, "")
+        self.assertEqual(beliefs, {"shift-01-M09": .7})
+        self.assertEqual(
+            backend._handler.queries,
+            [["(: $prf (LocalProblemCause shift-01 M09) $tv)"]],
+        )
+
     def test_pettachainer_adds_named_deltas_rules_first_without_retractions(self):
         class Handler:
             instances = []

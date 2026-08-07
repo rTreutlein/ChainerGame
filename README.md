@@ -115,12 +115,17 @@ power converter -> coolant pump -> thermal loop -> ore feed
                \-> oxygen scrubber
 ```
 
-The logic view contains concrete `SealLeak -> Unavailable`, transitive
-`Unavailable -> Unavailable`, and, for fully calibrated sensors,
-`Unavailable -> PressureAlarm` implications for each shift. A downstream
-diagnosis can therefore require four causal rule applications. Positive-only
-and undocumented sensor endpoints remain unknown rather than inventing the
-inverse base rate needed to compose them. The exact reference backend jointly enumerates the at-most-five
+The logic view keeps local and propagated causes distinct:
+`SealLeak -> LocalProblemCause`, upstream
+`Problem -> ProblemDependency`, an existential cause premise that folds the
+local and dependency alternatives with `OrFormula` into the literal
+`(Or LocalProblemCause ProblemDependency)`, then `Or -> Problem` and, for fully
+calibrated sensors, `Problem -> PressureAlarm`. Graph-mode diagnosis queries
+the context-scoped local cause rather than taking the old direct local-sensor
+shortcut. A downstream diagnosis can therefore require several causal rule
+applications plus a distribution-valued OR fold.
+Positive-only and undocumented sensor endpoints remain unknown rather than
+inventing the inverse base rate needed to compose them. The exact reference backend jointly enumerates the at-most-five
 local faults in each independent train, keeping oracle work linear in the total
 number of modules. Tested chainers receive only the public rules and alarms.
 Results are broken down into root, downstream-distance, and healthy diagnosis
