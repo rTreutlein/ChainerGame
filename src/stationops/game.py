@@ -262,25 +262,54 @@ def public_sensor_description(config: GameConfig, equipment_type: str) -> str:
 
 
 def _generate_game_history(config: GameConfig) -> list[HistoryCase]:
-    """Generate resolved public cases from the same feature-conditioned world."""
+    """Generate resolved station snapshots from the same causal world.
+
+    A local seal leak and a module-level problem are different labels once the
+    dependency graph is enabled: an intact downstream module can be unavailable
+    because an upstream module failed.  Historical maintenance records expose
+    both resolved outcomes so the reasoner can learn local-fault priors and the
+    correct sensor antecedent population independently.
+    """
     rng = random.Random(config.seed)
+    modules = _modules(10)
+    dependencies = dependency_edges(modules, config.dependency_graph)
+    remaining = {
+        "old": config.initial_history_per_cohort,
+        "new": config.initial_history_per_cohort,
+    }
     result = []
-    for cohort in ("old", "new"):
-        cohort_modules = [module for module in _modules(10) if module.cohort == cohort]
-        for index in range(config.initial_history_per_cohort):
-            template = cohort_modules[index % len(cohort_modules)]
-            leak = rng.random() < new_fault_probability(config, template)
-            sensitivity, false_positive = sensor_rates(config, template.equipment_type)
-            alarm = rng.random() < (sensitivity if leak else false_positive)
-            result.append(
-                HistoryCase(
-                    f"h-{cohort}-{index:04d}",
-                    cohort,
-                    leak,
-                    alarm,
-                    template.equipment_type,
-                )
+    snapshot = 0
+    while any(remaining.values()):
+        faults = {
+            module.id: rng.random() < new_fault_probability(config, module)
+            for module in modules
+        }
+        unavailable = {module_id for module_id, fault in faults.items() if fault}
+        changed = True
+        while changed:
+            changed = False
+            for downstream, upstream in dependencies:
+                if upstream in unavailable and downstream not in unavailable:
+                    unavailable.add(downstream)
+                    changed = True
+        for module in modules:
+            if remaining[module.cohort] <= 0:
+                continue
+            problem = module.id in unavailable
+            sensitivity, false_positive = sensor_rates(
+                config, module.equipment_type
             )
+            alarm = rng.random() < (sensitivity if problem else false_positive)
+            result.append(HistoryCase(
+                f"h-{snapshot:04d}-{module.id}",
+                module.cohort,
+                faults[module.id],
+                alarm,
+                module.equipment_type,
+                problem,
+            ))
+            remaining[module.cohort] -= 1
+        snapshot += 1
     return result
 
 
@@ -751,6 +780,8 @@ class GameSession:
                     equipment_type: sensor_rates(self.config, equipment_type)
                     for equipment_type, _ in EQUIPMENT_TYPES
                 },
+                direct_sensor_rules=not bool(self.dependencies),
+                problem_history=bool(self.dependencies),
             )
         ]
         if self.dependencies:
@@ -770,6 +801,16 @@ class GameSession:
             for item in self._incidents
             if item.module.id in self._known_fault_modules
         )
+        if self.dependencies:
+            context = f"shift-{self.shift_index + 1:02d}"
+            lines.extend(
+                f"(: known-local-problem-{item.id} "
+                f"(LocalProblemEvidence {context} {item.module.id} "
+                f"{item.module.cohort} {item.module.equipment_type} {item.id}) "
+                f"(STV 1 1))"
+                for item in self._incidents
+                if item.module.id in self._known_fault_modules
+            )
         return "\n".join(lines)
 
 
@@ -1303,6 +1344,9 @@ def _resolved_model(history: list[HistoryCase]) -> dict[str, dict]:
         intact = [case for case in cases if not case.leak]
         alarms = [case for case in cases if case.alarm]
         normals = [case for case in cases if not case.alarm]
+        problem_cases = [case for case in cases if case.problem is not None]
+        problems = [case for case in problem_cases if case.problem]
+        available = [case for case in problem_cases if not case.problem]
         key = f"{cohort}|{equipment_type or 'untyped'}"
         result[key] = {
             "cases": len(cases),
@@ -1318,6 +1362,18 @@ def _resolved_model(history: list[HistoryCase]) -> dict[str, dict]:
             ),
             "leak_given_normal": (
                 sum(case.leak for case in normals) / len(normals) if normals else None
+            ),
+            "problem_cases": len(problem_cases),
+            "problem_rate": (
+                len(problems) / len(problem_cases) if problem_cases else None
+            ),
+            "alarm_given_problem": (
+                sum(case.alarm for case in problems) / len(problems)
+                if problems else None
+            ),
+            "alarm_given_available": (
+                sum(case.alarm for case in available) / len(available)
+                if available else None
             ),
         }
     return result

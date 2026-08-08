@@ -34,6 +34,8 @@ def generate_statements(
     *,
     sensor_knowledge: dict[str, str] | None = None,
     sensor_models: dict[str, tuple[float, float]] | None = None,
+    direct_sensor_rules: bool = True,
+    problem_history: bool = False,
 ) -> str:
     """Emit public facts plus full, positive-only, or induced sensor knowledge.
 
@@ -64,20 +66,20 @@ def generate_statements(
             + (f"{equipment_type} " if equipment_type else "")
             + "$unit"
         )
-        if mode == "full":
+        if direct_sensor_rules and mode == "full":
             lines.append(
                 f"(: alarmGivenLeak-{suffix} "
                 f"(Implication (SealLeak {variables}) (PressureAlarm {variables})) "
                 f"(CTV (STV {_number(sensitivity)} 1) "
                 f"(STV {_number(false_positive)} 1)))"
             )
-        elif mode == "positive":
+        elif direct_sensor_rules and mode == "positive":
             lines.append(
                 f"(: alarmGivenLeak-{suffix} "
                 f"(Implication (SealLeak {variables}) (PressureAlarm {variables})) "
                 f"(STV {_number(sensitivity)} 1))"
             )
-        elif mode != "induced":
+        elif mode not in {"full", "positive", "induced"}:
             raise ValueError(f"unknown sensor knowledge mode: {mode}")
 
         lines.append(
@@ -96,13 +98,26 @@ def generate_statements(
             f"(: alarm-{case.id} (PressureAlarm {arguments}) "
             f"(STV {1 if case.alarm else 0} 1))"
         )
+        if (
+            problem_history
+            and case.equipment_type is not None
+            and case.problem is not None
+        ):
+            lines.append(
+                f"(: problem-history-{case.id} "
+                f"(Problem {arguments}) "
+                f"(STV {1 if case.problem else 0} 1))"
+            )
         if case.equipment_type is not None:
             group = _group(case)
             state = f"(State {case.id})"
+            equipment_concept = _concept("EquipmentState", group)
             leak_concept = _concept("SealLeak", group)
             alarm_concept = _concept("PressureAlarm", group)
             normal_concept = _concept("PressureNormal", group)
             lines.extend((
+                f"(: state-equipment-{case.id} "
+                f"(Inheritance {state} {equipment_concept}) (STV 1 1))",
                 f"(: state-leak-{case.id} (Inheritance {state} {leak_concept}) "
                 f"(STV {1 if case.leak else 0} 1))",
                 f"(: state-alarm-{case.id} (Inheritance {state} {alarm_concept}) "
@@ -138,97 +153,118 @@ def generate_dependency_statements(
 ) -> str:
     """Emit the public topology and the causal availability chain for one shift.
 
-    Rules are concrete at the shift boundary so both chainer implementations
-    exercise the same small common language.  Local leaks and upstream
-    dependencies produce distinct cause atoms. Existential premises combine
-    variable fan-in with ``OrFormula`` and materialize the literal
-    ``(Or LocalProblemCause ProblemDependency)`` required by backward OR
-    projection.
+    Prior and evidence messages are distinct. Local priors come from the
+    independently induced ``EquipmentState -> SealLeak`` relation and propagate
+    forward through ``ProblemPrior``. Current alarms invert only
+    ``Problem -> PressureAlarm``. Two pure-OR evidence rules then project either
+    the local cause or dependency cause while using the other independent prior.
+    Keeping priors out of the queried evidence atoms prevents a cheap prior
+    proof from subsuming the longer diagnostic path.
     """
     by_module = {
         item.module_id: item for item in incidents if item.module_id is not None
     }
     context = f"shift-{shift:02d}"
+
+    def graph_atom(head: str, item: Incident) -> str:
+        return (
+            f"({head} {context} {item.module_id} {item.cohort} "
+            f"{item.equipment_type} {item.id})"
+        )
+
+    def local_cause_atom(item: Incident) -> str:
+        return (
+            f"(Inheritance (ModuleState {context} {item.module_id}) "
+            f"(SealLeak {item.cohort} {item.equipment_type}))"
+        )
+
+    def problem_atom(item: Incident) -> str:
+        return f"(Problem {item.cohort} {item.equipment_type} {item.id})"
+
     lines = []
     for item in incidents:
         if item.module_id is None:
             continue
-        arguments = _arguments(item)
+        local_prior = local_cause_atom(item)
+        local_evidence = graph_atom("LocalProblemEvidence", item)
+        dependency_prior = graph_atom("ProblemDependencyPrior", item)
+        dependency_evidence = graph_atom("ProblemDependencyEvidence", item)
+        problem_prior = graph_atom("ProblemPrior", item)
+        problem = problem_atom(item)
         upstream_ids = tuple(
             upstream_id
             for upstream_id in item.upstream_module_ids
             if upstream_id in by_module
         )
+        lines.append(
+            f"(: current-equipment-state-{item.id} "
+            f"(Inheritance (ModuleState {context} {item.module_id}) "
+            f"{_concept('EquipmentState', _group(item))}) (STV 1 1))"
+        )
         if upstream_ids:
             lines.extend((
-                f"(: local-problem-cause-{item.id} "
-                f"(Implication (SealLeak {arguments}) "
-                f"(LocalProblemCause {context} {item.module_id})) "
-                f"(CTV (STV 1 1) (STV 0 1)))",
-                f"(: local-as-problem-cause-{item.id} "
-                f"(Implication (LocalProblemCause {context} {item.module_id}) "
-                f"(ProblemCause {context} {item.module_id} LocalLeak)) "
-                f"(CTV (STV 1 1) (STV 0 1)))",
-                f"(: dependency-as-problem-cause-{item.id} "
-                f"(Implication (ProblemDependency {context} {item.module_id}) "
-                f"(ProblemCause {context} {item.module_id} Dependency)) "
-                f"(CTV (STV 1 1) (STV 0 1)))",
-                f"(: combine-problem-causes-{item.id} "
+                f"(: problem-prior-from-disjunction-{item.id} "
                 f"(Implication "
-                f"(Exists ($cause) "
-                f"(ProblemCause {context} {item.module_id} $cause)) "
-                f"(Or (LocalProblemCause {context} {item.module_id}) "
-                f"(ProblemDependency {context} {item.module_id}))) "
+                f"(Or {local_prior} {dependency_prior}) {problem_prior}) "
                 f"(CTV (STV 1 1) (STV 0 1)))",
-                f"(: problem-from-disjunction-{item.id} "
-                f"(Implication "
-                f"(Or (LocalProblemCause {context} {item.module_id}) "
-                f"(ProblemDependency {context} {item.module_id})) "
-                f"(Problem {context} {item.module_id})) "
+                f"(: problem-from-local-evidence-{item.id} "
+                f"(Implication (Or {local_evidence} {dependency_prior}) "
+                f"{problem}) (CTV (STV 1 1) (STV 0 1)))",
+                f"(: local-evidence-from-problem-{item.id} "
+                f"(Implication {problem} "
+                f"(Or {local_evidence} {dependency_prior})) "
+                f"(CTV (STV 1 1) (STV 0 1)))",
+                f"(: problem-from-dependency-evidence-{item.id} "
+                f"(Implication (Or {local_prior} {dependency_evidence}) "
+                f"{problem}) (CTV (STV 1 1) (STV 0 1)))",
+                f"(: dependency-evidence-from-problem-{item.id} "
+                f"(Implication {problem} "
+                f"(Or {local_prior} {dependency_evidence})) "
                 f"(CTV (STV 1 1) (STV 0 1)))",
             ))
         else:
-            lines.append(
-                f"(: local-problem-cause-{item.id} "
-                f"(Implication (SealLeak {arguments}) "
-                f"(LocalProblemCause {context} {item.module_id})) "
-                f"(CTV (STV 1 1) (STV 0 1)))"
-            )
-            lines.append(
-                f"(: root-problem-{item.id} "
-                f"(Implication (LocalProblemCause {context} {item.module_id}) "
-                f"(Problem {context} {item.module_id})) "
-                f"(CTV (STV 1 1) (STV 0 1)))"
-            )
-        mode = (
-            sensor_knowledge.get(item.equipment_type, "full")
-            if item.equipment_type is not None
-            else "full"
-        )
-        sensitivity, false_positive = sensor_models.get(
-            item.equipment_type, (1.0, 0.0)
-        )
+            lines.extend((
+                f"(: root-problem-prior-{item.id} "
+                f"(Implication {local_prior} {problem_prior}) "
+                f"(CTV (STV 1 1) (STV 0 1)))",
+                f"(: root-problem-from-local-evidence-{item.id} "
+                f"(Implication {local_evidence} {problem}) "
+                f"(CTV (STV 1 1) (STV 0 1)))",
+                f"(: root-local-evidence-from-problem-{item.id} "
+                f"(Implication {problem} {local_evidence}) "
+                f"(CTV (STV 1 1) (STV 0 1)))",
+            ))
+
+    for cohort, equipment_type in sorted(
+        {_group(item) for item in incidents},
+        key=lambda group: (group[0], group[1] or ""),
+    ):
+        mode = sensor_knowledge.get(equipment_type, "full")
         if mode == "full":
-            truth_value = (
-                f"(CTV (STV {_number(sensitivity)} 1) "
-                f"(STV {_number(false_positive)} 1))"
+            sensitivity, false_positive = sensor_models.get(
+                equipment_type, (1.0, 0.0)
             )
-        elif mode in {"positive", "induced"}:
-            # There are no public availability labels from which to learn this
-            # relation yet.  A positive-only STV also cannot be composed with
-            # the deterministic CTV availability edges by both backends: PeTTa
-            # correctly surfaces the missing inverse base rate as ``no-tv``.
-            # The topology remains usable once a fully characterized sensor on
-            # the path supplies an endpoint.
-            truth_value = None
-        else:
-            raise ValueError(f"unknown sensor knowledge mode: {mode}")
-        if truth_value is not None:
+            suffix = _group_suffix((cohort, equipment_type))
             lines.append(
-                f"(: problem-alarm-{item.id} "
-                f"(Implication (Problem {context} {item.module_id}) "
-                f"(PressureAlarm {arguments})) {truth_value})"
+                f"(: problem-alarm-{suffix} "
+                f"(Implication "
+                f"(Problem {cohort} {equipment_type} $unit) "
+                f"(PressureAlarm {cohort} {equipment_type} $unit)) "
+                f"(CTV (STV {_number(sensitivity)} 1) "
+                f"(STV {_number(false_positive)} 1)))"
             )
+        elif mode == "positive":
+            sensitivity, _ = sensor_models.get(equipment_type, (1.0, 0.0))
+            suffix = _group_suffix((cohort, equipment_type))
+            lines.append(
+                f"(: problem-alarm-{suffix} "
+                f"(Implication "
+                f"(Problem {cohort} {equipment_type} $unit) "
+                f"(PressureAlarm {cohort} {equipment_type} $unit)) "
+                f"(STV {_number(sensitivity)} 1))"
+            )
+        elif mode != "induced":
+            raise ValueError(f"unknown sensor knowledge mode: {mode}")
 
     for downstream in incidents:
         if downstream.module_id is None:
@@ -236,13 +272,17 @@ def generate_dependency_statements(
         for upstream_id in downstream.upstream_module_ids:
             if upstream_id not in by_module:
                 continue
+            upstream = by_module[upstream_id]
             lines.extend((
                 f"(: topology-{context}-{upstream_id}-{downstream.module_id} "
                 f"(DependsOn {downstream.module_id} {upstream_id}) (STV 1 1))",
-                f"(: dependency-problem-cause-{context}-{upstream_id}-{downstream.module_id} "
-                f"(Implication "
-                f"(Problem {context} {upstream_id}) "
-                f"(ProblemDependency {context} {downstream.module_id})) "
+                f"(: (no_inverse dependency-problem-prior-{context}-{upstream_id}-{downstream.module_id}) "
+                f"(Implication {graph_atom('ProblemPrior', upstream)} "
+                f"{graph_atom('ProblemDependencyPrior', downstream)}) "
+                f"(CTV (STV 1 1) (STV 0 1)))",
+                f"(: (no_inverse dependency-problem-evidence-{context}-{upstream_id}-{downstream.module_id}) "
+                f"(Implication {graph_atom('ProblemDependencyEvidence', downstream)} "
+                f"{problem_atom(upstream)}) "
                 f"(CTV (STV 1 1) (STV 0 1)))",
             ))
     return "\n".join(lines)

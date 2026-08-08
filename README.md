@@ -115,15 +115,17 @@ power converter -> coolant pump -> thermal loop -> ore feed
                \-> oxygen scrubber
 ```
 
-The logic view keeps local and propagated causes distinct:
-`SealLeak -> LocalProblemCause`, upstream
-`Problem -> ProblemDependency`, an existential cause premise that folds the
-local and dependency alternatives with `OrFormula` into the literal
-`(Or LocalProblemCause ProblemDependency)`, then `Or -> Problem` and, for fully
-calibrated sensors, `Problem -> PressureAlarm`. Graph-mode diagnosis queries
-the context-scoped local cause rather than taking the old direct local-sensor
-shortcut. A downstream diagnosis can therefore require several causal rule
-applications plus a distribution-valued OR fold.
+The logic view keeps learned priors separate from current diagnostic evidence.
+Resolved fleet snapshots label both a local `SealLeak` and the module-level
+`Problem`: an intact downstream seal can still have `Problem = true` because an
+upstream module failed. Historical `EquipmentState -> SealLeak` inheritance
+supplies local priors, which flow downstream through `ProblemPrior`. Current
+alarms invert `Problem -> PressureAlarm`; deterministic OR definitions then
+project either `LocalProblemEvidence` or `ProblemDependencyEvidence` while
+using the other cause's independently learned prior. Diagnostic evidence flows
+upstream, while priors flow downstream, and graph-mode diagnosis queries only
+the evidence atom so a cheap prior proof cannot subsume the longer diagnosis.
+The old direct `SealLeak -> PressureAlarm` shortcut is absent in graph mode.
 Positive-only and undocumented sensor endpoints remain unknown rather than
 inventing the inverse base rate needed to compose them. The exact reference backend jointly enumerates the at-most-five
 local faults in each independent train, keeping oracle work linear in the total
@@ -145,9 +147,13 @@ Every resolved case is also encoded as a shared state subject, for example
 `(Inheritance (State shift-03-M04) (SealLeak new thermal-loop-pump))` and a
 corresponding `PressureAlarm` or `PressureNormal` observation. False labels use
 complemented-strength positive facts (`STV 0 1`); absence remains unknown.
-Only inspected or repaired outcomes enter this table. An unresolved current
-alarm is deliberately excluded, since inserting an observation without its
-leak label would dilute the learned conditional.
+Initial graph snapshots additionally contain an explicit `Problem` label for
+total local-or-upstream unavailability; later partial inspections do not invent
+that label when only the local seal condition was resolved.
+After the initial resolved snapshots, only inspected or repaired outcomes enter
+this table. An unresolved current alarm is deliberately excluded, since
+inserting an observation without its leak label would dilute the learned
+conditional.
 
 For positive-only and undocumented types the controller queries an induced
 `PressureAlarm/PressureNormal -> SealLeak` inheritance relation. The

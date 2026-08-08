@@ -9,6 +9,7 @@ class HistoryCase:
     leak: bool
     alarm: bool
     equipment_type: str | None = None
+    problem: bool | None = None
 
 
 @dataclass(frozen=True)

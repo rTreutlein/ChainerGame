@@ -573,8 +573,9 @@ class MM2Backend:
             and self.sensor_knowledge.get(incident.equipment_type, "full") == "full"
         ):
             return (
-                f"(LocalProblemCause {incident.problem_context} "
-                f"{incident.module_id})"
+                f"(LocalProblemEvidence {incident.problem_context} "
+                f"{incident.module_id} {incident.cohort} "
+                f"{incident.equipment_type} {incident.id})"
             )
         if (
             incident.equipment_type is not None
@@ -948,8 +949,9 @@ class PeTTaChainerBackend:
                 == "full"
             ):
                 goal = (
-                    f"(LocalProblemCause {incident.problem_context} "
-                    f"{incident.module_id})"
+                    f"(LocalProblemEvidence {incident.problem_context} "
+                    f"{incident.module_id} {incident.cohort} "
+                    f"{incident.equipment_type} {incident.id})"
                 )
             elif (
                 incident.equipment_type is not None

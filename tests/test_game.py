@@ -130,22 +130,37 @@ class GameSessionTests(unittest.TestCase):
             sensor_rates(session.config, "ore-feed-pump"),
         )
 
-    def test_mixed_knowledge_emits_full_positive_and_inductive_paths(self):
+    def test_mixed_knowledge_separates_graph_likelihood_from_history_learning(self):
         session = GameSession(GameConfig(modules=10))
         source = session.logic_statements()
-        self.assertIn(
-            "alarmGivenLeak-old-coolant-pump", source
-        )
+        self.assertNotIn("alarmGivenLeak-", source)
+        self.assertIn("problem-alarm-old-coolant-pump", source)
         self.assertIn("(CTV (STV 0.92 1) (STV 0.12 1))", source)
-        self.assertIn(
-            "alarmGivenLeak-old-oxygen-scrubber", source
-        )
+        self.assertIn("problem-alarm-old-oxygen-scrubber", source)
         self.assertIn("(STV 0.75 1)", source)
-        self.assertNotIn("alarmGivenLeak-old-thermal-loop-pump", source)
+        self.assertNotIn("problem-alarm-old-thermal-loop-pump", source)
         resolved = session.history[0]
         self.assertIn(
             f"(Inheritance (State {resolved.id}) "
+            f"(EquipmentState {resolved.cohort} {resolved.equipment_type}))",
+            source,
+        )
+        self.assertIn(
+            f"(Inheritance (State {resolved.id}) "
             f"(SealLeak {resolved.cohort} {resolved.equipment_type}))",
+            source,
+        )
+        propagated = next(
+            case for case in session.history if case.problem and not case.leak
+        )
+        self.assertIn(
+            f"(Problem {propagated.cohort} {propagated.equipment_type} "
+            f"{propagated.id}) (STV 1 1)",
+            source,
+        )
+        self.assertIn(
+            f"(SealLeak {propagated.cohort} {propagated.equipment_type} "
+            f"{propagated.id}) (STV 0 1)",
             source,
         )
         self.assertNotIn(f"(State {session.incidents[0].id})", source)
@@ -381,24 +396,26 @@ class GameSessionTests(unittest.TestCase):
         session = GameSession(GameConfig(modules=5, sensor_knowledge="full"))
         source = session.logic_statements()
         self.assertIn(
-            "(Implication (SealLeak old power-converter shift-01-M03) "
-            "(LocalProblemCause shift-01 M03))",
+            "(Implication (Problem old power-converter shift-01-M03) "
+            "(LocalProblemEvidence shift-01 M03 old power-converter "
+            "shift-01-M03))",
             source,
         )
         self.assertIn(
-            "(Exists ($cause) (ProblemCause shift-01 M01 $cause)) "
-            "(Or (LocalProblemCause shift-01 M01) "
-            "(ProblemDependency shift-01 M01))",
+            "(Or (LocalProblemEvidence shift-01 M01 old coolant-pump "
+            "shift-01-M01) (ProblemDependencyPrior shift-01 M01 "
+            "old coolant-pump shift-01-M01))",
             source,
         )
         self.assertIn(
-            "(Implication (Problem shift-01 M04) "
-            "(ProblemDependency shift-01 M05)",
+            "(Implication (ProblemDependencyEvidence shift-01 M05 "
+            "old ore-feed-pump shift-01-M05) "
+            "(Problem new thermal-loop-pump shift-01-M04))",
             source,
         )
         self.assertIn(
-            "(Implication (Problem shift-01 M05) "
-            "(PressureAlarm old ore-feed-pump shift-01-M05))",
+            "(Implication (Problem old ore-feed-pump $unit) "
+            "(PressureAlarm old ore-feed-pump $unit))",
             source,
         )
 

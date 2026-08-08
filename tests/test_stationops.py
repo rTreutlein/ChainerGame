@@ -506,7 +506,7 @@ class BenchmarkTests(unittest.TestCase):
             ],
         )
 
-    def test_graph_diagnosis_queries_the_context_scoped_local_cause(self):
+    def test_graph_diagnosis_queries_context_scoped_local_evidence(self):
         graph_incident = Incident(
             "shift-01-M09",
             "old",
@@ -523,7 +523,8 @@ class BenchmarkTests(unittest.TestCase):
         )
         self.assertEqual(
             mm2._incident_query(graph_incident),
-            "(LocalProblemCause shift-01 M09)",
+            "(LocalProblemEvidence shift-01 M09 old "
+            "thermal-loop-pump shift-01-M09)",
         )
 
         induced = MM2Backend(
@@ -537,7 +538,7 @@ class BenchmarkTests(unittest.TestCase):
             "(SealLeak old thermal-loop-pump))",
         )
 
-    def test_pettachainer_graph_query_uses_local_problem_cause(self):
+    def test_pettachainer_graph_query_uses_local_problem_evidence(self):
         class Handler:
             def __init__(self):
                 self.queries = []
@@ -553,7 +554,10 @@ class BenchmarkTests(unittest.TestCase):
 
             def query_many(self, queries, steps, timeout_sec):
                 self.queries.append(list(queries))
-                return [["(: proof (LocalProblemCause shift-01 M09) (STV .7 1))"]]
+                return [[
+                    "(: proof (LocalProblemEvidence shift-01 M09 old "
+                    "thermal-loop-pump shift-01-M09) (STV .7 1))"
+                ]]
 
         backend = PeTTaChainerBackend(
             Config(),
@@ -573,7 +577,10 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(beliefs, {"shift-01-M09": .7})
         self.assertEqual(
             backend._handler.queries,
-            [["(: $prf (LocalProblemCause shift-01 M09) $tv)"]],
+            [[
+                "(: $prf (LocalProblemEvidence shift-01 M09 old "
+                "thermal-loop-pump shift-01-M09) $tv)"
+            ]],
         )
 
     def test_pettachainer_adds_named_deltas_rules_first_without_retractions(self):

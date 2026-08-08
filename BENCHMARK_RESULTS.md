@@ -430,3 +430,42 @@ that premise and prove the downstream dependency, but a grounded
 evidence rather than fusing the inverted downstream observation. Thus the
 explicit state model improves the marginal and makes the missing proof paths
 observable, but neither backend yet reaches the joint causal posterior.
+
+### Prior/evidence knowledge-model correction
+
+Run on 2026-08-08 with PeTTaChainer `e3961f7` and the installed MM2 binding from
+`cf9d31c`. PeTTaChainer had just added backward support for pure top-level OR
+premises. The StationOps history generator previously violated its
+own causal model: live alarms were sampled from total module unavailability,
+but historical `Problem` labels were copied from local seal-leak labels. An
+intact downstream module affected by an upstream fault was therefore taught as
+`Problem = false` even though its alarm was generated from `Problem = true`.
+
+Initial history is now generated as resolved station snapshots. Each row keeps
+the local leak, propagated problem, and alarm as separate public labels. The
+rule graph likewise separates forward prior messages from backward diagnostic
+evidence, so a local prior cannot be returned as if it were an alarm-conditioned
+answer. Structural `Problem = OR(local, dependency)` equality is represented by
+two deterministic implications. A probe using only the forward OR implication
+returned no PeTTaChainer proof at budget 20,000 because Bayesian implication
+inversion still needs a base rate for the OR term; the explicit reverse
+definition supplies logical equality rather than introducing an adapter phase.
+
+The full unit suite passed 69 tests with six optional live tests skipped. A
+one-shift, ten-module, all-calibrated seed-7 smoke run used 40 initial cases per
+cohort and no action queries:
+
+| Backend / diagnosis budget | Returned | Wall time |
+| --- | ---: | ---: |
+| MM2 / 100 | 2 / 10 | 5.56 s |
+| PeTTaChainer / 600 | 2 / 10 | 9.97 s |
+
+Both engines returned the two root-module diagnoses with matching strengths
+(M03 approximately `0.055785`, M08 `0`). A focused PeTTaChainer budget-20,000
+query did traverse M10's alarm, project its dependency evidence, propagate that
+evidence to M09, merge it with M09's own alarm, and finally project M09's local
+cause. It returned M09 `0.66675`; the exact joint oracle returned `0.97674` for
+this newly sampled history. The semantics are now coherent and the missing
+quality/coverage at practical budgets is exposed as a chainer search and
+approximation problem rather than being hidden by incorrect training labels or
+a Python-managed two-phase base-rate transfer.
