@@ -1,6 +1,6 @@
-;; Minimal PeTTaChainer repro: a directly queryable OR is not recovered through
-;; implication inversion after its conclusion has both a prior and sensor
-;; evidence.
+;; PeTTaChainer regression repro: a directly queryable OR must remain
+;; recoverable through its definitional reverse direction after the equivalent
+;; Problem has both prior and sensor evidence.
 ;;
 ;; Run from this checkout with:
 ;;   petta examples/pettachainer_or_inversion_repro.metta
@@ -23,10 +23,12 @@
       (ProblemDependency current)
       (STV 0.2 0.9)))
 
-;; Problem is definitionally the OR of its local and dependency causes.
+;; Problem is definitionally equivalent to the OR of its local and dependency
+;; causes.  BiImplication lowers this declaration into two explicit one-way
+;; directions; those directions must not themselves be inverted again.
 !(compileadd orInverseReproKb
    (: problemDefinition
-      (Implication
+      (BiImplication
          (Or
             (LocalProblem current)
             (ProblemDependency current))
@@ -73,10 +75,11 @@
 !(query 5000 orInverseReproKb
    (: $proof (Problem current) $tv))
 
-;; Checkpoint 3: this should include a proof that follows Problem backwards
-;; through problemDefinition, projects child 0 of the reconstructed OR, and
-;; uses dependencyPrior as the other-child evidence.  At PeTTaChainer e3961f7,
-;; only localPrior is returned; no alarm-conditioned proof appears.
-!(println! "CHECK 3: missing alarm-conditioned local proof")
+;; Checkpoint 3: this includes a proof that follows Problem backwards through
+;; problemDefinition, projects child 0 of the reconstructed OR, and uses
+;; dependencyPrior as the other-child evidence.  The forward Problem proof is
+;; cyclic relative to this query and is removed before equivalent Problem
+;; outputs are merged; the independent alarm proof remains available.
+!(println! "CHECK 3: alarm-conditioned local proof")
 !(query 20000 orInverseReproKb
    (: $proof (LocalProblem current) $tv))
