@@ -115,16 +115,17 @@ power converter -> coolant pump -> thermal loop -> ore feed
                \-> oxygen scrubber
 ```
 
-The logic view keeps learned priors separate from current diagnostic evidence.
+The logic view keeps local and propagated causes distinct without renaming a
+proposition between prior and diagnostic use.
 Resolved fleet snapshots label both a local `SealLeak` and the module-level
 `Problem`: an intact downstream seal can still have `Problem = true` because an
 upstream module failed. Historical `EquipmentState -> SealLeak` inheritance
-supplies local priors, which flow downstream through `ProblemPrior`. Current
-alarms invert `Problem -> PressureAlarm`; deterministic OR definitions then
-project either `LocalProblemEvidence` or `ProblemDependencyEvidence` while
-using the other cause's independently learned prior. Diagnostic evidence flows
-upstream, while priors flow downstream, and graph-mode diagnosis queries only
-the evidence atom so a cheap prior proof cannot subsume the longer diagnosis.
+supplies `LocalProblem`; upstream `Problem` supplies `ProblemDependency`; and
+their literal OR is definitionally equivalent to the module's `Problem` via a
+fully confident `BiImplication`. FoldAll launches the complete
+OR query when inversion needs its base rate, so the same child proofs supply
+both the prior calculation and current diagnosis. Current alarms invert
+`Problem -> PressureAlarm`, and backward OR projection recovers the local cause.
 The old direct `SealLeak -> PressureAlarm` shortcut is absent in graph mode.
 Positive-only and undocumented sensor endpoints remain unknown rather than
 inventing the inverse base rate needed to compose them. The exact reference backend jointly enumerates the at-most-five

@@ -805,7 +805,7 @@ class GameSession:
             context = f"shift-{self.shift_index + 1:02d}"
             lines.extend(
                 f"(: known-local-problem-{item.id} "
-                f"(LocalProblemEvidence {context} {item.module.id} "
+                f"(LocalProblem {context} {item.module.id} "
                 f"{item.module.cohort} {item.module.equipment_type} {item.id}) "
                 f"(STV 1 1))"
                 for item in self._incidents

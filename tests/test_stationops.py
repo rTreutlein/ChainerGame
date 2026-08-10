@@ -523,7 +523,7 @@ class BenchmarkTests(unittest.TestCase):
         )
         self.assertEqual(
             mm2._incident_query(graph_incident),
-            "(LocalProblemEvidence shift-01 M09 old "
+            "(LocalProblem shift-01 M09 old "
             "thermal-loop-pump shift-01-M09)",
         )
 
@@ -555,7 +555,7 @@ class BenchmarkTests(unittest.TestCase):
             def query_many(self, queries, steps, timeout_sec):
                 self.queries.append(list(queries))
                 return [[
-                    "(: proof (LocalProblemEvidence shift-01 M09 old "
+                    "(: proof (LocalProblem shift-01 M09 old "
                     "thermal-loop-pump shift-01-M09) (STV .7 1))"
                 ]]
 
@@ -578,7 +578,7 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(
             backend._handler.queries,
             [[
-                "(: $prf (LocalProblemEvidence shift-01 M09 old "
+                "(: $prf (LocalProblem shift-01 M09 old "
                 "thermal-loop-pump shift-01-M09) $tv)"
             ]],
         )
@@ -614,11 +614,15 @@ class BenchmarkTests(unittest.TestCase):
         )
         first = "\n".join((
             "(: rule (Implication (A) (Goal)) (CTV (STV 1 1) (STV 0 1)))",
+            "(: bi-rule (BiImplication (B) (OtherGoal)) "
+            "(CTV (STV 1 1) (STV 0 1)))",
             "(: fact-a (A) (STV 1 1))",
             "(: fact-b (Not (B)) (STV 1 1))",
         ))
         second = "\n".join((
             "(: rule (Implication (A) (Goal)) (CTV (STV 1 1) (STV 0 1)))",
+            "(: bi-rule (BiImplication (B) (OtherGoal)) "
+            "(CTV (STV 1 1) (STV 0 1)))",
             "(: fact-a (A) (STV 1 1))",
             "(: fact-c (C) (STV 1 1))",
         ))
@@ -630,7 +634,12 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(
             handler.added,
             [
-                ["(: rule (Implication (A) (Goal)) (CTV (STV 1 1) (STV 0 1)))"],
+                [
+                    "(: rule (Implication (A) (Goal)) "
+                    "(CTV (STV 1 1) (STV 0 1)))",
+                    "(: bi-rule (BiImplication (B) (OtherGoal)) "
+                    "(CTV (STV 1 1) (STV 0 1)))",
+                ],
                 ["(: fact-a (A) (STV 1 1))", "(: fact-b (Not (B)) (STV 1 1))"],
                 ["(: fact-c (C) (STV 1 1))"],
             ],
@@ -640,7 +649,7 @@ class BenchmarkTests(unittest.TestCase):
             handler.forwarded,
             [(["(A)", "(B)"], 4), (["(C)"], 2)],
         )
-        self.assertEqual(initial["statements_added"], 3)
+        self.assertEqual(initial["statements_added"], 4)
         self.assertEqual(initial["statements_removed"], 0)
         self.assertEqual(revised["statements_added"], 1)
         self.assertEqual(revised["statements_removed"], 0)

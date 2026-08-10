@@ -396,21 +396,21 @@ class GameSessionTests(unittest.TestCase):
         session = GameSession(GameConfig(modules=5, sensor_knowledge="full"))
         source = session.logic_statements()
         self.assertIn(
-            "(Implication (Problem old power-converter shift-01-M03) "
-            "(LocalProblemEvidence shift-01 M03 old power-converter "
-            "shift-01-M03))",
+            "(BiImplication (Inheritance (ModuleState shift-01 M03) "
+            "(SealLeak old power-converter)) (LocalProblem shift-01 M03 "
+            "old power-converter shift-01-M03))",
             source,
         )
         self.assertIn(
-            "(Or (LocalProblemEvidence shift-01 M01 old coolant-pump "
-            "shift-01-M01) (ProblemDependencyPrior shift-01 M01 "
+            "(Or (LocalProblem shift-01 M01 old coolant-pump "
+            "shift-01-M01) (ProblemDependency shift-01 M01 "
             "old coolant-pump shift-01-M01))",
             source,
         )
         self.assertIn(
-            "(Implication (ProblemDependencyEvidence shift-01 M05 "
-            "old ore-feed-pump shift-01-M05) "
-            "(Problem new thermal-loop-pump shift-01-M04))",
+            "(BiImplication (Problem new thermal-loop-pump shift-01-M04) "
+            "(ProblemDependency shift-01 M05 old ore-feed-pump "
+            "shift-01-M05))",
             source,
         )
         self.assertIn(

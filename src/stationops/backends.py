@@ -106,7 +106,7 @@ def _statement_parts(atom: str) -> tuple[str, str]:
 
 def _is_rule(type_expression: str) -> bool:
     fields = _fields(type_expression)
-    return bool(fields) and fields[0] == "Implication"
+    return bool(fields) and fields[0] in {"Implication", "BiImplication"}
 
 
 def _fact_seed(type_expression: str) -> str:
@@ -573,7 +573,7 @@ class MM2Backend:
             and self.sensor_knowledge.get(incident.equipment_type, "full") == "full"
         ):
             return (
-                f"(LocalProblemEvidence {incident.problem_context} "
+                f"(LocalProblem {incident.problem_context} "
                 f"{incident.module_id} {incident.cohort} "
                 f"{incident.equipment_type} {incident.id})"
             )
@@ -949,7 +949,7 @@ class PeTTaChainerBackend:
                 == "full"
             ):
                 goal = (
-                    f"(LocalProblemEvidence {incident.problem_context} "
+                    f"(LocalProblem {incident.problem_context} "
                     f"{incident.module_id} {incident.cohort} "
                     f"{incident.equipment_type} {incident.id})"
                 )

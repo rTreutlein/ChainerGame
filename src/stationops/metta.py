@@ -153,13 +153,11 @@ def generate_dependency_statements(
 ) -> str:
     """Emit the public topology and the causal availability chain for one shift.
 
-    Prior and evidence messages are distinct. Local priors come from the
-    independently induced ``EquipmentState -> SealLeak`` relation and propagate
-    forward through ``ProblemPrior``. Current alarms invert only
-    ``Problem -> PressureAlarm``. Two pure-OR evidence rules then project either
-    the local cause or dependency cause while using the other independent prior.
-    Keeping priors out of the queried evidence atoms prevents a cheap prior
-    proof from subsuming the longer diagnostic path.
+    A local problem and an upstream dependency are the two possible causes of
+    the same module-level problem.  They remain the same propositions in prior
+    and diagnostic use: FoldAll can run their complete queries to obtain the
+    base rate of the literal OR, and backward OR projection can then condition
+    the local cause on current alarms.
     """
     by_module = {
         item.module_id: item for item in incidents if item.module_id is not None
@@ -185,11 +183,9 @@ def generate_dependency_statements(
     for item in incidents:
         if item.module_id is None:
             continue
-        local_prior = local_cause_atom(item)
-        local_evidence = graph_atom("LocalProblemEvidence", item)
-        dependency_prior = graph_atom("ProblemDependencyPrior", item)
-        dependency_evidence = graph_atom("ProblemDependencyEvidence", item)
-        problem_prior = graph_atom("ProblemPrior", item)
+        local_source = local_cause_atom(item)
+        local_problem = graph_atom("LocalProblem", item)
+        dependency = graph_atom("ProblemDependency", item)
         problem = problem_atom(item)
         upstream_ids = tuple(
             upstream_id
@@ -201,39 +197,23 @@ def generate_dependency_statements(
             f"(Inheritance (ModuleState {context} {item.module_id}) "
             f"{_concept('EquipmentState', _group(item))}) (STV 1 1))"
         )
+        lines.append(
+            f"(: local-problem-{item.id} "
+            f"(BiImplication {local_source} {local_problem}) "
+            f"(CTV (STV 1 1) (STV 0 1)))"
+        )
         if upstream_ids:
-            lines.extend((
-                f"(: problem-prior-from-disjunction-{item.id} "
-                f"(Implication "
-                f"(Or {local_prior} {dependency_prior}) {problem_prior}) "
-                f"(CTV (STV 1 1) (STV 0 1)))",
-                f"(: problem-from-local-evidence-{item.id} "
-                f"(Implication (Or {local_evidence} {dependency_prior}) "
-                f"{problem}) (CTV (STV 1 1) (STV 0 1)))",
-                f"(: local-evidence-from-problem-{item.id} "
-                f"(Implication {problem} "
-                f"(Or {local_evidence} {dependency_prior})) "
-                f"(CTV (STV 1 1) (STV 0 1)))",
-                f"(: problem-from-dependency-evidence-{item.id} "
-                f"(Implication (Or {local_prior} {dependency_evidence}) "
-                f"{problem}) (CTV (STV 1 1) (STV 0 1)))",
-                f"(: dependency-evidence-from-problem-{item.id} "
-                f"(Implication {problem} "
-                f"(Or {local_prior} {dependency_evidence})) "
-                f"(CTV (STV 1 1) (STV 0 1)))",
-            ))
+            lines.append(
+                f"(: problem-from-disjunction-{item.id} "
+                f"(BiImplication (Or {local_problem} {dependency}) {problem}) "
+                f"(CTV (STV 1 1) (STV 0 1)))"
+            )
         else:
-            lines.extend((
-                f"(: root-problem-prior-{item.id} "
-                f"(Implication {local_prior} {problem_prior}) "
-                f"(CTV (STV 1 1) (STV 0 1)))",
-                f"(: root-problem-from-local-evidence-{item.id} "
-                f"(Implication {local_evidence} {problem}) "
-                f"(CTV (STV 1 1) (STV 0 1)))",
-                f"(: root-local-evidence-from-problem-{item.id} "
-                f"(Implication {problem} {local_evidence}) "
-                f"(CTV (STV 1 1) (STV 0 1)))",
-            ))
+            lines.append(
+                f"(: root-problem-{item.id} "
+                f"(BiImplication {local_problem} {problem}) "
+                f"(CTV (STV 1 1) (STV 0 1)))"
+            )
 
     for cohort, equipment_type in sorted(
         {_group(item) for item in incidents},
@@ -276,13 +256,9 @@ def generate_dependency_statements(
             lines.extend((
                 f"(: topology-{context}-{upstream_id}-{downstream.module_id} "
                 f"(DependsOn {downstream.module_id} {upstream_id}) (STV 1 1))",
-                f"(: (no_inverse dependency-problem-prior-{context}-{upstream_id}-{downstream.module_id}) "
-                f"(Implication {graph_atom('ProblemPrior', upstream)} "
-                f"{graph_atom('ProblemDependencyPrior', downstream)}) "
-                f"(CTV (STV 1 1) (STV 0 1)))",
-                f"(: (no_inverse dependency-problem-evidence-{context}-{upstream_id}-{downstream.module_id}) "
-                f"(Implication {graph_atom('ProblemDependencyEvidence', downstream)} "
-                f"{problem_atom(upstream)}) "
+                f"(: dependency-problem-{context}-{upstream_id}-{downstream.module_id} "
+                f"(BiImplication {problem_atom(upstream)} "
+                f"{graph_atom('ProblemDependency', downstream)}) "
                 f"(CTV (STV 1 1) (STV 0 1)))",
             ))
     return "\n".join(lines)
