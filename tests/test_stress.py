@@ -54,6 +54,7 @@ class StressBenchmarkTests(unittest.TestCase):
                     "expected_count": 4,
                     "evaluated_count": 3,
                     "coverage": 0.75,
+                    "confidence_weighted_coverage": 0.15,
                     "brier_score": 0.2,
                     "log_loss": 0.3,
                 },
@@ -84,6 +85,7 @@ class StressBenchmarkTests(unittest.TestCase):
         }
         summary = summarize_stress_episode(result)
         self.assertEqual(summary["diagnosis_coverage"], 0.75)
+        self.assertEqual(summary["diagnosis_confidence_weighted_coverage"], 0.15)
         self.assertEqual(summary["shortfall_coverage"], 2 / 3)
         self.assertEqual(summary["shortfall_engine_queries"], 2)
         self.assertEqual(summary["shortfall_cache_hits"], 1)
@@ -105,6 +107,7 @@ class StressBenchmarkTests(unittest.TestCase):
                 "action_proposals": 5,
                 "shortfall_budget": 20,
                 "diagnosis_coverage": 1.0,
+                "diagnosis_confidence_weighted_coverage": 0.2,
                 "shortfall_coverage": 0.25,
                 "normalized_score": 0.8,
                 "regret": 10.0,
@@ -117,6 +120,7 @@ class StressBenchmarkTests(unittest.TestCase):
                 "action_proposals": 7,
                 "shortfall_budget": 20,
                 "diagnosis_coverage": 0.8,
+                "diagnosis_confidence_weighted_coverage": 0.4,
                 "shortfall_coverage": 0.75,
                 "normalized_score": 0.6,
                 "regret": 30.0,
@@ -129,6 +133,9 @@ class StressBenchmarkTests(unittest.TestCase):
         self.assertEqual(curve[0]["action_empty_queries"]["max"], 1)
         self.assertEqual(curve[0]["action_proposals"]["mean"], 6)
         self.assertAlmostEqual(curve[0]["diagnosis_coverage"]["mean"], 0.9)
+        self.assertAlmostEqual(
+            curve[0]["diagnosis_confidence_weighted_coverage"]["mean"], 0.3
+        )
         self.assertEqual(curve[0]["shortfall_coverage"]["min"], 0.25)
         self.assertEqual(curve[0]["regret"]["max"], 30.0)
         self.assertEqual(curve[0]["wall_time_seconds"]["mean"], 3.0)

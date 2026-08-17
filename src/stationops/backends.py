@@ -20,7 +20,7 @@ from .actions import (
     reference_action_proposals,
 )
 from .config import Config
-from .models import HistoryCase, Incident
+from .models import Belief, HistoryCase, Incident
 from .oracle import empirical_feature_priors, posterior
 from .shortfall import (
     SHORTFALL_RULES,
@@ -181,7 +181,7 @@ class ReasonerBackend(Protocol):
 
     def infer(
         self, history: list[HistoryCase], incidents: list[Incident], budget: int, statements: str
-    ) -> tuple[dict[str, float], dict[str, object]]: ...
+    ) -> tuple[dict[str, Belief], dict[str, object]]: ...
 
     def propose_actions(
         self,
@@ -213,7 +213,10 @@ class ReferenceBackend:
         if budget <= 0:
             return {}, {"queries": len(incidents), "engine_steps": None}
         if any(item.module_id is not None for item in incidents):
-            beliefs = self._graph_beliefs(history, incidents)
+            beliefs = {
+                key: Belief(value, 1.0)
+                for key, value in self._graph_beliefs(history, incidents).items()
+            }
             return beliefs, {
                 "queries": len(incidents),
                 "engine_steps": None,
@@ -221,10 +224,13 @@ class ReferenceBackend:
             }
         priors = empirical_feature_priors(history)
         beliefs = {
-            x.id: posterior(
-                priors[(x.cohort, x.equipment_type)],
-                x.alarm,
-                *self._sensor_rates(x.equipment_type),
+            x.id: Belief(
+                posterior(
+                    priors[(x.cohort, x.equipment_type)],
+                    x.alarm,
+                    *self._sensor_rates(x.equipment_type),
+                ),
+                1.0,
             )
             for x in incidents
         }
@@ -593,19 +599,27 @@ class MM2Backend:
         return f"(SealLeak {fields}{incident.id})"
 
     @staticmethod
-    def _beliefs_from_results(results) -> dict[str, float]:
+    def _beliefs_from_results(results) -> dict[str, Belief]:
         """Map each proven SealLeak goal to its strongest returned STV."""
         beliefs = {}
         for tag, proofs in results:
-            strengths = [
-                proof["truth_value"]["strength"]
+            truth_values = [
+                Belief(
+                    proof["truth_value"]["strength"],
+                    proof["truth_value"].get("confidence", 1.0),
+                )
                 for proof in proofs
                 if isinstance(proof, dict)
                 and isinstance(proof.get("truth_value"), dict)
                 and isinstance(proof["truth_value"].get("strength"), (int, float))
+                and isinstance(
+                    proof["truth_value"].get("confidence", 1.0), (int, float)
+                )
+                and math.isfinite(proof["truth_value"]["strength"])
+                and math.isfinite(proof["truth_value"].get("confidence", 1.0))
             ]
-            if strengths:
-                beliefs[tag] = max(strengths)
+            if truth_values:
+                beliefs[tag] = max(truth_values, key=float)
         return beliefs
 
     def infer(self, history, incidents, budget, statements):
@@ -771,15 +785,16 @@ class PeTTaChainerBackend:
             ) from exc
 
     @classmethod
-    def _strongest_strength(cls, proofs) -> float | None:
-        strengths = []
+    def _strongest_belief(cls, proofs) -> Belief | None:
+        truth_values = []
         for proof in proofs or ():
             match = cls._stv_re.search(str(proof))
             if match is not None:
                 strength = float(match.group(1))
-                if math.isfinite(strength):
-                    strengths.append(strength)
-        return max(strengths) if strengths else None
+                confidence = float(match.group(2))
+                if math.isfinite(strength) and math.isfinite(confidence):
+                    truth_values.append(Belief(strength, confidence))
+        return max(truth_values, key=float) if truth_values else None
 
     def _new_handler(self):
         try:
@@ -979,9 +994,9 @@ class PeTTaChainerBackend:
 
         beliefs = {}
         for incident, proofs in zip(incidents, proof_batches, strict=True):
-            strength = self._strongest_strength(proofs)
-            if strength is not None:
-                beliefs[incident.id] = strength
+            belief = self._strongest_belief(proofs)
+            if belief is not None:
+                beliefs[incident.id] = belief
         counters.update({
             "queries": len(incidents),
             "induced_queries": sum(

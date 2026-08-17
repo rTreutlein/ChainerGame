@@ -13,6 +13,7 @@ from stationops.config import Config
 from stationops.game import (
     GameConfig,
     GameSession,
+    _action_candidates,
     allocate_repairs,
     decision_beliefs,
     diagnostic_plan,
@@ -21,7 +22,7 @@ from stationops.game import (
     run_game_episode,
     sensor_rates,
 )
-from stationops.models import HistoryCase, Incident
+from stationops.models import Belief, HistoryCase, Incident
 from stationops.web import GameApplication, INDEX_HTML
 
 
@@ -270,6 +271,59 @@ class GameSessionTests(unittest.TestCase):
         self.assertEqual(plan, [target.id])
         self.assertGreater(priorities[target.id], 0)
 
+    def test_low_confidence_proof_barely_moves_public_base_rate(self):
+        session = GameSession(GameConfig(seed=7, shifts=1, modules=10))
+        target = next(
+            item for item in session._incidents if item.module.id == "M03"
+        )
+        missing, missing_evidence = decision_beliefs(session, {})
+        weak, weak_evidence = decision_beliefs(
+            session,
+            {target.id: Belief(0.24883470583173792, 1.0e-6)},
+        )
+
+        self.assertEqual(missing[target.id], 0.25)
+        self.assertEqual(missing[target.id].confidence, 0.0)
+        self.assertLess(abs(weak[target.id] - missing[target.id]), 2e-9)
+        self.assertEqual(weak[target.id].confidence, 1.0e-6)
+        self.assertEqual(
+            missing_evidence[target.id]["decision_source"], "public-base-rate"
+        )
+        self.assertEqual(
+            weak_evidence[target.id]["decision_source"], "reasoner-proof"
+        )
+        self.assertAlmostEqual(
+            weak_evidence[target.id]["confidence_adjusted_belief"],
+            1.0e-6 * 0.24883470583173792 + (1.0 - 1.0e-6) * 0.25,
+        )
+        candidate = next(
+            item
+            for item in _action_candidates(session, weak)
+            if item.incident_id == target.id
+        )
+        self.assertEqual(candidate.confidence, 1.0e-6)
+        self.assertEqual(
+            diagnostic_plan(session, missing)[0], diagnostic_plan(session, weak)[0]
+        )
+        self.assertEqual(
+            allocate_repairs(
+                session._incidents, missing, session.config, session.repair_capacity()
+            ),
+            allocate_repairs(
+                session._incidents, weak, session.config, session.repair_capacity()
+            ),
+        )
+
+    def test_low_confidence_proof_without_public_prior_is_not_actionable(self):
+        session = GameSession(GameConfig(shifts=1, modules=1))
+        session.history.clear()
+        target = session._incidents[0]
+        adjusted, evidence = decision_beliefs(
+            session, {target.id: Belief(0.9, 0.01)}
+        )
+        self.assertNotIn(target.id, adjusted)
+        self.assertFalse(evidence[target.id]["usable_for_decision"])
+
     def test_induced_types_receive_exploration_diagnostics_without_a_proof(self):
         session = GameSession(
             GameConfig(modules=10, diagnostic_slots=1, sensor_knowledge="induced")
@@ -469,14 +523,32 @@ class AutomatedGameTests(unittest.TestCase):
         self.assertLess(first["aggregate"]["confirmed_history_size"], 130)
         for round_ in first["rounds"]:
             self.assertEqual(round_["belief_metrics"]["coverage"], 1.0)
+            self.assertEqual(
+                round_["belief_metrics"]["confidence_weighted_coverage"], 1.0
+            )
+            self.assertEqual(round_["decision_belief_metrics"]["coverage"], 1.0)
+            self.assertTrue(all(
+                value
+                == {
+                    "strength": round_["beliefs"][incident_id],
+                    "confidence": 1.0,
+                }
+                for incident_id, value in round_["belief_truth_values"].items()
+            ))
             self.assertIsNotNone(round_["belief_metrics"]["brier_score"])
             self.assertNotIn("fault", json.dumps(round_["visible_incidents"]))
 
-    def test_zero_diagnosis_budget_repairs_only_confirmed_or_known_faults(self):
+    def test_zero_diagnosis_budget_uses_public_base_rates(self):
         result = run_game_episode(budget=0, action_budget=1)
         for round_ in result["rounds"]:
             self.assertEqual(round_["belief_metrics"]["coverage"], 0.0)
-            self.assertTrue(set(round_["chosen_repairs"]).issubset(round_["inspections"]))
+            self.assertTrue(round_["decision_beliefs"])
+            self.assertTrue(all(
+                evidence["decision_source"] == "public-base-rate"
+                for incident_id, evidence in round_["belief_evidence"].items()
+                if incident_id not in round_["inspections"]
+                and not evidence.get("known_unrepaired_fault")
+            ))
 
     def test_zero_action_budget_returns_no_action_proposals(self):
         result = run_game_episode(

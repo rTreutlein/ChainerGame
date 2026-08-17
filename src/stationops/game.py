@@ -16,7 +16,7 @@ from .actions import ActionCandidate, ActionProposal, reference_action_proposals
 from .backends import MM2Backend, PeTTaChainerBackend, ReferenceBackend
 from .config import Config
 from .metta import generate_dependency_statements, generate_statements
-from .models import HistoryCase, Incident
+from .models import Belief, HistoryCase, Incident, as_belief, belief_truth_values
 from .oracle import (
     belief_error_metrics,
     empirical_feature_priors,
@@ -853,19 +853,47 @@ def decision_beliefs(
     beliefs: dict[str, float],
     shortfall_marginals: dict[int, dict[str, float]] | None = None,
 ) -> tuple[dict[str, float], dict[str, dict]]:
-    """Combine chainer output with public recency and aggregate-loss evidence."""
+    """Build action probabilities from full TVs and public evidence.
+
+    Unanswered roots start at their public-history base rate. A reasoner proof
+    moves that prior only in proportion to its confidence, after which recency
+    and aggregate-loss evidence apply in odds space.
+    """
     if shortfall_marginals is None:
         shortfall_marginals = oracle_event_marginals(session._shortfall_events)
-    adjusted = dict(beliefs)
+    adjusted = {}
     evidence = {}
     by_module = {item.module.id: item for item in session._incidents}
+    public_priors = empirical_feature_priors(session.history)
 
     for item in session._incidents:
-        if item.id not in adjusted:
+        prior = public_priors.get((item.module.cohort, item.module.equipment_type))
+        raw_value = beliefs.get(item.id)
+        raw = as_belief(raw_value) if raw_value is not None else None
+        details = {
+            "raw_belief": raw.strength if raw is not None else None,
+            "raw_confidence": raw.confidence if raw is not None else 0.0,
+            "public_base_rate": prior,
+        }
+        if raw is None:
+            if prior is None:
+                continue
+            raw = Belief(prior, 0.0)
+            details["decision_source"] = "public-base-rate"
+        else:
+            details["decision_source"] = "reasoner-proof"
+        if prior is None and raw.confidence < 1.0:
+            details["usable_for_decision"] = False
+            evidence[item.id] = details
             continue
-        raw = adjusted[item.id]
-        current_odds = _odds(raw)
-        details = {"raw_belief": raw}
+        decision_probability = (
+            raw.confidence * raw.strength + (1.0 - raw.confidence) * prior
+            if prior is not None
+            else raw.strength
+        )
+        details["confidence_adjusted_belief"] = decision_probability
+        details["usable_for_decision"] = True
+        current_odds = _odds(decision_probability)
         record = session._module_records.get(item.module.id)
         if record and record["status"] in {
             "seal inspected intact",
@@ -883,7 +911,10 @@ def decision_beliefs(
                 "last_service_shift": record["shift"],
                 "shifts_since_clear": age,
             })
-        adjusted[item.id] = _from_odds(current_odds) if current_odds else 0.0
+        adjusted[item.id] = Belief(
+            _from_odds(current_odds) if current_odds else 0.0,
+            raw.confidence,
+        )
         evidence[item.id] = details
 
     for event in session._shortfall_events:
@@ -894,17 +925,20 @@ def decision_beliefs(
                 continue
             stored_prior = event["candidates"][module_id]["prior"]
             likelihood_ratio = _odds(shortfall_probability) / _odds(stored_prior)
-            adjusted[item.id] = _from_odds(_odds(adjusted[item.id]) * likelihood_ratio)
+            adjusted[item.id] = Belief(
+                _from_odds(_odds(adjusted[item.id]) * likelihood_ratio),
+                adjusted[item.id].confidence,
+            )
             evidence[item.id].setdefault("shortfall_shifts", []).append(event["shift"])
 
     for item in session._incidents:
         if item.module.id in session._known_fault_modules:
-            adjusted[item.id] = 1.0
+            adjusted[item.id] = Belief(1.0, 1.0)
             evidence[item.id] = {
                 "raw_belief": beliefs.get(item.id),
                 "known_unrepaired_fault": True,
             }
-        if item.id in evidence:
+        if item.id in evidence and item.id in adjusted:
             evidence[item.id]["decision_belief"] = adjusted[item.id]
     return adjusted, evidence
 
@@ -987,6 +1021,11 @@ def _action_candidates(
                 else None
             ),
             production_at_risk=item.production_at_risk,
+            confidence=(
+                as_belief(beliefs[item.id]).confidence
+                if item.id in beliefs
+                else 1.0
+            ),
             inspection_eligible=(
                 item.id not in session._inspected
                 and item.module.id not in session._known_fault_modules
@@ -1156,8 +1195,9 @@ def run_action_loop(
             break
         result = session.inspect(incident_id)
         inspection_results[incident_id] = result["result"]
-        effective_beliefs[incident_id] = (
-            1.0 if session._faults[incident_id] else 0.0
+        effective_beliefs[incident_id] = Belief(
+            1.0 if session._faults[incident_id] else 0.0,
+            1.0,
         )
         step += 1
 
@@ -1421,8 +1461,12 @@ def run_game_episode(
         round_started = time.perf_counter()
         beliefs, counters = backend.infer(history_before, incidents, budget, statements)
         oracle_beliefs, _ = reference.infer(history_before, incidents, 1, statements)
-        oracle_beliefs.update((incident_id, 1.0) for incident_id in known_faults)
-        beliefs.update((incident_id, 1.0) for incident_id in known_faults)
+        oracle_beliefs.update(
+            (incident_id, Belief(1.0, 1.0)) for incident_id in known_faults
+        )
+        beliefs.update(
+            (incident_id, Belief(1.0, 1.0)) for incident_id in known_faults
+        )
 
         conditioner = getattr(backend, "condition_shortfalls", None)
         if conditioner is None:
@@ -1476,6 +1520,10 @@ def run_game_episode(
         resolution = session.commit(repairs, effective_beliefs)
         metrics = belief_error_metrics(beliefs, oracle_beliefs)
         metrics.update(_probability_metrics(beliefs, truth))
+        decision_metrics = belief_error_metrics(
+            controller_beliefs, oracle_controller_beliefs
+        )
+        decision_metrics.update(_probability_metrics(controller_beliefs, truth))
         rounds.append({
             "shift": resolution["report"]["shift"],
             "visible_incidents": [
@@ -1497,10 +1545,13 @@ def run_game_episode(
             "history_size_before": len(history_before),
             "history_size_after": len(session.history),
             "beliefs": beliefs,
+            "belief_truth_values": belief_truth_values(beliefs),
             "decision_beliefs": controller_beliefs,
+            "decision_truth_values": belief_truth_values(controller_beliefs),
             "belief_evidence": belief_evidence,
             "shortfall_marginals": shortfall_marginals,
             "belief_metrics": metrics,
+            "decision_belief_metrics": decision_metrics,
             "causal_diagnosis_metrics": causal_metrics,
             "inspections": inspection_results,
             "diagnostic_priorities": diagnostic_priorities,

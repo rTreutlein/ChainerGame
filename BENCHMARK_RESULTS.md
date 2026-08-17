@@ -469,3 +469,22 @@ this newly sampled history. The semantics are now coherent and the missing
 quality/coverage at practical budgets is exposed as a chainer search and
 approximation problem rather than being hidden by incorrect training labels or
 a Python-managed two-phase base-rate transfer.
+
+### Confidence-aware retry decisions
+
+Run on 2026-08-17 with PeTTaChainer `1986046` and its pinned PeTTa dependency
+`c33851b`. The seed-7 one-shift fixture compared one `query_many` call at budget
+1,500 against the same call followed by an individual budget-500 retry for
+every unanswered diagnosis. Action budget was 1 and shortfall conditioning was
+disabled to isolate diagnosis.
+
+| Strategy | Raw coverage | Confidence-weighted coverage | Inspections | Repairs |
+| --- | ---: | ---: | --- | --- |
+| Shared query only | 4/10 | 0.0000004 | M01, M03 | M09, M05 |
+| Shared query + retries | 10/10 | 0.0198349 | M01, M03 | M09, M05 |
+
+The retry found M03 as `(STV 0.2488347058 0.000001)`. Its public-history base
+rate was `0.25`, so the decision probability moved only from `0.25` to
+`0.2499999988`. Raw coverage increased dramatically while the policy remained
+unchanged. This confirms that proof coverage and decision-relevant evidence
+must be reported separately.

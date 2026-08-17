@@ -41,11 +41,23 @@ def belief_error_metrics(
     expected_count = len(oracle_beliefs)
     evaluated_count = len(signed_errors)
     absolute_errors = [abs(error) for error in signed_errors]
+    confidences = [
+        min(max(float(getattr(beliefs[key], "confidence", 1.0)), 0.0), 1.0)
+        for key in oracle_beliefs
+        if isinstance(beliefs.get(key), (int, float))
+        and math.isfinite(beliefs[key])
+    ]
     return {
         "expected_count": expected_count,
         "evaluated_count": evaluated_count,
         "missing_count": expected_count - evaluated_count,
         "coverage": 1.0 if expected_count == 0 else evaluated_count / expected_count,
+        "mean_confidence": (
+            sum(confidences) / evaluated_count if evaluated_count else None
+        ),
+        "confidence_weighted_coverage": (
+            1.0 if expected_count == 0 else sum(confidences) / expected_count
+        ),
         "mean_absolute_error": (
             sum(absolute_errors) / evaluated_count if evaluated_count else None
         ),

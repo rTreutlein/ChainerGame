@@ -415,8 +415,21 @@ reported forward work. Round counters include `statements_added`,
 `statements_removed`, `forward_seed_facts`, and `forward_steps`; `engine_steps`
 remains `null` because the API does not expose total internal execution steps.
 `statements_removed` remains zero under the append-only adapter contract.
-The strongest returned proof STV supplies each action belief; a missing proof
-remains a missing belief, not numeric zero. Oracle beliefs remain scoring-only.
+The strongest returned proof keeps both STV strength and confidence. For
+decisions, StationOps shrinks that strength toward the equipment cohort's
+public-history leak rate:
+
+`decision probability = confidence * strength + (1 - confidence) * base rate`.
+
+An unanswered diagnosis uses that same public base rate with zero evidential
+confidence, so merely finding a very-low-confidence retry proof cannot turn an
+unknown root into a fully trusted action belief. If neither a proof nor a
+public-history base rate exists, the root remains unusable for decisions.
+Results keep numeric `beliefs` for compatibility and expose the complete values
+as `belief_truth_values`; `belief_metrics` reports both raw and
+confidence-weighted coverage, while `decision_belief_metrics` evaluates the
+prior-shrunk probabilities that actually reach the policy. Oracle beliefs
+remain scoring-only.
 Each action query runs in a separate current-context PeTTaChainer workspace for
 the same relevance and bounded-search semantics as MM2; observation results are
 carried forward explicitly by the next context rather than retaining stale

@@ -9,7 +9,7 @@ from stationops.backends import BackendUnavailable, MM2Backend, PeTTaChainerBack
 from stationops.config import Config
 from stationops.episode import run_episode
 from stationops.metta import generate_statements
-from stationops.models import HistoryCase, Incident
+from stationops.models import Belief, HistoryCase, Incident
 from stationops.models import EpisodeFixture, RoundFixture
 from stationops.oracle import belief_error_metrics, empirical_priors, posterior, resolve
 from stationops.policy import allocate
@@ -133,8 +133,17 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(metrics["evaluated_count"], 2)
         self.assertEqual(metrics["missing_count"], 2)
         self.assertEqual(metrics["coverage"], 0.5)
+        self.assertEqual(metrics["mean_confidence"], 1.0)
+        self.assertEqual(metrics["confidence_weighted_coverage"], 0.5)
         self.assertAlmostEqual(metrics["mean_absolute_error"], 0.05)
         self.assertAlmostEqual(metrics["max_absolute_error"], 0.1)
+
+        uncertain = belief_error_metrics(
+            {"only": Belief(0.5, 0.2)}, {"only": 0.5, "missing": 0.5}
+        )
+        self.assertEqual(uncertain["coverage"], 0.5)
+        self.assertEqual(uncertain["mean_confidence"], 0.2)
+        self.assertEqual(uncertain["confidence_weighted_coverage"], 0.1)
 
     def test_mm2_conformance_when_binding_available(self):
         path = os.environ.get("MM2_CHAINER_PYTHONPATH")
@@ -175,7 +184,15 @@ class BenchmarkTests(unittest.TestCase):
                     return [(tag, []) for tag, _ in queries]
                 values = {"old-alarm": .8, "new-alarm": .01}
                 return [
-                    (tag, [{"truth_value": {"strength": values[tag], "confidence": 1.0}}])
+                    (
+                        tag,
+                        [{
+                            "truth_value": {
+                                "strength": values[tag],
+                                "confidence": .6 if tag == "old-alarm" else .9,
+                            }
+                        }],
+                    )
                     for tag, _ in queries
                 ]
 
@@ -188,6 +205,8 @@ class BenchmarkTests(unittest.TestCase):
         ]
         beliefs, _ = backend.infer(history, incidents, 2, "")
         self.assertEqual(beliefs, {"old-alarm": .8, "new-alarm": .01})
+        self.assertEqual(beliefs["old-alarm"].confidence, .6)
+        self.assertEqual(beliefs["new-alarm"].confidence, .9)
         self.assertEqual(
             Engine.instances[-1].queries,
             [
@@ -439,6 +458,7 @@ class BenchmarkTests(unittest.TestCase):
         )
         beliefs, counters = backend.infer([], [incident], 100, "")
         self.assertEqual(beliefs, {"current": .42})
+        self.assertEqual(beliefs["current"].confidence, .7)
         self.assertEqual(counters["induced_queries"], 1)
         self.assertEqual(counters["learned_relation_queries"], 1)
         self.assertEqual(
@@ -843,7 +863,8 @@ class V1BenchmarkTests(unittest.TestCase):
             self.assertAlmostEqual(result["aggregate"]["regret"],
                                    sum(x["regret"] for x in result["rounds"]))
             json.dumps(result)
-        a.pop("wall_time_seconds"); b.pop("wall_time_seconds")
+        a.pop("wall_time_seconds")
+        b.pop("wall_time_seconds")
         for result in (a, b):
             for round_ in result["rounds"]:
                 round_.pop("wall_time_seconds")

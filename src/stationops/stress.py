@@ -17,6 +17,13 @@ def summarize_stress_episode(result: dict) -> dict:
     rounds = result["rounds"]
     expected = sum(row["belief_metrics"]["expected_count"] for row in rounds)
     evaluated = sum(row["belief_metrics"]["evaluated_count"] for row in rounds)
+    confidence_mass = sum(
+        row["belief_metrics"].get(
+            "confidence_weighted_coverage", row["belief_metrics"]["coverage"]
+        )
+        * row["belief_metrics"]["expected_count"]
+        for row in rounds
+    )
     shortfall_requested = sum(
         row["backend_counters"].get("shortfall_queries", 0) for row in rounds
     )
@@ -42,6 +49,9 @@ def summarize_stress_episode(result: dict) -> dict:
         "diagnosis_expected": expected,
         "diagnosis_returned": evaluated,
         "diagnosis_coverage": evaluated / expected if expected else 1.0,
+        "diagnosis_confidence_weighted_coverage": (
+            confidence_mass / expected if expected else 1.0
+        ),
         "shortfall_requested": shortfall_requested,
         "shortfall_returned": shortfall_returned,
         "shortfall_coverage": (
@@ -114,6 +124,12 @@ def summarize_stress_episode(result: dict) -> dict:
             {
                 "shift": row["shift"],
                 "diagnosis_coverage": row["belief_metrics"]["coverage"],
+                "diagnosis_confidence_weighted_coverage": row[
+                    "belief_metrics"
+                ].get(
+                    "confidence_weighted_coverage",
+                    row["belief_metrics"]["coverage"],
+                ),
                 "shortfall_requested": row["backend_counters"].get(
                     "shortfall_queries", 0
                 ),
@@ -158,6 +174,9 @@ def summarize_budget_curve(runs: list[dict]) -> list[dict]:
             "shortfall_budget": shortfall_budget,
             "runs": len(points),
             "diagnosis_coverage": distribution("diagnosis_coverage"),
+            "diagnosis_confidence_weighted_coverage": distribution(
+                "diagnosis_confidence_weighted_coverage"
+            ),
             "shortfall_coverage": distribution("shortfall_coverage"),
             "action_empty_queries": distribution("action_empty_queries"),
             "action_proposals": distribution("action_proposals"),
