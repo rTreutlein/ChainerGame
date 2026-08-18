@@ -11,6 +11,7 @@ import random
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass
+from typing import Callable
 
 from .actions import ActionCandidate, ActionProposal, reference_action_proposals
 from .backends import MM2Backend, PeTTaChainerBackend, ReferenceBackend
@@ -1427,6 +1428,7 @@ def run_game_episode(
     pettachainer_path: str | None = None,
     shortfall_budget: int | None = None,
     action_budget: int | None = None,
+    on_shift: Callable[[dict], None] | None = None,
 ) -> dict:
     """Run the standard controller through the same simulation used by humans."""
     config = config or GameConfig()
@@ -1524,7 +1526,7 @@ def run_game_episode(
             controller_beliefs, oracle_controller_beliefs
         )
         decision_metrics.update(_probability_metrics(controller_beliefs, truth))
-        rounds.append({
+        round_result = {
             "shift": resolution["report"]["shift"],
             "visible_incidents": [
                 {
@@ -1565,7 +1567,10 @@ def run_game_episode(
             "backend_counters": counters,
             "resolution": resolution["report"],
             "wall_time_seconds": time.perf_counter() - round_started,
-        })
+        }
+        rounds.append(round_result)
+        if on_shift is not None:
+            on_shift(round_result)
 
     learning_curve = _learning_curve(rounds, config.learning_window)
     expected = sum(round_["expected_utility"] for round_ in rounds)

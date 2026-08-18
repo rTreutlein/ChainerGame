@@ -80,6 +80,15 @@ def main(argv=None):
                 action="store_true",
                 help="emit each completed stress point as one JSON line",
             )
+        elif name == "run":
+            p.add_argument(
+                "--stream",
+                action="store_true",
+                help=(
+                    "for a v2 run, emit each completed shift and the final "
+                    "summary as JSON lines"
+                ),
+            )
         p.add_argument("--benchmark", choices=("v0", "v1", "v2"), default="v0")
         p.add_argument("--shifts", type=int, default=5)
         p.add_argument("--modules", type=int, default=10)
@@ -169,6 +178,8 @@ def main(argv=None):
         ))
         return
     budgets = [args.budget] if args.command == "run" else [int(x) for x in args.budgets.split(",")]
+    if args.command == "run" and args.stream and args.benchmark != "v2":
+        parser.error("run --stream requires --benchmark v2")
     for budget in budgets:
         if args.benchmark == "v0":
             result = run_episode(
@@ -179,6 +190,12 @@ def main(argv=None):
                 config, args.backend, budget, args.mm2_path, args.pettachainer_path
             )
         else:
+            emit_shift = (
+                lambda row: print(
+                    json.dumps({"type": "shift", "result": row}, sort_keys=True),
+                    flush=True,
+                )
+            ) if args.command == "run" and args.stream else None
             result = run_game_episode(
                 _game_config(args),
                 args.backend,
@@ -187,8 +204,15 @@ def main(argv=None):
                 args.pettachainer_path,
                 shortfall_budget=args.shortfall_budget,
                 action_budget=args.action_budget,
+                on_shift=emit_shift,
             )
-        print(json.dumps(result, sort_keys=True))
+        if args.command == "run" and args.stream:
+            print(json.dumps(
+                {"type": "run-summary", "result": result},
+                sort_keys=True,
+            ))
+        else:
+            print(json.dumps(result, sort_keys=True))
 
 
 if __name__ == "__main__":

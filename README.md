@@ -67,9 +67,13 @@ stationops run --benchmark v2 --backend reference --budget 100
 stationops run --benchmark v2 --backend mm2 --budget 1 \
   --action-budget 100 --shortfall-budget 50
 stationops run --benchmark v2 --backend pettachainer --budget 600 \
-  --action-budget 1 --shortfall-budget 300
+  --action-budget 1 --shortfall-budget 300 --stream
 stationops sweep --benchmark v2 --backend reference --budgets 0,1,10,100
 ```
+
+`run --stream` writes one `shift` JSON object immediately after each completed
+shift and a final `run-summary` object. This preserves completed-shift timings
+and quality metrics when a long run is interrupted before the episode ends.
 
 V2 keeps diagnosis, action, and aggregate-loss budgets separate because their
 rules have different search depths and a native step does not represent
