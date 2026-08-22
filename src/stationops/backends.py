@@ -27,6 +27,7 @@ from .shortfall import (
     event_atom,
     finite_probability,
     generate_shortfall_statements,
+    load_weighted_subset_posterior,
     marginal_queries,
     oracle_event_marginals,
 )
@@ -769,6 +770,7 @@ class PeTTaChainerBackend:
         self._action_context: str | None = None
         self._atoms_by_name: dict[str, str] = {}
         self._shortfall_cache: dict[str, float] = {}
+        self._shortfall_formula_handler = None
         if module is not None:
             self.module = module
             return
@@ -806,6 +808,12 @@ class PeTTaChainerBackend:
                 f"PeTTa/Janus dependencies (missing or unavailable: {dependency}) and ensure "
                 "both source roots and native libraries are available"
             ) from exc
+
+    def _load_shortfall_formulas(self) -> None:
+        if self._shortfall_formula_handler is self._handler:
+            return
+        load_weighted_subset_posterior(self._handler)
+        self._shortfall_formula_handler = self._handler
 
     def _reconcile(self, statements: str, forward_facts: bool = True) -> dict[str, int]:
         entries: list[tuple[str, str, str]] = []
@@ -911,6 +919,7 @@ class PeTTaChainerBackend:
             }
         pending_events = {tag.split("|", 1)[0] for tag, _ in pending}
         try:
+            self._load_shortfall_formulas()
             counters = self._reconcile(
                 generate_shortfall_statements([
                     event for event in events if event_atom(event) in pending_events
@@ -919,6 +928,7 @@ class PeTTaChainerBackend:
             )
         except Exception:
             self._handler = None
+            self._shortfall_formula_handler = None
             self._atoms_by_name.clear()
             raise
         for tag, query in pending:
