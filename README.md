@@ -237,21 +237,10 @@ In independent-module mode, PeTTaChainer performs this conditioning with
 merges configurations by reachable production loss into reusable prefix and
 postfix tables rather than enumerating fault sets.
 `WeightedSubsetPosteriorMarginal` projects a module probability from those
-tables for a diagnostic decision. The pure MeTTa implementation is owned and
-packaged by StationOps in
-`src/stationops/metta/weighted_subset_posterior.metta`; the PeTTaChainer adapter
-loads it only when shortfall conditioning is requested. StationOps sends the
-same rules and queries to MM2. Current MM2 builds provide registered native
-implementations of both operators; older builds report
-`shortfall_supported: false` instead of silently substituting the Python
-reference result.
-
-The focused runnable example is:
-
-```sh
-/path/to/PeTTaChainer/.venv/bin/petta \
-  examples/stationops_weighted_subset_posterior.metta
-```
+tables for a diagnostic decision. StationOps sends the same rules and queries
+to MM2. Current MM2 builds provide registered native implementations of both
+operators; older builds report `shortfall_supported: false` instead of silently
+substituting the Python reference result.
 
 Both chainer adapters memoize successful marginals by the immutable shortfall
 revision hash. An unchanged revision therefore returns prior results without an
