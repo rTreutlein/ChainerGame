@@ -361,7 +361,7 @@ class MM2Backend:
     """Persistent adapter for MM2's incremental named-statement API."""
 
     name = "mm2"
-    _forward_steps_per_seed = 2
+    _forward_depth = 2
 
     def __init__(
         self,
@@ -431,7 +431,7 @@ class MM2Backend:
             if not _is_rule(entry[1]) and _forward_fact(entry)
         ]
         seeds = [_fact_seed(type_expression) for _, type_expression, _ in facts]
-        forward_steps = len(seeds) * self._forward_steps_per_seed
+        forward_steps = self._forward_depth if seeds else 0
         if seeds:
             self._engine.forward_chain("stationops", seeds, forward_steps)
 
@@ -638,6 +638,27 @@ class MM2Backend:
             self._base_rates.clear()
             raise
         queries = [(x.id, self._incident_query(x)) for x in incidents]
+        dependency_support = (
+            [
+                (
+                    f"dependency-support:{x.id}",
+                    f"(Problem {x.cohort} {x.equipment_type} {x.id})",
+                )
+                for x in incidents
+                if x.problem_context is not None
+                and x.module_id is not None
+                and x.equipment_type is not None
+            ]
+            if any(x.upstream_module_ids for x in incidents)
+            else []
+        )
+        if dependency_support:
+            # MM2 retains query proofs. Materialize the current Problem roots
+            # once so dependency BiImplications and strict Or projections have
+            # the same reachable proof frontier as PeTTaChainer's best-first
+            # nested search. These are proof-producing support queries, not
+            # adapter-side beliefs.
+            self._engine.query_many("stationops", dependency_support, budget)
         results = self._engine.query_many("stationops", queries, budget)
         execution_stats = _engine_execution_stats(self._engine)
         beliefs = self._beliefs_from_results(results)
@@ -652,6 +673,7 @@ class MM2Backend:
                 in {"positive", "induced"}
                 for x in incidents
             ),
+            "dependency_support_queries": len(dependency_support),
             "engine_steps": execution_stats.get("steps") if execution_stats else None,
             "diagnosis_engine_stats": execution_stats,
         })
@@ -704,7 +726,7 @@ class MM2Backend:
                 )
             facts = [entry for entry in entries if not _is_rule(entry[1])]
             seeds = [_fact_seed(type_expression) for _, type_expression, _ in facts]
-            forward_steps = len(seeds) * self._forward_steps_per_seed
+            forward_steps = self._forward_depth if seeds else 0
             if seeds:
                 self._action_engine.forward_chain(
                     "stationops-actions", seeds, forward_steps

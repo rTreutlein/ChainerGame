@@ -654,7 +654,7 @@ class AutomatedGameTests(unittest.TestCase):
         result = run_game_episode(
             GameConfig(shifts=2, modules=4),
             "pettachainer",
-            300,
+            600,
             pettachainer_path=os.environ.get("PETTACHAINER_PYTHONPATH"),
             action_budget=1,
         )

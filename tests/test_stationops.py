@@ -283,6 +283,7 @@ class BenchmarkTests(unittest.TestCase):
         second = "\n".join((
             "(: stable (A) (STV 1 1))",
             "(: new-fact (C) (STV 1 1))",
+            "(: second-new-fact (D) (STV 1 1))",
         ))
 
         _, initial = backend.infer(history, [], 1, first)
@@ -293,22 +294,73 @@ class BenchmarkTests(unittest.TestCase):
             Engine.instances[0].added,
             [
                 ("stationops", first),
-                ("stationops", "(: new-fact (C) (STV 1 1))"),
+                (
+                    "stationops",
+                    "(: new-fact (C) (STV 1 1))\n"
+                    "(: second-new-fact (D) (STV 1 1))",
+                ),
             ],
         )
         self.assertEqual(initial["statements_added"], 2)
-        self.assertEqual(updated["statements_added"], 1)
+        self.assertEqual(updated["statements_added"], 2)
         self.assertEqual(updated["statements_removed"], 0)
         self.assertEqual(updated["base_rates_updated"], 0)
-        self.assertEqual(updated["forward_seed_facts"], 1)
+        self.assertEqual(updated["forward_seed_facts"], 2)
         self.assertEqual(updated["forward_steps"], 2)
         self.assertEqual(
             Engine.instances[0].forwarded,
-            [("stationops", ["(C)"], 2)],
+            [("stationops", ["(C)", "(D)"], 2)],
         )
 
         with self.assertRaisesRegex(ValueError, "append-only MM2"):
             backend.infer(history, [], 1, "(: stable (A) (STV .5 1))")
+
+    def test_mm2_materializes_dependency_problem_roots_before_diagnosis(self):
+        class Engine:
+            def __init__(self):
+                self.query_batches = []
+
+            def add_many(self, *args):
+                pass
+
+            def set_base_rate(self, *args):
+                pass
+
+            def query_many(self, kb, queries, budget):
+                self.query_batches.append(list(queries))
+                return [(tag, []) for tag, _ in queries]
+
+        backend = MM2Backend(Config(), module=SimpleNamespace(Engine=Engine))
+        incidents = [
+            Incident(
+                "shift-01-M01", "old", False, "coolant-pump", "M01",
+                ("M03",), "shift-01",
+            ),
+            Incident(
+                "shift-01-M03", "old", False, "power-converter", "M03",
+                (), "shift-01",
+            ),
+        ]
+        _, counters = backend.infer([], incidents, 10, "")
+
+        self.assertEqual(counters["dependency_support_queries"], 2)
+        self.assertEqual(
+            backend._engine.query_batches[0],
+            [
+                (
+                    "dependency-support:shift-01-M01",
+                    "(Problem old coolant-pump shift-01-M01)",
+                ),
+                (
+                    "dependency-support:shift-01-M03",
+                    "(Problem old power-converter shift-01-M03)",
+                ),
+            ],
+        )
+        self.assertEqual(
+            [tag for tag, _ in backend._engine.query_batches[1]],
+            ["shift-01-M01", "shift-01-M03"],
+        )
 
     def test_pettachainer_beliefs_drive_decisions_and_preserve_order(self):
         class Handler:
