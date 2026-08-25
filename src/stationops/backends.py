@@ -362,6 +362,18 @@ class MM2Backend:
 
     name = "mm2"
     _forward_depth = 2
+    # StationOps graph diagnosis reaches complete coverage and stable actions
+    # within 25 MM2 steps per incident (with a 100-step setup floor).
+    # Continuing to the PeTTa-sized ceiling repeatedly revises low-confidence
+    # alternative proofs without changing a diagnosis or controller decision.
+    # Scale wider graphs instead of imposing a benchmark-size global cap, keep
+    # the caller's value as a maximum, and expose the effective window.
+    _graph_diagnosis_steps_per_query = 25
+    _graph_diagnosis_budget_floor = 100
+
+    def _new_engine(self):
+        native = getattr(self.module.Engine, "native", None)
+        return native() if callable(native) else self.module.Engine()
 
     def __init__(
         self,
@@ -478,10 +490,10 @@ class MM2Backend:
             self._shortfall_cache,
         )
         if self._engine is None:
-            self._engine = self.module.Engine()
+            self._engine = self._new_engine()
         if self._shortfall_supported is None:
             try:
-                probe = self.module.Engine()
+                probe = self._new_engine()
                 probe.add_many("stationops-shortfall-probe", "\n".join(SHORTFALL_RULES))
             except Exception as exc:
                 self._shortfall_supported = False
@@ -626,7 +638,7 @@ class MM2Backend:
         if budget <= 0:
             return {}, {"queries": len(incidents), "engine_steps": None}
         if self._engine is None:
-            self._engine = self.module.Engine()
+            self._engine = self._new_engine()
         try:
             counters = self._reconcile(statements)
             counters["base_rates_updated"] = self._update_base_rates(history)
@@ -652,14 +664,27 @@ class MM2Backend:
             if any(x.upstream_module_ids for x in incidents)
             else []
         )
+        effective_budget = (
+            min(
+                budget,
+                max(
+                    self._graph_diagnosis_budget_floor,
+                    len(queries) * self._graph_diagnosis_steps_per_query,
+                ),
+            )
+            if dependency_support
+            else budget
+        )
         if dependency_support:
             # MM2 retains query proofs. Materialize the current Problem roots
             # once so dependency BiImplications and strict Or projections have
             # the same reachable proof frontier as PeTTaChainer's best-first
             # nested search. These are proof-producing support queries, not
             # adapter-side beliefs.
-            self._engine.query_many("stationops", dependency_support, budget)
-        results = self._engine.query_many("stationops", queries, budget)
+            self._engine.query_many(
+                "stationops", dependency_support, effective_budget
+            )
+        results = self._engine.query_many("stationops", queries, effective_budget)
         execution_stats = _engine_execution_stats(self._engine)
         beliefs = self._beliefs_from_results(results)
         counters.update({
@@ -674,6 +699,8 @@ class MM2Backend:
                 for x in incidents
             ),
             "dependency_support_queries": len(dependency_support),
+            "diagnosis_budget_requested": budget,
+            "diagnosis_budget_effective": effective_budget,
             "engine_steps": execution_stats.get("steps") if execution_stats else None,
             "diagnosis_engine_stats": execution_stats,
         })
@@ -697,7 +724,7 @@ class MM2Backend:
                 "action_engine_steps": None,
             }
         if self._action_engine is None or self._action_context != context:
-            self._action_engine = self.module.Engine()
+            self._action_engine = self._new_engine()
             self._action_atoms_by_name.clear()
             self._action_context = context
         statements = generate_action_statements(

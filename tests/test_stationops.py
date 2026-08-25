@@ -315,10 +315,28 @@ class BenchmarkTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "append-only MM2"):
             backend.infer(history, [], 1, "(: stable (A) (STV .5 1))")
 
+    def test_mm2_prefers_native_scheduler_when_binding_exposes_it(self):
+        class Engine:
+            constructors = []
+
+            def __init__(self, scheduler):
+                self.scheduler = scheduler
+
+            @classmethod
+            def native(cls):
+                cls.constructors.append("native")
+                return cls("native")
+
+        backend = MM2Backend(Config(), module=SimpleNamespace(Engine=Engine))
+
+        self.assertEqual(backend._new_engine().scheduler, "native")
+        self.assertEqual(Engine.constructors, ["native"])
+
     def test_mm2_materializes_dependency_problem_roots_before_diagnosis(self):
         class Engine:
             def __init__(self):
                 self.query_batches = []
+                self.query_budgets = []
 
             def add_many(self, *args):
                 pass
@@ -328,6 +346,7 @@ class BenchmarkTests(unittest.TestCase):
 
             def query_many(self, kb, queries, budget):
                 self.query_batches.append(list(queries))
+                self.query_budgets.append((kb, budget))
                 return [(tag, []) for tag, _ in queries]
 
         backend = MM2Backend(Config(), module=SimpleNamespace(Engine=Engine))
@@ -341,9 +360,11 @@ class BenchmarkTests(unittest.TestCase):
                 (), "shift-01",
             ),
         ]
-        _, counters = backend.infer([], incidents, 10, "")
+        _, counters = backend.infer([], incidents, 600, "")
 
         self.assertEqual(counters["dependency_support_queries"], 2)
+        self.assertEqual(counters["diagnosis_budget_requested"], 600)
+        self.assertEqual(counters["diagnosis_budget_effective"], 100)
         self.assertEqual(
             backend._engine.query_batches[0],
             [
@@ -361,6 +382,39 @@ class BenchmarkTests(unittest.TestCase):
             [tag for tag, _ in backend._engine.query_batches[1]],
             ["shift-01-M01", "shift-01-M03"],
         )
+        self.assertEqual(
+            [budget for _, budget in backend._engine.query_budgets],
+            [100, 100],
+        )
+
+    def test_mm2_graph_budget_scales_with_batch_width(self):
+        class Engine:
+            def __init__(self):
+                self.query_budgets = []
+
+            def add_many(self, *args):
+                pass
+
+            def set_base_rate(self, *args):
+                pass
+
+            def query_many(self, _kb, queries, budget):
+                self.query_budgets.append(budget)
+                return [(tag, []) for tag, _ in queries]
+
+        incidents = [
+            Incident(
+                f"shift-01-M0{index}", "old", False, "coolant-pump",
+                f"M0{index}", ("M09",), "shift-01",
+            )
+            for index in range(1, 6)
+        ]
+        backend = MM2Backend(Config(), module=SimpleNamespace(Engine=Engine))
+
+        _, counters = backend.infer([], incidents, 600, "")
+
+        self.assertEqual(counters["diagnosis_budget_effective"], 125)
+        self.assertEqual(backend._engine.query_budgets, [125, 125])
 
     def test_pettachainer_beliefs_drive_decisions_and_preserve_order(self):
         class Handler:

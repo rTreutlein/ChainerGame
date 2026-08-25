@@ -357,8 +357,10 @@ MM2_CHAINER_PYTHONPATH=/path/to/site-packages \
   python -m stationops.cli run --backend mm2 --budget 100
 ```
 
-The adapter keeps one MM2 diagnosis engine for the episode. Each round adds only newly
-named statements; knowledge from earlier rounds remains in the append-only KB.
+The adapter keeps one MM2 diagnosis engine for the episode and selects the
+binding's host-driven native scheduler when available. Each round adds only
+newly named statements; knowledge from earlier rounds remains in the
+append-only KB.
 A repeated name with different content is rejected instead of retracting the
 old statement. An incident's alarm retains the same statement name when its
 outcome becomes known, preventing duplicate evidence during that transition.
@@ -375,7 +377,11 @@ and therefore no repair. Oracle Bayes beliefs remain separate and are used only
 to score chosen actions. Recent MM2 builds expose a snapshot of the last native
 execution. StationOps records its steps, transitions, and unifications
 separately for diagnosis and shortfall conditioning; older bindings leave those
-fields `null`. Live conformance uses the same maximum absolute belief error of
+fields `null`. Graph diagnosis treats the requested budget as a ceiling and
+uses MM2's decision-complete window of 25 steps per incident with a 100-step
+setup floor; counters expose both
+`diagnosis_budget_requested` and `diagnosis_budget_effective`. Non-graph MM2
+queries retain their full requested budget. Live conformance uses the same maximum absolute belief error of
 0.05 as PeTTaChainer. The integration test skips with an actionable reason when
 the binding is unavailable; controlled engine tests always verify that wrong or
 empty MM2 results change or remove decisions.

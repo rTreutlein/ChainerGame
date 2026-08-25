@@ -638,9 +638,9 @@ class AutomatedGameTests(unittest.TestCase):
         result = run_game_episode(
             GameConfig(shifts=2, modules=4),
             "mm2",
-            100,
+            600,
             mm2_path=path,
-            action_budget=100,
+            action_budget=1,
         )
         self.assertGreaterEqual(
             min(round_["belief_metrics"]["coverage"] for round_ in result["rounds"]),
