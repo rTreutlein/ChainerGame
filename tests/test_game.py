@@ -590,7 +590,7 @@ class AutomatedGameTests(unittest.TestCase):
 
         config = GameConfig(shifts=2, modules=4)
         backend = RecordingBackend(config.logic_config())
-        with patch("stationops.game._backend", return_value=backend):
+        with patch("stationops.game.create_backend", return_value=backend):
             result = run_game_episode(
                 config,
                 "reference",
@@ -620,7 +620,7 @@ class AutomatedGameTests(unittest.TestCase):
 
         config = GameConfig(shifts=3)
         backend = RecordingBackend(config.logic_config())
-        with patch("stationops.game._backend", return_value=backend):
+        with patch("stationops.game.create_backend", return_value=backend):
             result = run_game_episode(config, "reference")
         self.assertEqual(result["backend"], "recording")
         self.assertEqual(len(backend.calls), 3)

@@ -37,6 +37,25 @@ def _game_config(args):
     )
 
 
+def _add_game_options(parser):
+    parser.add_argument("--shifts", type=int, default=5)
+    parser.add_argument("--modules", type=int, default=10)
+    parser.add_argument("--initial-history-per-cohort", type=int, default=40)
+    parser.add_argument("--diagnostic-slots", type=int, default=2)
+    parser.add_argument("--credits", type=int, default=30)
+    parser.add_argument(
+        "--sensor-knowledge",
+        choices=("full", "positive", "induced", "mixed"),
+        default="mixed",
+    )
+    parser.add_argument("--learning-window", type=int, default=10)
+    parser.add_argument(
+        "--independent-modules",
+        action="store_true",
+        help="disable the StationOps dependency graph for legacy comparison",
+    )
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="stationops")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -90,41 +109,11 @@ def main(argv=None):
                 ),
             )
         p.add_argument("--benchmark", choices=("v0", "v1", "v2"), default="v0")
-        p.add_argument("--shifts", type=int, default=5)
-        p.add_argument("--modules", type=int, default=10)
-        p.add_argument("--initial-history-per-cohort", type=int, default=40)
-        p.add_argument("--diagnostic-slots", type=int, default=2)
-        p.add_argument("--credits", type=int, default=30)
-        p.add_argument(
-            "--sensor-knowledge",
-            choices=("full", "positive", "induced", "mixed"),
-            default="mixed",
-        )
-        p.add_argument("--learning-window", type=int, default=10)
-        p.add_argument(
-            "--independent-modules",
-            action="store_true",
-            help="disable the StationOps dependency graph for legacy comparison",
-        )
+        _add_game_options(p)
     game = sub.add_parser("game")
     game.add_argument("--seed", type=int, default=7)
-    game.add_argument("--shifts", type=int, default=5)
-    game.add_argument("--modules", type=int, default=10)
-    game.add_argument("--initial-history-per-cohort", type=int, default=40)
-    game.add_argument("--diagnostic-slots", type=int, default=2)
+    _add_game_options(game)
     game.add_argument("--repair-slots", type=int, default=2)
-    game.add_argument("--credits", type=int, default=30)
-    game.add_argument(
-        "--sensor-knowledge",
-        choices=("full", "positive", "induced", "mixed"),
-        default="mixed",
-    )
-    game.add_argument("--learning-window", type=int, default=10)
-    game.add_argument(
-        "--independent-modules",
-        action="store_true",
-        help="disable the StationOps dependency graph for legacy comparison",
-    )
     game.add_argument("--host", default="127.0.0.1")
     game.add_argument("--port", type=int, default=8765)
     args = parser.parse_args(argv)

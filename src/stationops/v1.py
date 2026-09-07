@@ -5,7 +5,7 @@ import time
 from dataclasses import asdict
 from typing import Callable, TextIO
 
-from .backends import MM2Backend, PeTTaChainerBackend, ReferenceBackend
+from .backends import create_backend
 from .config import Config
 from .episode import _utility
 from .metta import generate_statements
@@ -43,16 +43,6 @@ def prior_shift_fixture(config: Config) -> EpisodeFixture:
         history,
         (RoundFixture(first, first_resolutions), RoundFixture(second, second_resolutions)),
     )
-
-
-def _backend(config, name, mm2_path=None, pettachainer_path=None):
-    if name == "reference":
-        return ReferenceBackend(config)
-    if name == "mm2":
-        return MM2Backend(config, mm2_path)
-    if name == "pettachainer":
-        return PeTTaChainerBackend(config, pettachainer_path)
-    raise ValueError(f"unknown backend: {name}")
 
 
 def _round_result(index, history, round_, beliefs, actions, counters, config, elapsed):
@@ -133,7 +123,7 @@ def _result(config, fixture, backend, budget, rounds, started, status="complete"
 def run_episode_v1(config: Config, backend_name="reference", budget=100, mm2_path=None,
                    pettachainer_path=None, fixture=None) -> dict:
     fixture = fixture or prior_shift_fixture(config)
-    backend = _backend(config, backend_name, mm2_path, pettachainer_path)
+    backend = create_backend(config, backend_name, mm2_path, pettachainer_path)
     history = list(fixture.history)
     rounds = []
     started = time.perf_counter()

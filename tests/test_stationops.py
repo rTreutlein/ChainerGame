@@ -846,7 +846,7 @@ class BenchmarkTests(unittest.TestCase):
         class Backend:
             name = "pettachainer"
 
-            def __init__(self, config, python_path):
+            def __init__(self, config, python_path, sensor_knowledge=None):
                 self.python_path = python_path
 
             def infer(self, history, incidents, budget, statements):
@@ -856,7 +856,7 @@ class BenchmarkTests(unittest.TestCase):
                 }
 
         cfg = Config(incidents=2, repair_slots=2)
-        with patch("stationops.episode.PeTTaChainerBackend", Backend):
+        with patch("stationops.backends.PeTTaChainerBackend", Backend):
             result = run_episode(
                 cfg,
                 "pettachainer",
@@ -938,12 +938,12 @@ class V1BenchmarkTests(unittest.TestCase):
 
         class Backend:
             name = "reference"
-            def __init__(self, config): pass
+            def __init__(self, config, sensor_models=None): pass
             def infer(self, history, incidents, budget, statements):
                 seen.append((list(history), list(incidents), statements))
                 return {}, {"queries": len(incidents), "engine_steps": None}
 
-        with patch("stationops.v1.ReferenceBackend", Backend):
+        with patch("stationops.backends.ReferenceBackend", Backend):
             run_episode_v1(Config())
         fixture = prior_shift_fixture(Config())
         self.assertEqual(len(seen), 2)
@@ -987,12 +987,12 @@ class V1BenchmarkTests(unittest.TestCase):
         class Backend:
             name = "reference"
             calls = 0
-            def __init__(self, config): pass
+            def __init__(self, config, sensor_models=None): pass
             def infer(self, history, incidents, budget, statements):
                 self.__class__.calls += 1
                 return {}, {"queries": len(incidents), "engine_steps": self.calls * 3}
 
-        with patch("stationops.v1.ReferenceBackend", Backend):
+        with patch("stationops.backends.ReferenceBackend", Backend):
             result = run_episode_v1(Config())
         self.assertEqual(result["aggregate_counters"]["engine_steps"], 9)
 
@@ -1003,7 +1003,7 @@ class V1BenchmarkTests(unittest.TestCase):
                 steps = 3 if self.calls == 1 else None
                 return {}, {"queries": len(incidents), "engine_steps": steps}
 
-        with patch("stationops.v1.ReferenceBackend", Partial):
+        with patch("stationops.backends.ReferenceBackend", Partial):
             result = run_episode_v1(Config())
         self.assertIsNone(result["aggregate_counters"]["engine_steps"])
 
@@ -1031,8 +1031,8 @@ class V1BenchmarkTests(unittest.TestCase):
                 ]
         backend_module = SimpleNamespace(PeTTaChainer=Handler)
         real = PeTTaChainerBackend
-        with patch("stationops.v1.PeTTaChainerBackend",
-                   lambda config, path: real(config, module=backend_module)):
+        with patch("stationops.backends.PeTTaChainerBackend",
+                   lambda config, path, sensor_knowledge=None: real(config, module=backend_module)):
             result = run_episode_v1(Config(), "pettachainer")
         self.assertEqual(len(Handler.instances), 1)
         handler = Handler.instances[0]

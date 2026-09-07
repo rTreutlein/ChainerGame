@@ -1,8 +1,4 @@
-"""Reasoner adapter seam.
-
-Future PeTTa support implements ReasonerBackend only; simulator, oracle, policy,
-and scoring do not import a concrete logic engine.
-"""
+"""Reference, MM2, and PeTTaChainer reasoner adapters."""
 from __future__ import annotations
 
 import importlib
@@ -1144,3 +1140,27 @@ class PeTTaChainerBackend:
             "action_forward_steps": forward_steps,
             "action_engine_steps": None,
         }
+
+
+def create_backend(
+    config: Config,
+    name: str,
+    mm2_path=None,
+    pettachainer_path=None,
+    *,
+    sensor_models=None,
+    sensor_knowledge_map=None,
+):
+    if name == "reference":
+        return ReferenceBackend(config, sensor_models)
+    if name == "mm2":
+        return MM2Backend(
+            config, mm2_path, sensor_knowledge=sensor_knowledge_map
+        )
+    if name == "pettachainer":
+        return PeTTaChainerBackend(
+            config,
+            pettachainer_path,
+            sensor_knowledge=sensor_knowledge_map,
+        )
+    raise ValueError(f"unknown backend: {name}")

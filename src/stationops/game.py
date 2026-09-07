@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass
 from typing import Callable
 
 from .actions import ActionCandidate, ActionProposal, reference_action_proposals
-from .backends import MM2Backend, PeTTaChainerBackend, ReferenceBackend
+from .backends import ReferenceBackend, create_backend
 from .config import Config
 from .metta import generate_dependency_statements, generate_statements
 from .models import Belief, HistoryCase, Incident, as_belief, belief_truth_values
@@ -1310,30 +1310,6 @@ def _causal_diagnosis_metrics(
     return result
 
 
-def _backend(
-    config: Config,
-    name: str,
-    mm2_path=None,
-    pettachainer_path=None,
-    *,
-    sensor_models=None,
-    sensor_knowledge_map=None,
-):
-    if name == "reference":
-        return ReferenceBackend(config, sensor_models)
-    if name == "mm2":
-        return MM2Backend(
-            config, mm2_path, sensor_knowledge=sensor_knowledge_map
-        )
-    if name == "pettachainer":
-        return PeTTaChainerBackend(
-            config,
-            pettachainer_path,
-            sensor_knowledge=sensor_knowledge_map,
-        )
-    raise ValueError(f"unknown backend: {name}")
-
-
 def _mean(values: list[float | None]) -> float | None:
     finite = [
         value
@@ -1440,7 +1416,7 @@ def run_game_episode(
         for equipment_type, _ in EQUIPMENT_TYPES
     }
     knowledge = sensor_knowledge(config)
-    backend = _backend(
+    backend = create_backend(
         session.logic_config,
         backend_name,
         mm2_path,
