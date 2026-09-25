@@ -3,6 +3,18 @@ from __future__ import annotations
 
 import hashlib
 import math
+from importlib.resources import as_file, files
+
+
+_POSTERIOR_MODULE = files("stationops").joinpath(
+    "metta/weighted_subset_posterior.metta"
+)
+
+
+def load_weighted_subset_posterior(handler) -> None:
+    """Load StationOps' weighted-subset Compute operators into a chainer."""
+    with as_file(_POSTERIOR_MODULE) as path:
+        handler.load_metta_file(path)
 
 
 # Keep the compact prefix/postfix posterior table in one value. Projecting it

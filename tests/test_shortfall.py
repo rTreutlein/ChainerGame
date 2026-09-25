@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 from stationops.backends import MM2Backend, PeTTaChainerBackend
@@ -47,6 +48,10 @@ class ShortfallConditioningTests(unittest.TestCase):
             def __init__(self):
                 self.atoms = []
                 self.queries = []
+                self.loaded_files = []
+
+            def load_metta_file(self, path):
+                self.loaded_files.append(Path(path))
 
             def add_atoms_no_check(self, atoms):
                 self.atoms.extend(atoms)
@@ -71,6 +76,10 @@ class ShortfallConditioningTests(unittest.TestCase):
         self.assertTrue(counters["shortfall_supported"])
         self.assertTrue(
             any("WeightedSubsetPosteriorDP" in atom for atom in handler.atoms)
+        )
+        self.assertEqual(
+            [path.name for path in handler.loaded_files],
+            ["weighted_subset_posterior.metta"],
         )
 
         repeated, repeated_counters = backend.condition_shortfalls(

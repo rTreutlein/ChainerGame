@@ -13,3 +13,6 @@ stationops = "stationops.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+stationops = ["metta/*.metta"]
