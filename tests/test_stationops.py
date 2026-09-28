@@ -448,6 +448,9 @@ class BenchmarkTests(unittest.TestCase):
                     ],
                 ]
 
+            def set_evidence_confidence_k(self, k):
+                self.evidence_confidence_k = k
+
         cfg = Config(repair_slots=2)
         backend = PeTTaChainerBackend(
             cfg, module=SimpleNamespace(PeTTaChainer=Handler)
@@ -489,6 +492,7 @@ class BenchmarkTests(unittest.TestCase):
         )
         self.assertEqual(Handler.instances[-1].atoms, ["(: fact (A) (STV 1 1))"])
         self.assertEqual(Handler.instances[-1].forwarded, (["(A)"], 2))
+        self.assertEqual(Handler.instances[-1].evidence_confidence_k, 1)
 
     def test_pettachainer_snapshots_reuse_handler_and_zero_budget_is_empty(self):
         class Handler:
@@ -518,6 +522,9 @@ class BenchmarkTests(unittest.TestCase):
                     ]
                     for query in queries
                 ]
+
+            def set_evidence_confidence_k(self, k):
+                self.evidence_confidence_k = k
 
         backend = PeTTaChainerBackend(
             Config(), module=SimpleNamespace(PeTTaChainer=Handler)
@@ -553,6 +560,9 @@ class BenchmarkTests(unittest.TestCase):
             def query_many(self, queries, steps, timeout_sec):
                 self.queries.append(list(queries))
                 return [["(: induced relation (STV .42 .7))"] for _ in queries]
+
+            def set_evidence_confidence_k(self, k):
+                self.evidence_confidence_k = k
 
         backend = PeTTaChainerBackend(
             Config(),
@@ -609,6 +619,9 @@ class BenchmarkTests(unittest.TestCase):
                     ["(: first-proof (SealLeak old first) (STV .25 1))"],
                     ["(: second-proof (SealLeak new second) (STV .75 1))"],
                 ]
+
+            def set_evidence_confidence_k(self, k):
+                self.evidence_confidence_k = k
 
         backend = PeTTaChainerBackend(
             Config(), module=SimpleNamespace(PeTTaChainer=Handler)
@@ -685,6 +698,9 @@ class BenchmarkTests(unittest.TestCase):
                     "thermal-loop-pump shift-01-M09) (STV .7 1))"
                 ]]
 
+            def set_evidence_confidence_k(self, k):
+                self.evidence_confidence_k = k
+
         backend = PeTTaChainerBackend(
             Config(),
             module=SimpleNamespace(PeTTaChainer=Handler),
@@ -734,6 +750,9 @@ class BenchmarkTests(unittest.TestCase):
 
             def query(self, query, steps, timeout_sec):
                 return []
+
+            def set_evidence_confidence_k(self, k):
+                self.evidence_confidence_k = k
 
         backend = PeTTaChainerBackend(
             Config(), module=SimpleNamespace(PeTTaChainer=Handler)
@@ -800,6 +819,9 @@ class BenchmarkTests(unittest.TestCase):
             def query_many(self, queries, steps, timeout_sec):
                 return [[] for _ in queries]
 
+            def set_evidence_confidence_k(self, k):
+                self.evidence_confidence_k = k
+
         backend = PeTTaChainerBackend(
             Config(), module=SimpleNamespace(PeTTaChainer=Handler)
         )
@@ -833,6 +855,9 @@ class BenchmarkTests(unittest.TestCase):
         class Handler:
             def __init__(self):
                 raise ModuleNotFoundError("No module named 'janus_swi'", name="janus_swi")
+
+            def set_evidence_confidence_k(self, k):
+                self.evidence_confidence_k = k
 
         backend = PeTTaChainerBackend(
             Config(), module=SimpleNamespace(PeTTaChainer=Handler)
@@ -1029,6 +1054,9 @@ class V1BenchmarkTests(unittest.TestCase):
                     ["(: proof (PatchPaysOff x y) (STV .2 1))"]
                     for _ in queries
                 ]
+
+            def set_evidence_confidence_k(self, k):
+                self.evidence_confidence_k = k
         backend_module = SimpleNamespace(PeTTaChainer=Handler)
         real = PeTTaChainerBackend
         with patch("stationops.backends.PeTTaChainerBackend",

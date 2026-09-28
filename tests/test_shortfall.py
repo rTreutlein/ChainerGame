@@ -80,6 +80,9 @@ class ShortfallConditioningTests(unittest.TestCase):
                     "(STV 1 1))"
                 ]
 
+            def set_evidence_confidence_k(self, k):
+                self.evidence_confidence_k = k
+
         handler = Handler()
         backend = PeTTaChainerBackend(
             Config(), module=SimpleNamespace(PeTTaChainer=lambda: handler)

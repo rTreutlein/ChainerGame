@@ -794,6 +794,10 @@ class PeTTaChainerBackend:
     name = "pettachainer"
     _forward_batch_size = 100
     _forward_steps_per_seed = 2
+    # PLN's evidence parameter: n resolved cases give confidence n/(n+k).
+    # StationOps groups hold a handful of cases each, and k = 1 weighs them
+    # against the public base rate as one pseudo-observation of prior.
+    _evidence_confidence_k = 1
     _stv_re = re.compile(
         r"\((?:STV|stv)\s+"
         r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s+"
@@ -845,7 +849,7 @@ class PeTTaChainerBackend:
 
     def _new_handler(self):
         try:
-            return self.module.PeTTaChainer()
+            handler = self.module.PeTTaChainer()
         except (ImportError, OSError) as exc:
             dependency = getattr(exc, "name", None) or str(exc)
             raise BackendUnavailable(
@@ -853,6 +857,8 @@ class PeTTaChainerBackend:
                 f"PeTTa/Janus dependencies (missing or unavailable: {dependency}) and ensure "
                 "both source roots and native libraries are available"
             ) from exc
+        handler.set_evidence_confidence_k(self._evidence_confidence_k)
+        return handler
 
     def _load_shortfall_formulas(self) -> None:
         if self._shortfall_formula_handler is self._handler:
