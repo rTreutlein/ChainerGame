@@ -47,6 +47,19 @@
       (WeightedSubsetPosteriorDP (station-candidates) 4))
    0.0)
 
+;; M03 alone explains the loss; the unclamped quotient rounds to 1.0000000000000002.
+!(test
+   (WeightedSubsetPosteriorMarginal
+      (WeightedSubsetPosteriorDP
+         ((WeightedCandidate M02 45 1e-06)
+          (WeightedCandidate M03 90 0.0009990000019960037)
+          (WeightedCandidate M04 70 1e-06)
+          (WeightedCandidate M07 40 0.1666666578276653)
+          (WeightedCandidate M10 100 1e-06))
+         90)
+      M03)
+   1.0)
+
 ;; Twelve binary choices collapse to the seven reachable loss cells 0..6,
 ;; rather than retaining the 2^12 underlying configurations.
 !(test

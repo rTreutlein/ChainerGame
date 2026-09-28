@@ -274,8 +274,12 @@
          (WeightedSubsetDP
             $target $candidates $prefix-rows $postfix-rows))
       (if (> $total 0.0)
-         (/ (weighted-subset-selected-mass
-               $candidates $prefix-rows $postfix-rows
-               $target $candidate)
-            $total)
+         ;; A candidate that alone explains the loss divides its own mass by
+         ;; a total summed in another order, which can round just above 1.
+         (let $marginal
+            (/ (weighted-subset-selected-mass
+                  $candidates $prefix-rows $postfix-rows
+                  $target $candidate)
+               $total)
+            (if (> $marginal 1.0) 1.0 $marginal))
          0.0)))

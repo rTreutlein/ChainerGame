@@ -123,7 +123,7 @@ def oracle_shortfall_marginals(event: dict) -> dict[str, float]:
             for left_impact, left_weight in prefix[index].items():
                 right_weight = suffix[index + 1].get(remaining - left_impact, 0.0)
                 included_weight += left_weight * right_weight * row["prior"]
-        marginals[unit] = included_weight / total
+        marginals[unit] = min(included_weight / total, 1.0)
     return marginals
 
 

@@ -30,6 +30,20 @@ class ShortfallConditioningTests(unittest.TestCase):
         self.assertAlmostEqual(marginals["valve"], 0.22272727272727275)
         self.assertAlmostEqual(marginals["motor"], 0.22272727272727275)
 
+    def test_oracle_marginal_stays_a_probability_when_one_candidate_explains_the_loss(self):
+        marginals = oracle_shortfall_marginals({
+            "shift": 3,
+            "remaining_loss": 90,
+            "candidates": {
+                "M02": {"impact": 45, "prior": 1e-06},
+                "M03": {"impact": 90, "prior": 0.0009990000019960037},
+                "M04": {"impact": 70, "prior": 1e-06},
+                "M07": {"impact": 40, "prior": 0.1666666578276653},
+                "M10": {"impact": 100, "prior": 1e-06},
+            },
+        })
+        self.assertEqual(marginals["M03"], 1.0)
+
     def test_source_uses_compact_posterior_dp_and_immutable_events(self):
         event = example_event()
         source = generate_shortfall_statements([event])
