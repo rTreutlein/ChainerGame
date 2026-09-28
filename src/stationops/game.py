@@ -944,6 +944,36 @@ def decision_beliefs(
     return adjusted, evidence
 
 
+def reasoner_only_beliefs(
+    session: GameSession,
+    beliefs: dict[str, float],
+    inspection_results: dict[str, str],
+    truth: dict[str, bool],
+) -> dict[str, float]:
+    """Repair probabilities taken from the reasoner alone.
+
+    The reasoner's strength is used as given: no blending with the public base
+    rate by confidence, and no recency or aggregate-loss updates outside the
+    reasoner. Observations every controller shares still apply: known faults
+    and this shift's inspections. An incident the reasoner did not answer keeps
+    its public base rate, since the reasoner claims nothing about it.
+    """
+    priors = empirical_feature_priors(session.history)
+    result = {}
+    for item in session._incidents:
+        if item.module.id in session._known_fault_modules:
+            result[item.id] = 1.0
+        elif item.id in inspection_results:
+            result[item.id] = 1.0 if truth[item.id] else 0.0
+        elif item.id in beliefs:
+            result[item.id] = as_belief(beliefs[item.id]).strength
+        else:
+            prior = priors.get((item.module.cohort, item.module.equipment_type))
+            if prior is not None:
+                result[item.id] = prior
+    return result
+
+
 def diagnostic_value(
     probability: float, incident: StationIncident, config: GameConfig
 ) -> float:
@@ -1494,6 +1524,15 @@ def run_game_episode(
         oracle_utility = _decision_utility(
             oracle_repairs, effective_oracle, station_incidents, config
         )
+        reasoner_repairs = allocate_repairs(
+            station_incidents,
+            reasoner_only_beliefs(session, beliefs, inspection_results, truth),
+            config,
+            session.repair_capacity(),
+        )
+        reasoner_utility = _decision_utility(
+            reasoner_repairs, effective_oracle, station_incidents, config
+        )
         causal_metrics = _causal_diagnosis_metrics(session, beliefs)
         resolution = session.commit(repairs, effective_beliefs)
         metrics = belief_error_metrics(beliefs, oracle_beliefs)
@@ -1540,6 +1579,9 @@ def run_game_episode(
             "expected_utility": expected_utility,
             "oracle_utility": oracle_utility,
             "regret": oracle_utility - expected_utility,
+            "reasoner_only_repairs": reasoner_repairs,
+            "reasoner_only_utility": reasoner_utility,
+            "reasoner_only_regret": oracle_utility - reasoner_utility,
             "backend_counters": counters,
             "resolution": resolution["report"],
             "wall_time_seconds": time.perf_counter() - round_started,
@@ -1565,6 +1607,7 @@ def run_game_episode(
             "expected_utility": expected,
             "oracle_utility": oracle,
             "regret": oracle - expected,
+            "reasoner_only_regret": sum(round_["reasoner_only_regret"] for round_ in rounds),
             "normalized_score": 1.0 if oracle == 0 else max(0.0, expected / oracle),
             "station_score": session.station_score,
             "total_production": session.total_production,

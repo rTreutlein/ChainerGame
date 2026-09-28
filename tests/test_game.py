@@ -18,6 +18,7 @@ from stationops.game import (
     decision_beliefs,
     diagnostic_plan,
     new_fault_probability,
+    reasoner_only_beliefs,
     run_action_loop,
     run_game_episode,
     sensor_rates,
@@ -312,6 +313,29 @@ class GameSessionTests(unittest.TestCase):
             allocate_repairs(
                 session._incidents, weak, session.config, session.repair_capacity()
             ),
+        )
+
+    def test_reasoner_only_beliefs_take_the_reasoner_strength_as_given(self):
+        session = GameSession(GameConfig(seed=7, shifts=1, modules=10))
+        target, silent, inspected = (
+            next(item for item in session._incidents if item.module.id == module)
+            for module in ("M03", "M04", "M05")
+        )
+        truth = dict(session._faults)
+        beliefs = reasoner_only_beliefs(
+            session,
+            {target.id: Belief(0.9, 1.0e-6), inspected.id: Belief(0.9, 1.0e-6)},
+            {inspected.id: "inspected"},
+            truth,
+        )
+
+        self.assertEqual(beliefs[target.id], 0.9)
+        self.assertEqual(
+            beliefs[inspected.id], 1.0 if truth[inspected.id] else 0.0
+        )
+        self.assertEqual(
+            beliefs[silent.id],
+            decision_beliefs(session, {})[1][silent.id]["public_base_rate"],
         )
 
     def test_low_confidence_proof_without_public_prior_is_not_actionable(self):
