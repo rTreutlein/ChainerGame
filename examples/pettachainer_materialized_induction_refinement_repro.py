@@ -30,9 +30,9 @@ TV_RE = re.compile(r"\(STV ([^ ]+) ([^)]+)\)")
 
 def state(name, leak, normal):
     terms = [
-        f"(Inheritance (State {name}) (EquipmentState old oxygen-scrubber))",
-        f"(Inheritance (State {name}) (SealLeak old oxygen-scrubber))",
-        f"(Inheritance (State {name}) (PressureNormal old oxygen-scrubber))",
+        f"(Member {name} (EquipmentState old oxygen-scrubber))",
+        f"(Member {name} (SealLeak old oxygen-scrubber))",
+        f"(Member {name} (PressureNormal old oxygen-scrubber))",
     ]
     statements = [
         f"(: {name}-equipment {terms[0]} (STV 1 1))",

@@ -143,12 +143,12 @@ class GameSessionTests(unittest.TestCase):
         self.assertNotIn("problem-alarm-old-thermal-loop-pump", source)
         resolved = session.history[0]
         self.assertIn(
-            f"(Inheritance (State {resolved.id}) "
+            f"(Member {resolved.id} "
             f"(EquipmentState {resolved.cohort} {resolved.equipment_type}))",
             source,
         )
         self.assertIn(
-            f"(Inheritance (State {resolved.id}) "
+            f"(Member {resolved.id} "
             f"(SealLeak {resolved.cohort} {resolved.equipment_type}))",
             source,
         )
@@ -165,7 +165,7 @@ class GameSessionTests(unittest.TestCase):
             f"{propagated.id}) (STV 0 1)",
             source,
         )
-        self.assertNotIn(f"(State {session.incidents[0].id})", source)
+        self.assertNotIn(f"(Member {session.incidents[0].id} ", source)
 
     def test_zero_action_limits_are_valid_benchmark_dimensions(self):
         session = GameSession(
@@ -474,7 +474,7 @@ class GameSessionTests(unittest.TestCase):
         session = GameSession(GameConfig(modules=5, sensor_knowledge="full"))
         source = session.logic_statements()
         self.assertIn(
-            "(BiImplication (Inheritance (ModuleState shift-01 M03) "
+            "(BiImplication (Member (ModuleState shift-01 M03) "
             "(SealLeak old power-converter)) (LocalProblem shift-01 M03 "
             "old power-converter shift-01-M03))",
             source,

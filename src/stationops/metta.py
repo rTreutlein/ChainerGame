@@ -39,8 +39,8 @@ def generate_statements(
 ) -> str:
     """Emit public facts plus full, positive-only, or induced sensor knowledge.
 
-    Typed StationOps cases additionally share a ``State`` subject through
-    ``Inheritance`` observations.  Only resolved history enters those pairs;
+    Each typed resolved case is additionally one individual, a ``Member`` of
+    its group's concepts.  Only resolved history enters those memberships;
     an unresolved current alarm must not become an unlabeled induction sample.
     """
     groups = sorted(
@@ -109,20 +109,21 @@ def generate_statements(
                 f"(STV {1 if case.problem else 0} 1))"
             )
         if case.equipment_type is not None:
+            # A resolved case is one individual, so it is a Member of each
+            # group concept and counts once in the concepts' member folds.
             group = _group(case)
-            state = f"(State {case.id})"
             equipment_concept = _concept("EquipmentState", group)
             leak_concept = _concept("SealLeak", group)
             alarm_concept = _concept("PressureAlarm", group)
             normal_concept = _concept("PressureNormal", group)
             lines.extend((
                 f"(: state-equipment-{case.id} "
-                f"(Inheritance {state} {equipment_concept}) (STV 1 1))",
-                f"(: state-leak-{case.id} (Inheritance {state} {leak_concept}) "
+                f"(Member {case.id} {equipment_concept}) (STV 1 1))",
+                f"(: state-leak-{case.id} (Member {case.id} {leak_concept}) "
                 f"(STV {1 if case.leak else 0} 1))",
-                f"(: state-alarm-{case.id} (Inheritance {state} {alarm_concept}) "
+                f"(: state-alarm-{case.id} (Member {case.id} {alarm_concept}) "
                 f"(STV {1 if case.alarm else 0} 1))",
-                f"(: state-normal-{case.id} (Inheritance {state} {normal_concept}) "
+                f"(: state-normal-{case.id} (Member {case.id} {normal_concept}) "
                 f"(STV {0 if case.alarm else 1} 1))",
             ))
 
@@ -172,7 +173,7 @@ def generate_dependency_statements(
 
     def local_cause_atom(item: Incident) -> str:
         return (
-            f"(Inheritance (ModuleState {context} {item.module_id}) "
+            f"(Member (ModuleState {context} {item.module_id}) "
             f"(SealLeak {item.cohort} {item.equipment_type}))"
         )
 
@@ -194,7 +195,7 @@ def generate_dependency_statements(
         )
         lines.append(
             f"(: current-equipment-state-{item.id} "
-            f"(Inheritance (ModuleState {context} {item.module_id}) "
+            f"(Member (ModuleState {context} {item.module_id}) "
             f"{_concept('EquipmentState', _group(item))}) (STV 1 1))"
         )
         lines.append(

@@ -812,13 +812,13 @@ class BenchmarkTests(unittest.TestCase):
             "\n".join((
                 "(: initial (A) (STV 1 1))",
                 "(: leak-shift-01-M01 (SealLeak old pump shift-01-M01) (STV 0 1))",
-                "(: state-leak-shift-01-M01 (Inheritance (State shift-01-M01) "
+                "(: state-leak-shift-01-M01 (Member shift-01-M01 "
                 "(SealLeak old pump)) (STV 0 1))",
             )),
         )
         self.assertEqual(
             backend._handler.forwarded,
-            ["(Inheritance (State shift-01-M01) (SealLeak old pump))"],
+            ["(Member shift-01-M01 (SealLeak old pump))"],
         )
 
     def test_pettachainer_unavailable_error_is_actionable(self):
