@@ -1016,6 +1016,8 @@ class PeTTaChainerBackend:
         if self._handler is None:
             self._handler = self._new_handler()
         try:
+            if self.temporal_model:
+                self._load_shortfall_formulas()
             counters = self._reconcile(statements)
         except Exception:
             # A failed batch may have partially mutated the external runtime.

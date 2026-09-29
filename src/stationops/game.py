@@ -353,6 +353,8 @@ class GameSession:
         self._module_records: dict[str, dict[str, int | str]] = {}
         self._shortfall_log: list[dict[str, int]] = []
         self._shortfall_events: list[dict] = []
+        # Every ambiguous shortfall as first reported, for the temporal model.
+        self._shortfall_reports: list[dict] = []
         self._incidents: tuple[StationIncident, ...] = ()
         self._faults: dict[str, bool] = {}
         self._unavailable_modules: set[str] = set()
@@ -604,6 +606,7 @@ class GameSession:
 
         priors = empirical_feature_priors(self.history)
         candidates = {}
+        reported = []
         for item in self._incidents:
             if (
                 item.id in repairs
@@ -622,7 +625,18 @@ class GameSession:
                 "impact": item.module.value_at_risk,
                 "prior": min(max(float(probability), 1e-6), 1.0 - 1e-6),
             }
+            reported.append((
+                item.module.cohort,
+                item.module.equipment_type,
+                item.id,
+                item.module.value_at_risk,
+            ))
         if candidates:
+            self._shortfall_reports.append({
+                "shift": self.shift_index + 1,
+                "loss": remaining_loss,
+                "candidates": reported,
+            })
             self._shortfall_events.append({
                 "shift": self.shift_index + 1,
                 "remaining_loss": remaining_loss,
@@ -793,6 +807,7 @@ class GameSession:
                 for module in self.modules
             },
             "links": links,
+            "shortfalls": self._shortfall_reports,
         }
 
     def logic_statements(self, history: list[HistoryCase] | None = None) -> str:
@@ -945,37 +960,6 @@ def decision_beliefs(
         )
         evidence[item.id] = details
 
-    return _condition_on_shortfalls(session, beliefs, adjusted, evidence, shortfall_marginals)
-
-
-def temporal_decision_beliefs(
-    session: GameSession,
-    beliefs: dict[str, float],
-    shortfall_marginals: dict[int, dict[str, float]],
-) -> tuple[dict[str, float], dict[str, dict]]:
-    """Action probabilities from a reasoner that filters each module over time.
-
-    The reasoner's belief already carries the module's history, so it is used
-    as given; only aggregate-loss evidence is still applied in odds space.
-    """
-    adjusted = {}
-    evidence = {}
-    for item in session._incidents:
-        raw = beliefs.get(item.id)
-        if raw is None:
-            continue
-        raw = as_belief(raw)
-        adjusted[item.id] = raw
-        evidence[item.id] = {
-            "raw_belief": raw.strength,
-            "raw_confidence": raw.confidence,
-            "decision_source": "reasoner-filter",
-        }
-    return _condition_on_shortfalls(session, beliefs, adjusted, evidence, shortfall_marginals)
-
-
-def _condition_on_shortfalls(session, beliefs, adjusted, evidence, shortfall_marginals):
-    """Apply each open shortfall's likelihood ratio, then confirmed faults."""
     by_module = {item.module.id: item for item in session._incidents}
     for event in session._shortfall_events:
         marginals = shortfall_marginals.get(int(event["shift"]), {})
@@ -1000,6 +984,32 @@ def _condition_on_shortfalls(session, beliefs, adjusted, evidence, shortfall_mar
             }
         if item.id in evidence and item.id in adjusted:
             evidence[item.id]["decision_belief"] = adjusted[item.id]
+    return adjusted, evidence
+
+
+def temporal_decision_beliefs(
+    session: GameSession,
+    beliefs: dict[str, float],
+) -> tuple[dict[str, float], dict[str, dict]]:
+    """Action probabilities from a reasoner that filters each module over time.
+
+    The reasoner's belief already carries the module's history and every
+    aggregate-loss report, so it is used as given.
+    """
+    adjusted = {}
+    evidence = {}
+    for item in session._incidents:
+        raw = beliefs.get(item.id)
+        if raw is None:
+            continue
+        raw = as_belief(raw)
+        adjusted[item.id] = raw
+        evidence[item.id] = {
+            "raw_belief": raw.strength,
+            "raw_confidence": raw.confidence,
+            "decision_source": "reasoner-filter",
+            "decision_belief": raw,
+        }
     return adjusted, evidence
 
 
@@ -1536,7 +1546,11 @@ def run_game_episode(
             (incident_id, Belief(1.0, 1.0)) for incident_id in known_faults
         )
 
-        conditioner = getattr(backend, "condition_shortfalls", None)
+        # The temporal model conditions on shortfalls inside the reasoner.
+        conditioner = (
+            None if config.temporal_model
+            else getattr(backend, "condition_shortfalls", None)
+        )
         if conditioner is None:
             shortfall_marginals = oracle_event_marginals(session._shortfall_events)
             shortfall_counters = {
@@ -1554,8 +1568,10 @@ def run_game_episode(
         counters.update(shortfall_counters)
 
         controller_beliefs, belief_evidence = (
-            temporal_decision_beliefs if config.temporal_model else decision_beliefs
-        )(session, beliefs, shortfall_marginals)
+            temporal_decision_beliefs(session, beliefs)
+            if config.temporal_model
+            else decision_beliefs(session, beliefs, shortfall_marginals)
+        )
         oracle_controller_beliefs, _ = decision_beliefs(
             session, oracle_beliefs, oracle_shortfalls
         )

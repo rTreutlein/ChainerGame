@@ -44,10 +44,11 @@ def generate_statements(
     its group's concepts.  Only resolved history enters those memberships;
     an unresolved current alarm must not become an unlabeled induction sample.
 
-    With ``temporal`` (hazards per group and each current incident's link to
-    the module's previous shift) the knowledge instead describes a filter:
-    each incident's seal state is predicted from the module's previous state
-    and updated by the incident's alarm.
+    With ``temporal`` (hazards per group, each current incident's link to
+    the module's previous shift, and the shortfall reports) the knowledge
+    instead describes a filter: each incident's seal state is predicted from
+    the module's state at the end of the previous shift and updated by the
+    incident's alarm, and a shift's state is conditioned on its shortfall.
     """
     groups = sorted(
         {_group(item) for item in history} | {_group(item) for item in incidents},
@@ -79,7 +80,7 @@ def generate_statements(
             lines.append(
                 f"(: persist-{suffix} "
                 f"(Implication (And (NextState $previous $unit) "
-                f"(SealLeak {cohort} {equipment_type} $previous)) "
+                f"(SealLeakAtShiftEnd {cohort} {equipment_type} $previous)) "
                 f"(LeakPredicted {variables})) "
                 f"(CTV (STV 1 1) (STV {hazard} 1)))"
             )
@@ -184,6 +185,35 @@ def generate_statements(
                 f"(ForAll ($cohort) (WithPrior (LeakPredicted {variables}) "
                 f"(Implication (SealLeak {variables}) (PressureAlarm {variables})))) "
                 f"{truth})"
+            )
+        # A shift ends in the state its incidents were in, unless the shift
+        # reported a shortfall: then its candidates' states are conditioned on
+        # the loss by the exact weighted-subset posterior over their beliefs.
+        lines.append(
+            "(: shiftEnd (Implication (SealLeak $cohort $type $unit) "
+            "(SealLeakAtShiftEnd $cohort $type $unit)) "
+            "(CTV (STV 1 1) (STV 0 1)))"
+        )
+        lines.append(
+            "(: shortfallPosterior (Implication (And "
+            "(ShortfallCandidate $event $cohort $type $unit $impact) "
+            "(ShortfallLoss $event $loss) "
+            "(FoldAllTruth (And (ShortfallCandidate $event $c $t $v $i) (SealLeak $c $t $v)) "
+            "(STV $s $_c) (WeightedCandidate $v $i $s) () "
+            "(|-> ($acc $elem) (cons $elem $acc)) -> $candidates) "
+            "(Compute WeightedSubsetPosteriorDP ($candidates $loss) -> $posterior) "
+            "(SealLeak $cohort $type $unit) "
+            "(Compute WeightedSubsetPosteriorMarginal ($posterior $unit) -> $p)) "
+            "(SealLeakAtShiftEnd $cohort $type $unit)) "
+            "(CTV (STV $p 1) (STV $p 1)))"
+        )
+        for report in temporal["shortfalls"]:
+            event = f"shortfall-s{report['shift']:02d}"
+            lines.append(f"(: {event} (ShortfallLoss {event} {report['loss']}) (STV 1 1))")
+            lines.extend(
+                f"(: {event}-{unit} (ShortfallCandidate {event} "
+                f"{cohort} {equipment_type} {unit} {impact}) (STV 1 1))"
+                for cohort, equipment_type, unit, impact in report["candidates"]
             )
         for item in incidents:
             previous, serviced = temporal["links"].get(item.id, (None, False))
