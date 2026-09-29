@@ -871,7 +871,7 @@ class BenchmarkTests(unittest.TestCase):
         class Backend:
             name = "pettachainer"
 
-            def __init__(self, config, python_path, sensor_knowledge=None):
+            def __init__(self, config, python_path, sensor_knowledge=None, temporal_model=False):
                 self.python_path = python_path
 
             def infer(self, history, incidents, budget, statements):
@@ -1060,7 +1060,7 @@ class V1BenchmarkTests(unittest.TestCase):
         backend_module = SimpleNamespace(PeTTaChainer=Handler)
         real = PeTTaChainerBackend
         with patch("stationops.backends.PeTTaChainerBackend",
-                   lambda config, path, sensor_knowledge=None: real(config, module=backend_module)):
+                   lambda config, path, sensor_knowledge=None, temporal_model=False: real(config, module=backend_module)):
             result = run_episode_v1(Config(), "pettachainer")
         self.assertEqual(len(Handler.instances), 1)
         handler = Handler.instances[0]

@@ -36,12 +36,18 @@ def generate_statements(
     sensor_models: dict[str, tuple[float, float]] | None = None,
     direct_sensor_rules: bool = True,
     problem_history: bool = False,
+    temporal: dict | None = None,
 ) -> str:
     """Emit public facts plus full, positive-only, or induced sensor knowledge.
 
     Each typed resolved case is additionally one individual, a ``Member`` of
     its group's concepts.  Only resolved history enters those memberships;
     an unresolved current alarm must not become an unlabeled induction sample.
+
+    With ``temporal`` (hazards per group and each current incident's link to
+    the module's previous shift) the knowledge instead describes a filter:
+    each incident's seal state is predicted from the module's previous state
+    and updated by the incident's alarm.
     """
     groups = sorted(
         {_group(item) for item in history} | {_group(item) for item in incidents},
@@ -66,7 +72,23 @@ def generate_statements(
             + (f"{equipment_type} " if equipment_type else "")
             + "$unit"
         )
-        if direct_sensor_rules and mode == "full":
+        if temporal is not None and equipment_type is not None:
+            # A leak persists until repaired; a sound or freshly serviced seal
+            # starts leaking with the group's per-shift hazard.
+            hazard = _number(temporal["hazards"][group])
+            lines.append(
+                f"(: persist-{suffix} "
+                f"(Implication (And (NextState $previous $unit) "
+                f"(SealLeak {cohort} {equipment_type} $previous)) "
+                f"(LeakPredicted {variables})) "
+                f"(CTV (STV 1 1) (STV {hazard} 1)))"
+            )
+            lines.append(
+                f"(: fresh-{suffix} "
+                f"(Implication (Serviced {variables}) (LeakPredicted {variables})) "
+                f"(CTV (STV {hazard} 1) (STV {hazard} 1)))"
+            )
+        elif direct_sensor_rules and mode == "full":
             lines.append(
                 f"(: alarmGivenLeak-{suffix} "
                 f"(Implication (SealLeak {variables}) (PressureAlarm {variables})) "
@@ -108,7 +130,7 @@ def generate_statements(
                 f"(Problem {arguments}) "
                 f"(STV {1 if case.problem else 0} 1))"
             )
-        if case.equipment_type is not None:
+        if temporal is None and case.equipment_type is not None:
             # A resolved case is one individual, so it is a Member of each
             # group concept and counts once in the concepts' member folds.
             group = _group(case)
@@ -135,6 +157,44 @@ def generate_statements(
             f"(: alarm-{item.id} (PressureAlarm {_arguments(item)}) "
             f"(STV {1 if item.alarm else 0} 1))"
         )
+
+    if temporal is not None:
+        # A sensor behaves the same in every cohort: its rule is stated once
+        # per equipment type, refined from the resolved cases, and each alarm
+        # updates the incident's own predicted state.
+        for equipment_type in sorted({group[1] for group in groups if group[1] is not None}):
+            mode = (
+                sensor_knowledge.get(equipment_type, "full")
+                if sensor_knowledge is not None
+                else "full"
+            )
+            sensitivity, false_positive = (
+                sensor_models[equipment_type]
+                if sensor_models is not None
+                else (config.sensitivity, config.false_positive_rate)
+            )
+            truth = {
+                "full": f"(CTV (STV {_number(sensitivity)} 1) (STV {_number(false_positive)} 1))",
+                "positive": f"(STV {_number(sensitivity)} 1)",
+                "induced": "(STV 0.5 0.5)",
+            }[mode]
+            variables = f"$cohort {equipment_type} $unit"
+            lines.append(
+                f"(: alarmGivenLeak-{equipment_type} "
+                f"(ForAll ($cohort) (WithPrior (LeakPredicted {variables}) "
+                f"(Implication (SealLeak {variables}) (PressureAlarm {variables})))) "
+                f"{truth})"
+            )
+        for item in incidents:
+            previous, serviced = temporal["links"].get(item.id, (None, False))
+            if serviced:
+                lines.append(
+                    f"(: serviced-{item.id} (Serviced {_arguments(item)}) (STV 1 1))"
+                )
+            elif previous is not None:
+                lines.append(
+                    f"(: next-{item.id} (NextState {previous} {item.id}) (STV 1 1))"
+                )
 
     for i in range(config.irrelevant_statements):
         lines.append(f"(: irrelevant-fact-{i} (TelemetryNoise noise-{i}) (STV 1 1))")

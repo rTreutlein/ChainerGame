@@ -103,7 +103,7 @@ def _statement_parts(atom: str) -> tuple[str, str]:
 
 def _is_rule(type_expression: str) -> bool:
     fields = _fields(type_expression)
-    return bool(fields) and fields[0] in {"Implication", "BiImplication"}
+    return bool(fields) and fields[0] in {"Implication", "BiImplication", "ForAll"}
 
 
 def _fact_seed(type_expression: str) -> str:
@@ -810,9 +810,14 @@ class PeTTaChainerBackend:
         python_path: str | None = None,
         module=None,
         sensor_knowledge: dict[str, str] | None = None,
+        temporal_model: bool = False,
     ):
         self.config = config
         self.sensor_knowledge = sensor_knowledge or {}
+        # The temporal model asks every incident for its own seal state, learns
+        # its induced sensors from the resolved cases, and reads rates over a
+        # handful of cases as uncertain.
+        self.temporal_model = temporal_model
         self._handler = None
         self._action_handler = None
         self._action_atoms_by_name: dict[str, str] = {}
@@ -858,6 +863,9 @@ class PeTTaChainerBackend:
                 "both source roots and native libraries are available"
             ) from exc
         handler.set_evidence_confidence_k(self._evidence_confidence_k)
+        if self.temporal_model:
+            handler.set_rule_refinement(True)
+            handler.set_base_rate_smoothing(True)
         return handler
 
     def _load_shortfall_formulas(self) -> None:
@@ -1030,7 +1038,8 @@ class PeTTaChainerBackend:
                     f"{incident.equipment_type} {incident.id})"
                 )
             elif (
-                incident.equipment_type is not None
+                not self.temporal_model
+                and incident.equipment_type is not None
                 and self.sensor_knowledge.get(incident.equipment_type)
                 in {"positive", "induced"}
             ):
@@ -1166,6 +1175,7 @@ def create_backend(
     *,
     sensor_models=None,
     sensor_knowledge_map=None,
+    temporal_model=False,
 ):
     if name == "reference":
         return ReferenceBackend(config, sensor_models)
@@ -1178,5 +1188,6 @@ def create_backend(
             config,
             pettachainer_path,
             sensor_knowledge=sensor_knowledge_map,
+            temporal_model=temporal_model,
         )
     raise ValueError(f"unknown backend: {name}")

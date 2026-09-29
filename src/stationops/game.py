@@ -83,6 +83,7 @@ class GameConfig:
     sensor_knowledge: str = "mixed"
     learning_window: int = 10
     dependency_graph: bool = True
+    temporal_model: bool = False
 
     def __post_init__(self):
         positive = {
@@ -768,6 +769,32 @@ class GameSession:
             if item.module.id in self._known_fault_modules
         }
 
+    def _temporal_links(self) -> dict:
+        """Public facts that connect each module's states across shifts.
+
+        The hazards are the ones the standard controller already uses for its
+        time-since-service correction.
+        """
+        shift = self.shift_index + 1
+        links = {}
+        for item in self._incidents:
+            if shift == 1:
+                continue
+            record = self._module_records.get(item.module.id)
+            serviced = bool(
+                record
+                and int(record["shift"]) == shift - 1
+                and record["status"] in {"leak patched", "seal serviced intact"}
+            )
+            links[item.id] = (f"shift-{shift - 1:02d}-{item.module.id}", serviced)
+        return {
+            "hazards": {
+                (module.cohort, module.equipment_type): new_fault_probability(self.config, module)
+                for module in self.modules
+            },
+            "links": links,
+        }
+
     def logic_statements(self, history: list[HistoryCase] | None = None) -> str:
         """Return exactly the current public knowledge made available to a backend."""
         history = self.history if history is None else history
@@ -783,6 +810,7 @@ class GameSession:
                 },
                 direct_sensor_rules=not bool(self.dependencies),
                 problem_history=bool(self.dependencies),
+                temporal=self._temporal_links() if self.config.temporal_model else None,
             )
         ]
         if self.dependencies:
@@ -864,7 +892,6 @@ def decision_beliefs(
         shortfall_marginals = oracle_event_marginals(session._shortfall_events)
     adjusted = {}
     evidence = {}
-    by_module = {item.module.id: item for item in session._incidents}
     public_priors = empirical_feature_priors(session.history)
 
     for item in session._incidents:
@@ -918,6 +945,38 @@ def decision_beliefs(
         )
         evidence[item.id] = details
 
+    return _condition_on_shortfalls(session, beliefs, adjusted, evidence, shortfall_marginals)
+
+
+def temporal_decision_beliefs(
+    session: GameSession,
+    beliefs: dict[str, float],
+    shortfall_marginals: dict[int, dict[str, float]],
+) -> tuple[dict[str, float], dict[str, dict]]:
+    """Action probabilities from a reasoner that filters each module over time.
+
+    The reasoner's belief already carries the module's history, so it is used
+    as given; only aggregate-loss evidence is still applied in odds space.
+    """
+    adjusted = {}
+    evidence = {}
+    for item in session._incidents:
+        raw = beliefs.get(item.id)
+        if raw is None:
+            continue
+        raw = as_belief(raw)
+        adjusted[item.id] = raw
+        evidence[item.id] = {
+            "raw_belief": raw.strength,
+            "raw_confidence": raw.confidence,
+            "decision_source": "reasoner-filter",
+        }
+    return _condition_on_shortfalls(session, beliefs, adjusted, evidence, shortfall_marginals)
+
+
+def _condition_on_shortfalls(session, beliefs, adjusted, evidence, shortfall_marginals):
+    """Apply each open shortfall's likelihood ratio, then confirmed faults."""
+    by_module = {item.module.id: item for item in session._incidents}
     for event in session._shortfall_events:
         marginals = shortfall_marginals.get(int(event["shift"]), {})
         for module_id, shortfall_probability in marginals.items():
@@ -1453,6 +1512,7 @@ def run_game_episode(
         pettachainer_path,
         sensor_models=models,
         sensor_knowledge_map=knowledge,
+        temporal_model=config.temporal_model,
     )
     reference = ReferenceBackend(session.logic_config, models)
     initial_resolved_model = _resolved_model(session.history)
@@ -1493,9 +1553,9 @@ def run_game_episode(
         )
         counters.update(shortfall_counters)
 
-        controller_beliefs, belief_evidence = decision_beliefs(
-            session, beliefs, shortfall_marginals
-        )
+        controller_beliefs, belief_evidence = (
+            temporal_decision_beliefs if config.temporal_model else decision_beliefs
+        )(session, beliefs, shortfall_marginals)
         oracle_controller_beliefs, _ = decision_beliefs(
             session, oracle_beliefs, oracle_shortfalls
         )

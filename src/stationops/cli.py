@@ -34,6 +34,7 @@ def _game_config(args):
         sensor_knowledge=args.sensor_knowledge,
         learning_window=args.learning_window,
         dependency_graph=not args.independent_modules,
+        temporal_model=args.temporal_model,
     )
 
 
@@ -53,6 +54,12 @@ def _add_game_options(parser):
         "--independent-modules",
         action="store_true",
         help="disable the StationOps dependency graph for legacy comparison",
+    )
+    parser.add_argument(
+        "--temporal-model",
+        action="store_true",
+        help="PeTTaChainer filters each module's seal state across shifts and "
+        "the controller acts on its beliefs",
     )
 
 
