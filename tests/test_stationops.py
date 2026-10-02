@@ -1191,3 +1191,14 @@ class V1BenchmarkTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StrongestBeliefTests(unittest.TestCase):
+    def test_reads_the_answers_own_truth_value_not_one_inside_its_proof(self):
+        answer = (
+            "(: ((inverted alarm with cpu (prior (STV 0.61 0.44))) a1) "
+            "(SealLeak old pump shift-01-M01) (STV 0.125 0.66))"
+        )
+        belief = PeTTaChainerBackend._strongest_belief([answer])
+        self.assertAlmostEqual(belief.strength, 0.125)
+        self.assertAlmostEqual(belief.confidence, 0.66)

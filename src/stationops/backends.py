@@ -849,10 +849,12 @@ class PeTTaChainerBackend:
     def _strongest_belief(cls, proofs) -> Belief | None:
         truth_values = []
         for proof in proofs or ():
-            match = cls._stv_re.search(str(proof))
-            if match is not None:
-                strength = float(match.group(1))
-                confidence = float(match.group(2))
+            # An answer is (: proof statement tv): its own truth value is the
+            # last one; a proof may hold others (a prior's, for instance).
+            matches = cls._stv_re.findall(str(proof))
+            if matches:
+                strength = float(matches[-1][0])
+                confidence = float(matches[-1][1])
                 if math.isfinite(strength) and math.isfinite(confidence):
                     truth_values.append(Belief(strength, confidence))
         return max(truth_values, key=float) if truth_values else None
