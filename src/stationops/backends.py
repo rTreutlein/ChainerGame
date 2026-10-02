@@ -902,11 +902,7 @@ class PeTTaChainerBackend:
 
         additions = [entry for entry in entries if entry[0] not in self._atoms_by_name]
         rules = [entry for entry in additions if _is_rule(entry[1])]
-        facts = [
-            entry
-            for entry in additions
-            if not _is_rule(entry[1]) and _forward_fact(entry)
-        ]
+        facts = [entry for entry in additions if not _is_rule(entry[1])]
 
         if rules:
             self._handler.add_atoms_no_check([atom for _, _, atom in rules])
@@ -918,9 +914,10 @@ class PeTTaChainerBackend:
             batch = facts[offset:offset + self._forward_batch_size]
             self._handler.add_atoms_no_check([atom for _, _, atom in batch])
             self._atoms_by_name.update((name, atom) for name, _, atom in batch)
-            if forward_facts:
+            seed_entries = [entry for entry in batch if _forward_fact(entry)]
+            if forward_facts and seed_entries:
                 seeds = self._handler.select_facts(
-                    [_fact_seed(type_expression) for _, type_expression, _ in batch]
+                    [_fact_seed(type_expression) for _, type_expression, _ in seed_entries]
                 )
                 steps = self._forward_steps_per_seed * len(seeds)
                 self._handler.forward_chain(seeds, steps=steps)

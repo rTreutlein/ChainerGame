@@ -802,13 +802,14 @@ class BenchmarkTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "append-only PeTTaChainer"):
             backend.infer([], [], 1, "(: fact-a (A) (STV .5 1))")
 
-    def test_pettachainer_keeps_resolved_shift_leaks_out_of_forward_replay(self):
+    def test_pettachainer_adds_resolved_shift_leaks_without_forward_replay(self):
         class Handler:
             def __init__(self):
+                self.added = []
                 self.forwarded = []
 
             def add_atoms_no_check(self, atoms):
-                pass
+                self.added.extend(atoms)
 
             def select_facts(self, terms):
                 return list(terms)
@@ -837,6 +838,10 @@ class BenchmarkTests(unittest.TestCase):
                 "(: state-leak-shift-01-M01 (Member shift-01-M01 "
                 "(SealLeak old pump)) (STV 0 1))",
             )),
+        )
+        self.assertIn(
+            "(: leak-shift-01-M01 (SealLeak old pump shift-01-M01) (STV 0 1))",
+            backend._handler.added,
         )
         self.assertEqual(
             backend._handler.forwarded,
