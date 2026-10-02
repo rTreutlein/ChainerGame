@@ -15,6 +15,9 @@ class Config:
     unnecessary_penalty: float = 10.0
     action_cost: float = 5.0
     irrelevant_statements: int = 0
+    distractor_signals: int = 0
+    distractor_chains: int = 0
+    distractor_chain_length: int = 3
 
     @property
     def repair_threshold(self) -> float:

@@ -705,3 +705,19 @@ class WebGameTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DistractorTests(unittest.TestCase):
+    def test_distractors_add_to_the_temporal_statements_without_changing_them(self):
+        base = GameConfig(seed=7, modules=10, shifts=2, temporal_model=True, dependency_graph=False)
+        noisy = GameConfig(
+            seed=7, modules=10, shifts=2, temporal_model=True, dependency_graph=False,
+            distractor_signals=2, distractor_chains=1, distractor_chain_length=2,
+        )
+        plain = GameSession(base).logic_statements().splitlines()
+        added = GameSession(noisy).logic_statements().splitlines()
+        self.assertTrue(set(plain) <= set(added))
+        extra = [line for line in added if line not in set(plain)]
+        self.assertTrue(any("(Implication (SealLeak $cohort coolant-pump $unit) (Noise1" in line for line in extra))
+        self.assertTrue(any(line.startswith("(: consequence0x2 ") for line in extra))
+        self.assertTrue(all("Noise" in line or "onsequence" in line for line in extra))

@@ -1,3 +1,5 @@
+import hashlib
+
 from .config import Config
 from .models import HistoryCase, Incident
 
@@ -25,6 +27,25 @@ def _concept(name: str, group: tuple[str, str | None]) -> str:
 
 def _number(value: float) -> str:
     return format(value, ".15g")
+
+
+def _fraction(*parts) -> float:
+    """A reproducible draw in [0, 1) that leaves the game's own RNG alone."""
+    digest = hashlib.sha256(":".join(map(str, parts)).encode()).digest()
+    return int.from_bytes(digest[:8], "big") / 2**64
+
+
+def _noise_rate(config: Config, equipment_type: str, signal: int) -> float:
+    return 0.2 + 0.6 * _fraction(config.seed, "noise-rate", equipment_type, signal)
+
+
+def _noise_facts(config: Config, item: HistoryCase | Incident) -> list[str]:
+    """Readings of the noise sensors, drawn independently of the seal state."""
+    return [
+        f"(: noise{signal}-{item.id} (Noise{signal} {_arguments(item)}) "
+        f"(STV {1 if _fraction(config.seed, 'noise', item.id, signal) < _noise_rate(config, item.equipment_type, signal) else 0} 1))"
+        for signal in range(config.distractor_signals)
+    ] if item.equipment_type is not None else []
 
 
 def generate_statements(
@@ -121,6 +142,8 @@ def generate_statements(
             f"(: alarm-{case.id} (PressureAlarm {arguments}) "
             f"(STV {1 if case.alarm else 0} 1))"
         )
+        if temporal is not None:
+            lines.extend(_noise_facts(config, case))
         if (
             problem_history
             and case.equipment_type is not None
@@ -158,6 +181,8 @@ def generate_statements(
             f"(: alarm-{item.id} (PressureAlarm {_arguments(item)}) "
             f"(STV {1 if item.alarm else 0} 1))"
         )
+        if temporal is not None:
+            lines.extend(_noise_facts(config, item))
 
     if temporal is not None:
         # A sensor behaves the same in every cohort: its rule is stated once
@@ -186,6 +211,26 @@ def generate_statements(
                 f"(Implication (SealLeak {variables}) (PressureAlarm {variables})))) "
                 f"{truth})"
             )
+            # Distractors: noise sensors stated like the alarm, but as likely
+            # with a leak as without one, so they must not move a belief.
+            for signal in range(config.distractor_signals):
+                rate = _number(_noise_rate(config, equipment_type, signal))
+                lines.append(
+                    f"(: noiseGivenLeak{signal}-{equipment_type} "
+                    f"(ForAll ($cohort) (WithPrior (LeakPredicted {variables}) "
+                    f"(Implication (SealLeak {variables}) (Noise{signal} {variables})))) "
+                    f"(CTV (STV {rate} 1) (STV {rate} 1)))"
+                )
+        # Distractors: consequences of a leak nothing ever asks about.
+        for chain in range(config.distractor_chains):
+            previous = "SealLeak"
+            for link in range(1, config.distractor_chain_length + 1):
+                current = f"Consequence{chain}x{link}"
+                lines.append(
+                    f"(: consequence{chain}x{link} (Implication ({previous} $cohort $type $unit) "
+                    f"({current} $cohort $type $unit)) (CTV (STV 0.7 1) (STV 0.2 1)))"
+                )
+                previous = current
         # A shift ends in the state its incidents were in, unless the shift
         # reported a shortfall: then its candidates' states are conditioned on
         # the loss by the exact weighted-subset posterior over their beliefs.

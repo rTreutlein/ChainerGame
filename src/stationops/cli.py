@@ -35,6 +35,9 @@ def _game_config(args):
         learning_window=args.learning_window,
         dependency_graph=not args.independent_modules,
         temporal_model=args.temporal_model,
+        distractor_signals=args.distractor_signals,
+        distractor_chains=args.distractor_chains,
+        distractor_chain_length=args.distractor_chain_length,
     )
 
 
@@ -61,6 +64,20 @@ def _add_game_options(parser):
         help="PeTTaChainer filters each module's seal state across shifts and "
         "the controller acts on its beliefs",
     )
+    parser.add_argument(
+        "--distractor-signals",
+        type=int,
+        default=0,
+        help="temporal model: noise sensors per equipment type, stated like the "
+        "alarm but independent of the seal state",
+    )
+    parser.add_argument(
+        "--distractor-chains",
+        type=int,
+        default=0,
+        help="temporal model: chains of never-queried consequences of SealLeak",
+    )
+    parser.add_argument("--distractor-chain-length", type=int, default=3)
 
 
 def main(argv=None):

@@ -84,6 +84,9 @@ class GameConfig:
     learning_window: int = 10
     dependency_graph: bool = True
     temporal_model: bool = False
+    distractor_signals: int = 0
+    distractor_chains: int = 0
+    distractor_chain_length: int = 3
 
     def __post_init__(self):
         positive = {
@@ -134,6 +137,9 @@ class GameConfig:
             avoided_loss=100.0,
             unnecessary_penalty=float(self.unnecessary_repair_penalty),
             action_cost=float(self.repair_cost),
+            distractor_signals=self.distractor_signals,
+            distractor_chains=self.distractor_chains,
+            distractor_chain_length=self.distractor_chain_length,
         )
 
 
