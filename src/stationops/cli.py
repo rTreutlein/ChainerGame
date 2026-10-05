@@ -4,7 +4,7 @@ import os
 
 from .config import Config
 from .episode import run_episode
-from .game import GameConfig, run_game_episode
+from .game import GameConfig, load_replay, run_game_episode
 from .metta import generate_statements
 from .simulator import generate_history, generate_incidents
 from .stress import run_stress_sweep
@@ -78,6 +78,11 @@ def _add_game_options(parser):
         help="temporal model: chains of never-queried consequences of SealLeak",
     )
     parser.add_argument("--distractor-chain-length", type=int, default=3)
+    parser.add_argument(
+        "--replay",
+        help="v2 run: apply the inspections and repairs of a recorded `run --stream` "
+        "instead of choosing, so only the beliefs differ between runs",
+    )
 
 
 def main(argv=None):
@@ -218,6 +223,7 @@ def main(argv=None):
                 shortfall_budget=args.shortfall_budget,
                 action_budget=args.action_budget,
                 on_shift=emit_shift,
+                replay=load_replay(args.replay) if args.command == "run" and args.replay else None,
             )
         if args.command == "run" and args.stream:
             print(json.dumps(

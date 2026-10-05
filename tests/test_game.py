@@ -17,6 +17,7 @@ from stationops.game import (
     allocate_repairs,
     decision_beliefs,
     diagnostic_plan,
+    load_replay,
     new_fault_probability,
     reasoner_only_beliefs,
     run_action_loop,
@@ -721,3 +722,31 @@ class DistractorTests(unittest.TestCase):
         self.assertTrue(any("(Implication (SealLeak $cohort coolant-pump $unit) (Noise1" in line for line in extra))
         self.assertTrue(any(line.startswith("(: consequence0x2 ") for line in extra))
         self.assertTrue(all("Noise" in line or "onsequence" in line for line in extra))
+
+
+class ReplayTests(unittest.TestCase):
+    def test_a_replayed_run_plays_the_recorded_game(self):
+        import tempfile
+        config = GameConfig(seed=3, shifts=3, modules=10)
+        recorded = []
+        original = run_game_episode(config, "reference", 10, on_shift=recorded.append)
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as stream:
+            for row in recorded:
+                stream.write(json.dumps({"type": "shift", "result": row}) + "\n")
+        replayed = run_game_episode(config, "reference", 10, replay=load_replay(stream.name))
+        os.unlink(stream.name)
+        self.assertEqual(
+            [(r["inspections"], r["chosen_repairs"]) for r in original["rounds"]],
+            [(r["inspections"], r["chosen_repairs"]) for r in replayed["rounds"]],
+        )
+        self.assertEqual(original["aggregate"]["station_score"], replayed["aggregate"]["station_score"])
+
+    def test_a_recording_of_another_game_is_refused(self):
+        recorded = []
+        run_game_episode(GameConfig(seed=3, shifts=2, modules=10), "reference", 10, on_shift=recorded.append)
+        plans = [
+            {"shift": row["shift"], "inspections": ["no-such-incident"], "repairs": []}
+            for row in recorded
+        ]
+        with self.assertRaises(ValueError):
+            run_game_episode(GameConfig(seed=3, shifts=2, modules=10), "reference", 10, replay=plans)

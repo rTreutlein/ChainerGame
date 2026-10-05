@@ -6,6 +6,7 @@ only while resolving actions and calculating benchmark metrics.
 """
 from __future__ import annotations
 
+import json
 import math
 import random
 import time
@@ -1501,6 +1502,54 @@ def _resolved_model(history: list[HistoryCase]) -> dict[str, dict]:
     return result
 
 
+def load_replay(path: str) -> list[dict]:
+    """The actions of a recorded ``run --stream``, one plan per shift.
+
+    A plan holds the incidents inspected, in order, and the repairs chosen.
+    """
+    plans = []
+    with open(path) as stream:
+        for line in stream:
+            record = json.loads(line)
+            if record.get("type") == "shift":
+                shift = record["result"]
+                plans.append({
+                    "shift": shift["shift"],
+                    "inspections": list(shift["inspections"]),
+                    "repairs": list(shift["chosen_repairs"]),
+                })
+    return plans
+
+
+def replay_actions(session: GameSession, plan: dict) -> tuple[
+    dict[str, str], dict[str, float], list[str], dict, list[dict], dict[str, float]
+]:
+    """Apply a recorded shift's inspections and repairs instead of choosing.
+
+    A recording from another configuration fails here rather than silently
+    playing a different game.
+    """
+    if plan["shift"] != session.shift_index + 1:
+        raise ValueError(f"replay plan is for shift {plan['shift']}, the game is at shift {session.shift_index + 1}")
+    incident_ids = {item.id for item in session._incidents}
+    unknown = [
+        incident_id
+        for incident_id in plan["inspections"] + plan["repairs"]
+        if incident_id not in incident_ids
+    ]
+    if unknown:
+        raise ValueError(f"replay plan names incidents this game does not have: {unknown}")
+    inspection_results = {
+        incident_id: session.inspect(incident_id)["result"]
+        for incident_id in plan["inspections"]
+    }
+    effective_beliefs = {
+        incident_id: Belief(1.0 if session._faults[incident_id] else 0.0, 1.0)
+        for incident_id in inspection_results
+    }
+    return inspection_results, {}, list(plan["repairs"]), {}, [], effective_beliefs
+
+
 def run_game_episode(
     config: GameConfig | None = None,
     backend_name: str = "reference",
@@ -1510,8 +1559,14 @@ def run_game_episode(
     shortfall_budget: int | None = None,
     action_budget: int | None = None,
     on_shift: Callable[[dict], None] | None = None,
+    replay: list[dict] | None = None,
 ) -> dict:
-    """Run the standard controller through the same simulation used by humans."""
+    """Run the standard controller through the same simulation used by humans.
+
+    With ``replay`` (see load_replay) the recorded actions are applied instead
+    of the controller's, so every run plays the same game and only the beliefs
+    differ; the action reasoner is not queried.
+    """
     config = config or GameConfig()
     shortfall_budget = budget if shortfall_budget is None else shortfall_budget
     action_budget = budget if action_budget is None else action_budget
@@ -1584,14 +1639,27 @@ def run_game_episode(
         oracle_inspection_ids, _ = diagnostic_plan(
             session, oracle_controller_beliefs
         )
-        (
-            inspection_results,
-            diagnostic_priorities,
-            repairs,
-            action_counters,
-            action_trace,
-            effective_beliefs,
-        ) = run_action_loop(backend, session, controller_beliefs, action_budget)
+        if replay is not None:
+            if session.shift_index >= len(replay):
+                raise ValueError(f"replay has {len(replay)} shifts, the game has more")
+            (
+                inspection_results,
+                diagnostic_priorities,
+                repairs,
+                action_counters,
+                action_trace,
+                replayed_beliefs,
+            ) = replay_actions(session, replay[session.shift_index])
+            effective_beliefs = dict(controller_beliefs) | replayed_beliefs
+        else:
+            (
+                inspection_results,
+                diagnostic_priorities,
+                repairs,
+                action_counters,
+                action_trace,
+                effective_beliefs,
+            ) = run_action_loop(backend, session, controller_beliefs, action_budget)
         counters.update(action_counters)
 
         effective_oracle = dict(oracle_controller_beliefs)
