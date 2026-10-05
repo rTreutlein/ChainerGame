@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib
 import math
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -793,7 +794,7 @@ class PeTTaChainerBackend:
 
     name = "pettachainer"
     _forward_batch_size = 100
-    _forward_steps_per_seed = 2
+    _forward_steps_per_seed = float(os.environ.get("CG_FORWARD_STEPS", "2"))
     # PLN's evidence parameter: n resolved cases give confidence n/(n+k).
     # StationOps groups hold a handful of cases each, and k = 1 weighs them
     # against the public base rate as one pseudo-observation of prior, which
@@ -873,6 +874,8 @@ class PeTTaChainerBackend:
         if self.temporal_model:
             handler.set_rule_refinement(True)
             handler.set_base_rate_smoothing(True)
+        if os.environ.get("CG_FORGET_H"):
+            handler.set_forgetting(int(os.environ["CG_FORGET_H"]), float(os.environ.get("CG_FORGET_DECAY", "1.0")))
         return handler
 
     def _load_shortfall_formulas(self) -> None:
@@ -921,7 +924,7 @@ class PeTTaChainerBackend:
                 seeds = self._handler.select_facts(
                     [_fact_seed(type_expression) for _, type_expression, _ in seed_entries]
                 )
-                steps = self._forward_steps_per_seed * len(seeds)
+                steps = round(self._forward_steps_per_seed * len(seeds))
                 self._handler.forward_chain(seeds, steps=steps)
                 forward_seeds += len(seeds)
                 forward_steps += steps
@@ -970,6 +973,8 @@ class PeTTaChainerBackend:
         )
         if self._handler is None:
             self._handler = self._new_handler()
+        elif os.environ.get("CG_FORGET_H"):
+            self._handler.advance_epoch()
         if not pending:
             return marginals, {
                 "shortfall_queries": len(queries),
@@ -1147,7 +1152,7 @@ class PeTTaChainerBackend:
                 seeds = self._action_handler.select_facts(
                     [_fact_seed(type_expression) for _, type_expression, _ in batch]
                 )
-                steps = self._forward_steps_per_seed * len(seeds)
+                steps = round(self._forward_steps_per_seed * len(seeds))
                 if seeds:
                     self._action_handler.forward_chain(seeds, steps=steps)
                 forward_seed_facts += len(seeds)
