@@ -876,6 +876,8 @@ class PeTTaChainerBackend:
             handler.set_base_rate_smoothing(True)
         if os.environ.get("CG_FORGET_H"):
             handler.set_forgetting(int(os.environ["CG_FORGET_H"]), float(os.environ.get("CG_FORGET_DECAY", "1.0")))
+        if os.environ.get("CG_FORWARD_SEED_SHARE"):
+            handler.set_forward_seed_share(float(os.environ["CG_FORWARD_SEED_SHARE"]))
         return handler
 
     def _load_shortfall_formulas(self) -> None:
