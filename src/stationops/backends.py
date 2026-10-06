@@ -10,9 +10,12 @@ from pathlib import Path
 from typing import Protocol
 
 from .actions import (
+    BELIEF_ACTION_RULES,
     ActionCandidate,
     ActionProposal,
     generate_action_statements,
+    generate_decision_statements,
+    leak_belief_link,
     reference_action_proposals,
 )
 from .config import Config
@@ -829,10 +832,10 @@ class PeTTaChainerBackend:
         if temporal_model:
             self._evidence_confidence_k = 5
         self._handler = None
-        self._action_handler = None
-        self._action_atoms_by_name: dict[str, str] = {}
-        self._action_context: str | None = None
         self._atoms_by_name: dict[str, str] = {}
+        # The statement each incident's belief was queried as, which its
+        # decisions read through a LeakBelief link.
+        self._belief_goals: dict[str, str] = {}
         self._shortfall_cache: dict[str, float] = {}
         self._shortfall_formula_handler = None
         if module is not None:
@@ -1066,6 +1069,7 @@ class PeTTaChainerBackend:
                 if incident.equipment_type is not None:
                     fields += f"{incident.equipment_type} "
                 goal = f"(SealLeak {fields}{incident.id})"
+            self._belief_goals[incident.id] = goal
             goals.append(f"(: $prf {goal} $tv)")
 
         proof_batches = (
@@ -1111,73 +1115,61 @@ class PeTTaChainerBackend:
                 "action_statements_added": 0,
                 "action_engine_steps": None,
             }
-        if self._action_handler is None or self._action_context != context:
-            self._action_handler = self._new_handler()
-            self._action_atoms_by_name.clear()
-            self._action_context = context
-        statements = generate_action_statements(
-            context,
-            candidates,
-            inspection_cost=inspection_cost,
-            repair_cost=repair_cost,
-            unnecessary_repair_penalty=unnecessary_repair_penalty,
-        )
-        entries = []
-        for atom in (line.strip() for line in statements.splitlines() if line.strip()):
-            name, type_expression = _statement_parts(atom)
-            previous = self._action_atoms_by_name.get(name)
-            if previous is not None and previous != atom:
-                raise ValueError(f"cannot replace action statement: {name}")
-            if previous is None:
-                entries.append((name, type_expression, atom))
-        rules = [entry for entry in entries if _is_rule(entry[1])]
-        facts = [entry for entry in entries if not _is_rule(entry[1])]
+        if self._handler is None:
+            self._handler = self._new_handler()
+        statements = [
+            *BELIEF_ACTION_RULES,
+            *(
+                leak_belief_link(candidate.incident_id, self._belief_goals[candidate.incident_id])
+                for candidate in candidates
+                if candidate.incident_id in self._belief_goals
+            ),
+            *generate_decision_statements(
+                context,
+                candidates,
+                inspection_cost=inspection_cost,
+                repair_cost=repair_cost,
+                unnecessary_repair_penalty=unnecessary_repair_penalty,
+            ).splitlines(),
+        ]
+        entries = [
+            (name, atom)
+            for atom in statements
+            for name in (_statement_parts(atom)[0],)
+            if name not in self._atoms_by_name
+        ]
         try:
-            if rules:
-                self._action_handler.add_atoms_no_check(
-                    [atom for _, _, atom in rules]
-                )
-                self._action_atoms_by_name.update(
-                    (name, atom) for name, _, atom in rules
-                )
-            forward_seed_facts = 0
-            forward_steps = 0
-            for offset in range(0, len(facts), self._forward_batch_size):
-                batch = facts[offset:offset + self._forward_batch_size]
-                self._action_handler.add_atoms_no_check(
-                    [atom for _, _, atom in batch]
-                )
-                self._action_atoms_by_name.update(
-                    (name, atom) for name, _, atom in batch
-                )
-                seeds = self._action_handler.select_facts(
-                    [_fact_seed(type_expression) for _, type_expression, _ in batch]
-                )
-                if seeds:
-                    self._action_handler.forward_chain(seeds, steps=0)
-                forward_seed_facts += len(seeds)
-            if forward_seed_facts:
-                self._action_handler.forward_chain([], steps=self._forward_slice)
-                forward_steps = self._forward_slice
+            self._handler.add_atoms_no_check([atom for _, atom in entries])
+            self._atoms_by_name.update(entries)
         except Exception:
-            self._action_handler = None
-            self._action_atoms_by_name.clear()
-            self._action_context = None
+            self._handler = None
+            self._atoms_by_name.clear()
             raise
         query = (
             f"(: $prf (ActionProposal {context} $action $utility "
             f"$confidence $rationale) $tv)"
         )
-        proofs = self._action_handler.query(query, steps=budget, timeout_sec=0)
+        proofs = self._handler.query(query, steps=budget, timeout_sec=0)
         proposals = _action_proposals_from_proofs(proofs)
         return proposals, {
             "action_queries": 1,
             "action_proposals": len(proposals),
             "action_statements_added": len(entries),
-            "action_forward_seed_facts": forward_seed_facts,
-            "action_forward_steps": forward_steps,
             "action_engine_steps": None,
         }
+
+    def observe_inspection(self, incident_id, leak):
+        """An inspection settles the incident's leak belief for later decisions.
+
+        The belief model itself learns the result from the shift's resolved
+        leaks, as it does for every resolution.
+        """
+        name = f"inspection-{incident_id}"
+        if self._handler is None or name in self._atoms_by_name:
+            return
+        atom = f"(: {name} (LeakBelief {incident_id}) (STV {1 if leak else 0} 1))"
+        self._handler.add_atoms_no_check([atom])
+        self._atoms_by_name[name] = atom
 
 
 def create_backend(

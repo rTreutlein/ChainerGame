@@ -5,6 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from stationops.actions import ActionCandidate, reference_action_proposals
 from stationops.backends import BackendUnavailable, MM2Backend, PeTTaChainerBackend
 from stationops.config import Config
 from stationops.episode import run_episode
@@ -1159,6 +1160,54 @@ class V1BenchmarkTests(unittest.TestCase):
         self.assertIn("unknown incident", output.getvalue())
         self.assertIn("duplicate incident", output.getvalue())
         self.assertIn("slot limit", output.getvalue())
+
+    def test_live_pettachainer_actions_match_reference_when_available(self):
+        if os.environ.get("STATIONOPS_LIVE_PETTACHAINER") != "1":
+            self.skipTest("set STATIONOPS_LIVE_PETTACHAINER=1 for live conformance")
+        try:
+            backend = PeTTaChainerBackend(Config(), os.environ.get("PETTACHAINER_PYTHONPATH"))
+        except BackendUnavailable as exc:
+            self.skipTest(str(exc))
+        # Beliefs live in the knowledge base; the action rules read them.
+        beliefs = {"u1": (0.3, 0.8, 20), "u2": (0.9, 0.6, 40), "u3": (0.05, 0.9, 30)}
+        backend._handler = backend._new_handler()
+        for incident, (strength, confidence, _) in beliefs.items():
+            goal = f"(SealLeak new pump {incident})"
+            backend._handler.add_atoms_no_check(
+                [f"(: belief-{incident} {goal} (STV {strength} {confidence}))"]
+            )
+            backend._belief_goals[incident] = goal
+        costs = dict(inspection_cost=2, repair_cost=5, unnecessary_repair_penalty=8)
+
+        def proposals(context, inspected):
+            candidates = [
+                ActionCandidate(
+                    incident,
+                    1.0 if incident == inspected else strength,
+                    risk,
+                    1.0 if incident == inspected else confidence,
+                    inspection_eligible=incident != inspected,
+                    learning_samples=3 if incident == "u3" else None,
+                )
+                for incident, (strength, confidence, risk) in beliefs.items()
+            ]
+            got, _ = backend.propose_actions(context, candidates, 200, **costs)
+            expected = reference_action_proposals(context, candidates, **costs)
+
+            def values(items):
+                return {
+                    (item.action, item.incident_id, item.rationale):
+                        (round(item.utility, 6), round(item.confidence, 4))
+                    for item in items
+                }
+            return values(got), values(expected)
+
+        got, expected = proposals("decision-s01-step00", None)
+        self.assertEqual(got, expected)
+        # An inspection that finds a leak settles the belief for later steps.
+        backend.observe_inspection("u2", True)
+        got, expected = proposals("decision-s01-step01", "u2")
+        self.assertEqual(got, expected)
 
     def test_live_pettachainer_v1_conformance_when_available(self):
         if os.environ.get("STATIONOPS_LIVE_PETTACHAINER") != "1":

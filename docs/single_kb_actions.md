@@ -1,6 +1,8 @@
 # Actions in the belief knowledge base
 
-Status: design, October 2026.
+Status: built, October 2026 (`actions.py`: `BELIEF_ACTION_RULES`, `leak_belief_link`,
+`generate_decision_statements`; `PeTTaChainerBackend.propose_actions` and
+`observe_inspection`).
 
 ## Problem
 
@@ -50,15 +52,23 @@ the beliefs; nothing is copied.
 
 ### Outcomes are logical consequences of the beliefs
 
-An action's outcomes are statements whose truth follows from the incident's
-leak belief through ordinary connectives:
+An incident's belief is queried as a statement whose form depends on the game
+mode: `(SealLeak c t u)` in the temporal model, `(LocalProblem …)` with
+module dependencies, or a class-level `(Inheritance …)` otherwise. One rule
+per incident names that statement as its leak belief:
 
-    (Implication (And (DecisionCandidate $step $c $t $u) (SealLeak $c $t $u))
+    (: (no_inverse leak-belief-u) (Implication <belief of u> (LeakBelief u)) …)
+
+An action's outcomes are statements whose truth follows from the leak belief
+through ordinary connectives:
+
+    (Implication (And (DecisionCandidate $step $u) (LeakBelief $u))
                  (Outcome $step (Repair $u) protected))
-    (Implication (And (DecisionCandidate $step $c $t $u) (Not (SealLeak $c $t $u)))
+    (Implication (And (DecisionCandidate $step $u) (Not (LeakBelief $u)))
                  (Outcome $step (Repair $u) unnecessary))
 
-Their probabilities are P(leak) and 1 − P(leak). The chainer derives them
+Their probabilities are P(leak) and 1 − P(leak), with the belief's
+confidence. The chainer derives them
 from `SealLeak` as it derives any belief: a belief that changes leaves its
 outcome rows stale, and the next decision query recomputes them.
 
@@ -111,20 +121,20 @@ What changes during a shift is stated as new facts under the step id:
 Nothing is replaced: a later step adds its own facts, as shifts do for beliefs.
 Rules, including the action rules, are added once per game.
 
-### An inspection result is evidence
+### An inspection result settles the leak belief
 
 Today an inspection result only changes a number in Python
 (`effective_beliefs`). Here it becomes an observation in the knowledge base,
-`(: inspected-u (SealLeak c t u) (STV 1 1))` or the same with `(STV 0 1)`. The
-leak belief, its outcomes and the next step's values follow from it. This is
-the right semantics: an inspection is evidence about this shift's state, and
-later shifts' beliefs should read it too.
+`(: inspection-u (LeakBelief u) (STV 1 1))` or the same with `(STV 0 1)`
+(`observe_inspection`, called by the action loop). The certain observation
+outweighs the derived belief, and the incident's outcomes and the next
+step's values follow from it.
 
-The game's belief metrics are taken from the belief query at the start of a
-shift, before any inspection, so they do not change. Whether later shifts gain
-from the observations is part of what the evaluation measures. If they should
-not see them yet, the observations can wait for the shift's end, as resolved
-leaks do now (ChainerGame fb45e44).
+The observation is stated on `LeakBelief`, not on the belief statement: in
+the class-level mode that statement is about every incident of the class.
+The belief model learns the result at the shift's end from the resolved
+leaks, as it does for every resolution (ChainerGame fb45e44), so beliefs and
+their metrics are unchanged.
 
 ### The choice stays in the game
 
@@ -139,12 +149,15 @@ the same ordering and tie-breaks.
   query only, within its budget.
 - The rules' heads (`Outcome`, `ActionValue`) are read by no belief rule, so
   dormant rules keep belief forward runs off them.
-- PeTTaChainer also compiles an inverted rule for every implication, from the
-  conclusion back to a premise, with base rates as its prior: here
-  `Outcome → SealLeak`. `Outcome(step, Repair u)` is derived only from
-  `SealLeak(c t u)`, so that rule can only support itself and is dormant
-  (PeTTaChainer `docs/metta/dormant_rules.md`), as the distractor chains'
-  inversions are. Its base-rate folds are then never read.
+- PeTTaChainer compiles an inverted rule for every implication, from the
+  conclusion back to a premise, unless the rule is named `(no_inverse …)`:
+  all action rules and links are. A rule whose premise is a pure conjunction
+  still gets antecedent-completion rules, which derive one conjunct from the
+  conclusion and the others (PeTTaChainer keeps them under `no_inverse` on
+  purpose, `test_antecedent_completion.metta`). For the action rules they
+  conclude `LeakBelief` or `DecisionCandidate` from an `Outcome` that is
+  derived only from those same premises, so they can only support
+  themselves and are dormant (PeTTaChainer `docs/metta/dormant_rules.md`).
 
 ## What goes
 
@@ -152,22 +165,24 @@ the same ordering and tie-breaks.
   `_action_atoms_by_name`.
 - `LeakProbability`, `BeliefConfidence` and the Python-side belief override
   after inspections.
-- `_new_handler` settings applied to a second handler: rule refinement and
-  base-rate smoothing no longer run over action rules.
+- `_new_handler` settings applied to a second handler. Rule refinement skips
+  the action rules in the shared knowledge base, since their confidence is 1.
 - The docstring's premise in `actions.py`.
 
+`ACTION_RULES` and `generate_action_statements` stay for the MM2 backend.
 `reference_action_proposals` stays: it is the oracle the action rules are
-tested against.
+tested against (`test_live_pettachainer_actions_match_reference_when_available`:
+equal utilities and confidences for repair, inspection and learning probes,
+before and after an inspection).
 
 ## Risks
 
 - **`Not (SealLeak …)`.** It must give 1 − P(leak) with the belief's
   confidence. Check the compiled negation's truth-value formula on a belief
   that is a merged view with a prior.
-- **Self-support.** The only path from an action predicate back to
-  `SealLeak` is the dormant inversions above. Check that they stay dormant
-  for every action rule (`ActionValue`'s inversions included), so no decision
-  feeds a belief.
+- **Self-support.** The only path from an action predicate back to a belief
+  is the dormant antecedent completions above, and they end at `LeakBelief`,
+  which no belief rule reads.
 - **Cost per decision.** Each step's query computes the outcome rows and folds
   for its candidates (about 10). That should be well below the 0.4 s per
   context spent now on compiling rules and forward-chaining copies; measure it.

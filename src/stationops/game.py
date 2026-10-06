@@ -1306,6 +1306,9 @@ def run_action_loop(
             1.0 if session._faults[incident_id] else 0.0,
             1.0,
         )
+        observe = getattr(backend, "observe_inspection", None)
+        if callable(observe):
+            observe(incident_id, session._faults[incident_id])
         step += 1
 
     if final_proposals is None:

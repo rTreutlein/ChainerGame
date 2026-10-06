@@ -152,6 +152,130 @@ def generate_action_statements(
     return "\n".join(lines)
 
 
+# PeTTaChainer keeps decisions in the knowledge base that holds the beliefs
+# (docs/single_kb_actions.md). Outcomes follow from an incident's leak belief
+# through ordinary connectives, an action's expected utility folds its
+# outcomes' amounts weighted by their truth values, and no number is copied
+# out of a belief. Every rule is named (no_inverse ...): a decision is never
+# evidence for the beliefs it reads.
+_CERTAIN_RULE = "(CTV (STV 1 1) (STV 0 1))"
+_EXPECTED_VALUE = (
+    "(FoldAllTruth (And (Outcome $step {action} $outcome) "
+    "(OutcomeValue $step {action} $outcome $value)) "
+    "(STV $s $_c) (Weighted $s $value) 0.0 "
+    "(|-> ($acc (Weighted $p $v)) (+ $acc (* $p $v))) -> $gross)"
+)
+_BELIEF_CONFIDENCE = (
+    "(FoldAllTruth (LeakBelief $incident) (STV $_s $c) $c 0.0 "
+    "(|-> ($acc $elem) $elem) -> $confidence)"
+)
+BELIEF_ACTION_RULES = tuple(f"(: (no_inverse {name}) (Implication {body}) {_CERTAIN_RULE})" for name, body in (
+    ("repairProtects",
+     "(And (DecisionCandidate $step $incident) (LeakBelief $incident)) "
+     "(Outcome $step (Repair $incident) protected)"),
+    ("repairUnneeded",
+     "(And (DecisionCandidate $step $incident) (Not (LeakBelief $incident))) "
+     "(Outcome $step (Repair $incident) unnecessary)"),
+    ("inspectionFindsLeak",
+     "(And (InspectionEligible $step $incident) (LeakBelief $incident)) "
+     "(Outcome $step (Inspect $incident) found)"),
+    ("expectedRepairValue",
+     "(And (DecisionCandidate $step $incident) "
+     "(ActionCost $step (Repair $incident) $cost) "
+     + _EXPECTED_VALUE.format(action="(Repair $incident)") + " "
+     "(Compute - ($gross $cost) -> $utility)) "
+     "(RepairValue $step $incident $utility)"),
+    # Inspecting is worth what a found leak's repair gains, less the best
+    # value without inspecting: the repair when it pays, nothing otherwise.
+    ("inspectionValueWhenRepairPays",
+     "(And (InspectionEligible $step $incident) "
+     "(RepairValue $step $incident $repairUtility) "
+     "(Compute > ($repairUtility 0) -> True) "
+     "(ActionCost $step (Inspect $incident) $cost) "
+     + _EXPECTED_VALUE.format(action="(Inspect $incident)") + " "
+     "(Compute - ($gross $repairUtility) -> $gain) "
+     "(Compute - ($gain $cost) -> $utility)) "
+     "(InspectionValue $step $incident $utility)"),
+    ("inspectionValueWhenRepairWaits",
+     "(And (InspectionEligible $step $incident) "
+     "(RepairValue $step $incident $repairUtility) "
+     "(Compute <= ($repairUtility 0) -> True) "
+     "(ActionCost $step (Inspect $incident) $cost) "
+     + _EXPECTED_VALUE.format(action="(Inspect $incident)") + " "
+     "(Compute - ($gross $cost) -> $utility)) "
+     "(InspectionValue $step $incident $utility)"),
+    ("proposeRepair",
+     "(And (DecisionCandidate $step $incident) "
+     "(RepairValue $step $incident $utility) " + _BELIEF_CONFIDENCE + ") "
+     "(ActionProposal $step (Repair $incident) $utility $confidence Intervention)"),
+    ("proposeInspection",
+     "(And (DecisionCandidate $step $incident) "
+     "(InspectionValue $step $incident $utility) " + _BELIEF_CONFIDENCE + ") "
+     "(ActionProposal $step (Inspect $incident) $utility $confidence Diagnostic)"),
+    ("proposeLearningProbe",
+     "(And (LearningProbeCandidate $step $incident $sampleCount $risk) "
+     "(Compute * ($sampleCount 1000) -> $samplePenalty) "
+     "(Compute - ($risk $samplePenalty) -> $priority)) "
+     "(ActionProposal $step (Inspect $incident) $priority 1 Learning)"),
+))
+
+
+def leak_belief_link(incident_id: str, belief: str) -> str:
+    """Name the statement whose truth is the incident's leak belief."""
+    return (
+        f"(: (no_inverse leak-belief-{incident_id}) "
+        f"(Implication {belief} (LeakBelief {incident_id})) {_CERTAIN_RULE})"
+    )
+
+
+def generate_decision_statements(
+    step: str,
+    candidates: list[ActionCandidate],
+    *,
+    inspection_cost: float,
+    repair_cost: float,
+    unnecessary_repair_penalty: float,
+) -> str:
+    """State one decision step's candidates, outcome amounts and costs.
+
+    A candidate is decided on only when it has a leak belief. Inspection is
+    eligible only when a found leak's repair would pay.
+    """
+    lines = []
+    for candidate in candidates:
+        incident = candidate.incident_id
+        prefix = f"{step}-{incident}"
+        risk = candidate.production_at_risk
+        if candidate.probability is not None:
+            lines.extend((
+                f"(: {prefix}-candidate (DecisionCandidate {step} {incident}) (STV 1 1))",
+                f"(: {prefix}-repair-cost "
+                f"(ActionCost {step} (Repair {incident}) {_number(repair_cost)}) (STV 1 1))",
+                f"(: {prefix}-repair-protected "
+                f"(OutcomeValue {step} (Repair {incident}) protected {_number(risk)}) (STV 1 1))",
+                f"(: {prefix}-repair-unnecessary "
+                f"(OutcomeValue {step} (Repair {incident}) unnecessary "
+                f"{_number(-unnecessary_repair_penalty)}) (STV 1 1))",
+            ))
+            if candidate.inspection_eligible and risk - repair_cost > 0:
+                lines.extend((
+                    f"(: {prefix}-inspection-eligible "
+                    f"(InspectionEligible {step} {incident}) (STV 1 1))",
+                    f"(: {prefix}-inspection-cost "
+                    f"(ActionCost {step} (Inspect {incident}) {_number(inspection_cost)}) (STV 1 1))",
+                    f"(: {prefix}-inspection-found "
+                    f"(OutcomeValue {step} (Inspect {incident}) found "
+                    f"{_number(risk - repair_cost)}) (STV 1 1))",
+                ))
+        if candidate.learning_samples is not None:
+            lines.append(
+                f"(: {prefix}-learning-probe "
+                f"(LearningProbeCandidate {step} {incident} "
+                f"{int(candidate.learning_samples)} {_number(risk)}) (STV 1 1))"
+            )
+    return "\n".join(lines)
+
+
 def reference_action_proposals(
     context: str,
     candidates: list[ActionCandidate],
