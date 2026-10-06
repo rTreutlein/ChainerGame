@@ -795,6 +795,9 @@ class PeTTaChainerBackend:
     name = "pettachainer"
     _forward_batch_size = 100
     _forward_steps_per_seed = float(os.environ.get("CG_FORWARD_STEPS", "2"))
+    # With a slice, new facts are queued without forward units and each
+    # round gives the slice to one forward run without facts.
+    _forward_slice = int(os.environ["CG_FORWARD_SLICE"]) if os.environ.get("CG_FORWARD_SLICE") else None
     # PLN's evidence parameter: n resolved cases give confidence n/(n+k).
     # StationOps groups hold a handful of cases each, and k = 1 weighs them
     # against the public base rate as one pseudo-observation of prior, which
@@ -926,10 +929,13 @@ class PeTTaChainerBackend:
                 seeds = self._handler.select_facts(
                     [_fact_seed(type_expression) for _, type_expression, _ in seed_entries]
                 )
-                steps = round(self._forward_steps_per_seed * len(seeds))
+                steps = 0 if self._forward_slice is not None else round(self._forward_steps_per_seed * len(seeds))
                 self._handler.forward_chain(seeds, steps=steps)
                 forward_seeds += len(seeds)
                 forward_steps += steps
+        if forward_facts and self._forward_slice is not None:
+            self._handler.forward_chain([], steps=self._forward_slice)
+            forward_steps += self._forward_slice
 
         return {
             "statements_added": len(additions),
