@@ -793,7 +793,12 @@ class PeTTaChainerBackend:
 
     name = "pettachainer"
     _forward_batch_size = 100
-    _forward_steps_per_seed = 2
+    # Forward chaining spends a fixed number of row computations per round,
+    # however many facts the round brings: new facts are queued without
+    # units and one run per round spends the slice on them first, then on
+    # what earlier runs left. 150 reaches PeTTaChainer's plateau on the
+    # replayed temporal model (Brier 0.0590 at 11 s per 20-shift seed).
+    _forward_slice = 150
     # PLN's evidence parameter: n resolved cases give confidence n/(n+k).
     # StationOps groups hold a handful of cases each, and k = 1 weighs them
     # against the public base rate as one pseudo-observation of prior, which
@@ -921,10 +926,11 @@ class PeTTaChainerBackend:
                 seeds = self._handler.select_facts(
                     [_fact_seed(type_expression) for _, type_expression, _ in seed_entries]
                 )
-                steps = self._forward_steps_per_seed * len(seeds)
-                self._handler.forward_chain(seeds, steps=steps)
+                self._handler.forward_chain(seeds, steps=0)
                 forward_seeds += len(seeds)
-                forward_steps += steps
+        if forward_facts and forward_seeds:
+            self._handler.forward_chain([], steps=self._forward_slice)
+            forward_steps = self._forward_slice
 
         return {
             "statements_added": len(additions),
@@ -1147,11 +1153,12 @@ class PeTTaChainerBackend:
                 seeds = self._action_handler.select_facts(
                     [_fact_seed(type_expression) for _, type_expression, _ in batch]
                 )
-                steps = self._forward_steps_per_seed * len(seeds)
                 if seeds:
-                    self._action_handler.forward_chain(seeds, steps=steps)
+                    self._action_handler.forward_chain(seeds, steps=0)
                 forward_seed_facts += len(seeds)
-                forward_steps += steps
+            if forward_seed_facts:
+                self._action_handler.forward_chain([], steps=self._forward_slice)
+                forward_steps = self._forward_slice
         except Exception:
             self._action_handler = None
             self._action_atoms_by_name.clear()

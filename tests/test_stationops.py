@@ -423,6 +423,7 @@ class BenchmarkTests(unittest.TestCase):
             def __init__(self):
                 self.queries = []
                 self.atoms = []
+                self.forwarded = []
                 self.__class__.instances.append(self)
 
             def add_atoms_no_check(self, atoms):
@@ -435,7 +436,7 @@ class BenchmarkTests(unittest.TestCase):
                 return list(terms)
 
             def forward_chain(self, facts, steps):
-                self.forwarded = (list(facts), steps)
+                self.forwarded.append((list(facts), steps))
                 return []
 
             def query_many(self, queries, steps, timeout_sec):
@@ -470,7 +471,7 @@ class BenchmarkTests(unittest.TestCase):
                 "statements_added": 1,
                 "statements_removed": 0,
                 "forward_seed_facts": 1,
-                "forward_steps": 2,
+                "forward_steps": PeTTaChainerBackend._forward_slice,
                 "queries": 2,
                 "induced_queries": 0,
                 "learned_relation_queries": 0,
@@ -491,7 +492,10 @@ class BenchmarkTests(unittest.TestCase):
             ],
         )
         self.assertEqual(Handler.instances[-1].atoms, ["(: fact (A) (STV 1 1))"])
-        self.assertEqual(Handler.instances[-1].forwarded, (["(A)"], 2))
+        self.assertEqual(
+            Handler.instances[-1].forwarded,
+            [(["(A)"], 0), ([], PeTTaChainerBackend._forward_slice)],
+        )
         self.assertEqual(Handler.instances[-1].evidence_confidence_k, 1)
 
     def test_pettachainer_snapshots_reuse_handler_and_zero_budget_is_empty(self):
@@ -790,9 +794,11 @@ class BenchmarkTests(unittest.TestCase):
             ],
         )
         self.assertEqual(handler.removed, [])
+        # Each round queues its facts without units, then spends one slice.
+        slice_ = PeTTaChainerBackend._forward_slice
         self.assertEqual(
             handler.forwarded,
-            [(["(A)", "(B)"], 4), (["(C)"], 2)],
+            [(["(A)", "(B)"], 0), ([], slice_), (["(C)"], 0), ([], slice_)],
         )
         self.assertEqual(initial["statements_added"], 4)
         self.assertEqual(initial["statements_removed"], 0)
@@ -1087,7 +1093,15 @@ class V1BenchmarkTests(unittest.TestCase):
         self.assertEqual(result["aggregate_counters"]["statements_added"], 4086)
         self.assertEqual(result["aggregate_counters"]["statements_removed"], 0)
         self.assertEqual(result["aggregate_counters"]["forward_seed_facts"], 4082)
-        self.assertEqual(result["aggregate_counters"]["forward_steps"], 8164)
+        # Each of the two rounds queues its facts and spends one slice.
+        self.assertEqual(
+            result["aggregate_counters"]["forward_steps"],
+            2 * PeTTaChainerBackend._forward_slice,
+        )
+        self.assertEqual(
+            [steps for _, steps in handler.forwarded if steps],
+            [PeTTaChainerBackend._forward_slice] * 2,
+        )
 
     def test_mm2_v1_conformance_when_binding_available(self):
         path = os.environ.get("MM2_CHAINER_PYTHONPATH")
