@@ -13,9 +13,9 @@ from .actions import (
     BELIEF_ACTION_RULES,
     ActionCandidate,
     ActionProposal,
+    decision_assumptions,
     generate_action_statements,
-    generate_decision_statements,
-    leak_belief_link,
+    leak_belief_assumption,
     reference_action_proposals,
 )
 from .config import Config
@@ -1117,44 +1117,47 @@ class PeTTaChainerBackend:
             }
         if self._handler is None:
             self._handler = self._new_handler()
-        statements = [
-            *BELIEF_ACTION_RULES,
+        # The action rules are added once; a decision step adds nothing: its
+        # facts, and the links from each candidate's belief to the LeakBelief
+        # the rules read, are assumed for the step's query alone.
+        rules = [
+            (name, atom)
+            for atom in BELIEF_ACTION_RULES
+            for name in (_statement_parts(atom)[0],)
+            if name not in self._atoms_by_name
+        ]
+        try:
+            if rules:
+                self._handler.add_atoms_no_check([atom for _, atom in rules])
+                self._atoms_by_name.update(rules)
+        except Exception:
+            self._handler = None
+            self._atoms_by_name.clear()
+            raise
+        assumptions = [
             *(
-                leak_belief_link(candidate.incident_id, self._belief_goals[candidate.incident_id])
+                leak_belief_assumption(candidate.incident_id, self._belief_goals[candidate.incident_id])
                 for candidate in candidates
                 if candidate.incident_id in self._belief_goals
             ),
-            *generate_decision_statements(
+            *decision_assumptions(
                 context,
                 candidates,
                 inspection_cost=inspection_cost,
                 repair_cost=repair_cost,
                 unnecessary_repair_penalty=unnecessary_repair_penalty,
-            ).splitlines(),
+            ),
         ]
-        entries = [
-            (name, atom)
-            for atom in statements
-            for name in (_statement_parts(atom)[0],)
-            if name not in self._atoms_by_name
-        ]
-        try:
-            self._handler.add_atoms_no_check([atom for _, atom in entries])
-            self._atoms_by_name.update(entries)
-        except Exception:
-            self._handler = None
-            self._atoms_by_name.clear()
-            raise
         query = (
-            f"(: $prf (ActionProposal {context} $action $utility "
-            f"$confidence $rationale) $tv)"
+            f"(: $prf (Assuming (And {' '.join(assumptions)}) "
+            f"(ActionProposal {context} $action $utility $confidence $rationale)) $tv)"
         )
         proofs = self._handler.query(query, steps=budget, timeout_sec=0)
         proposals = _action_proposals_from_proofs(proofs)
         return proposals, {
             "action_queries": 1,
             "action_proposals": len(proposals),
-            "action_statements_added": len(entries),
+            "action_statements_added": len(rules),
             "action_engine_steps": None,
         }
 

@@ -1,8 +1,13 @@
 # Actions in the belief knowledge base
 
-Status: built, October 2026 (`actions.py`: `BELIEF_ACTION_RULES`, `leak_belief_link`,
-`generate_decision_statements`; `PeTTaChainerBackend.propose_actions` and
-`observe_inspection`).
+Status: built, October 2026 (`actions.py`: `BELIEF_ACTION_RULES`,
+`leak_belief_assumption`, `decision_assumptions`;
+`PeTTaChainerBackend.propose_actions` and `observe_inspection`). Each decision
+step is one PeTTaChainer `Assuming` query: the step's facts and the links from
+each candidate's belief to its `LeakBelief` are assumed for that query alone,
+and the knowledge base gains only the action rules, once (PeTTaChainer
+`docs/metta/assumption_queries.md`). An outcome carries its amount, so an
+action's expected value folds one statement per outcome.
 
 ## Problem
 

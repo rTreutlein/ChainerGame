@@ -152,16 +152,16 @@ def generate_action_statements(
     return "\n".join(lines)
 
 
-# PeTTaChainer keeps decisions in the knowledge base that holds the beliefs
-# (docs/single_kb_actions.md). Outcomes follow from an incident's leak belief
+# PeTTaChainer decides in the knowledge base that holds the beliefs
+# (docs/single_kb_actions.md): each decision step is one Assuming query over
+# the step's facts. Outcomes follow from an incident's leak belief
 # through ordinary connectives, an action's expected utility folds its
 # outcomes' amounts weighted by their truth values, and no number is copied
 # out of a belief. Every rule is named (no_inverse ...): a decision is never
 # evidence for the beliefs it reads.
 _CERTAIN_RULE = "(CTV (STV 1 1) (STV 0 1))"
 _EXPECTED_VALUE = (
-    "(FoldAllTruth (And (Outcome $step {action} $outcome) "
-    "(OutcomeValue $step {action} $outcome $value)) "
+    "(FoldAllTruth (Outcome $step {action} $outcome $value) "
     "(STV $s $_c) (Weighted $s $value) 0.0 "
     "(|-> ($acc (Weighted $p $v)) (+ $acc (* $p $v))) -> $gross)"
 )
@@ -170,15 +170,20 @@ _BELIEF_CONFIDENCE = (
     "(|-> ($acc $elem) $elem) -> $confidence)"
 )
 BELIEF_ACTION_RULES = tuple(f"(: (no_inverse {name}) (Implication {body}) {_CERTAIN_RULE})" for name, body in (
+    # An outcome carries its amount, so an action's expected value folds one
+    # statement per outcome.
     ("repairProtects",
-     "(And (DecisionCandidate $step $incident) (LeakBelief $incident)) "
-     "(Outcome $step (Repair $incident) protected)"),
+     "(And (DecisionCandidate $step $incident) (LeakBelief $incident) "
+     "(OutcomeValue $step (Repair $incident) protected $value)) "
+     "(Outcome $step (Repair $incident) protected $value)"),
     ("repairUnneeded",
-     "(And (DecisionCandidate $step $incident) (Not (LeakBelief $incident))) "
-     "(Outcome $step (Repair $incident) unnecessary)"),
+     "(And (DecisionCandidate $step $incident) (Not (LeakBelief $incident)) "
+     "(OutcomeValue $step (Repair $incident) unnecessary $value)) "
+     "(Outcome $step (Repair $incident) unnecessary $value)"),
     ("inspectionFindsLeak",
-     "(And (InspectionEligible $step $incident) (LeakBelief $incident)) "
-     "(Outcome $step (Inspect $incident) found)"),
+     "(And (InspectionEligible $step $incident) (LeakBelief $incident) "
+     "(OutcomeValue $step (Inspect $incident) found $value)) "
+     "(Outcome $step (Inspect $incident) found $value)"),
     ("expectedRepairValue",
      "(And (DecisionCandidate $step $incident) "
      "(ActionCost $step (Repair $incident) $cost) "
@@ -220,60 +225,50 @@ BELIEF_ACTION_RULES = tuple(f"(: (no_inverse {name}) (Implication {body}) {_CERT
 ))
 
 
-def leak_belief_link(incident_id: str, belief: str) -> str:
-    """Name the statement whose truth is the incident's leak belief."""
-    return (
-        f"(: (no_inverse leak-belief-{incident_id}) "
-        f"(Implication {belief} (LeakBelief {incident_id})) {_CERTAIN_RULE})"
-    )
+def leak_belief_assumption(incident_id: str, belief: str) -> str:
+    """Name, for one decision, the statement whose truth is the incident's leak
+    belief: assumed as an implication, it adds no rule to the knowledge base."""
+    return f"(Implication {belief} (LeakBelief {incident_id}))"
 
 
-def generate_decision_statements(
+def decision_assumptions(
     step: str,
     candidates: list[ActionCandidate],
     *,
     inspection_cost: float,
     repair_cost: float,
     unnecessary_repair_penalty: float,
-) -> str:
-    """State one decision step's candidates, outcome amounts and costs.
+) -> list[str]:
+    """The facts one decision step assumes: its candidates, outcome amounts
+    and costs.
 
     A candidate is decided on only when it has a leak belief. Inspection is
     eligible only when a found leak's repair would pay.
     """
-    lines = []
+    facts = []
     for candidate in candidates:
         incident = candidate.incident_id
-        prefix = f"{step}-{incident}"
         risk = candidate.production_at_risk
         if candidate.probability is not None:
-            lines.extend((
-                f"(: {prefix}-candidate (DecisionCandidate {step} {incident}) (STV 1 1))",
-                f"(: {prefix}-repair-cost "
-                f"(ActionCost {step} (Repair {incident}) {_number(repair_cost)}) (STV 1 1))",
-                f"(: {prefix}-repair-protected "
-                f"(OutcomeValue {step} (Repair {incident}) protected {_number(risk)}) (STV 1 1))",
-                f"(: {prefix}-repair-unnecessary "
+            facts.extend((
+                f"(DecisionCandidate {step} {incident})",
+                f"(ActionCost {step} (Repair {incident}) {_number(repair_cost)})",
+                f"(OutcomeValue {step} (Repair {incident}) protected {_number(risk)})",
                 f"(OutcomeValue {step} (Repair {incident}) unnecessary "
-                f"{_number(-unnecessary_repair_penalty)}) (STV 1 1))",
+                f"{_number(-unnecessary_repair_penalty)})",
             ))
             if candidate.inspection_eligible and risk - repair_cost > 0:
-                lines.extend((
-                    f"(: {prefix}-inspection-eligible "
-                    f"(InspectionEligible {step} {incident}) (STV 1 1))",
-                    f"(: {prefix}-inspection-cost "
-                    f"(ActionCost {step} (Inspect {incident}) {_number(inspection_cost)}) (STV 1 1))",
-                    f"(: {prefix}-inspection-found "
-                    f"(OutcomeValue {step} (Inspect {incident}) found "
-                    f"{_number(risk - repair_cost)}) (STV 1 1))",
+                facts.extend((
+                    f"(InspectionEligible {step} {incident})",
+                    f"(ActionCost {step} (Inspect {incident}) {_number(inspection_cost)})",
+                    f"(OutcomeValue {step} (Inspect {incident}) found {_number(risk - repair_cost)})",
                 ))
         if candidate.learning_samples is not None:
-            lines.append(
-                f"(: {prefix}-learning-probe "
+            facts.append(
                 f"(LearningProbeCandidate {step} {incident} "
-                f"{int(candidate.learning_samples)} {_number(risk)}) (STV 1 1))"
+                f"{int(candidate.learning_samples)} {_number(risk)})"
             )
-    return "\n".join(lines)
+    return facts
 
 
 def reference_action_proposals(
