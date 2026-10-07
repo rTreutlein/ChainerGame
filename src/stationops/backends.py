@@ -981,8 +981,6 @@ class PeTTaChainerBackend:
         )
         if self._handler is None:
             self._handler = self._new_handler()
-        elif os.environ.get("CG_FORGET_H"):
-            self._handler.advance_epoch()
         if not pending:
             return marginals, {
                 "shortfall_queries": len(queries),
@@ -1032,6 +1030,8 @@ class PeTTaChainerBackend:
 
         if self._handler is None:
             self._handler = self._new_handler()
+        elif os.environ.get("CG_FORGET_H"):
+            self._handler.advance_epoch()
         try:
             if self.temporal_model:
                 self._load_shortfall_formulas()
