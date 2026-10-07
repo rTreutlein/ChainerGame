@@ -38,7 +38,7 @@ class StressBenchmarkTests(unittest.TestCase):
             "config": {"seed": 3},
             "backend": "controlled",
             "diagnosis_budget_per_shift": 2,
-            "action_budget_per_query": 3,
+            "action_budget_per_candidate": 3,
             "shortfall_budget_per_shift": 5,
             "wall_time_seconds": 1.5,
             "aggregate": {

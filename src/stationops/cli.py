@@ -105,7 +105,7 @@ def main(argv=None):
         p.add_argument(
             "--action-budget",
             type=int,
-            help="v2 ActionProposal query budget; defaults to --budget",
+            help="v2 ActionProposal query budget per decision candidate; defaults to --budget",
         )
         p.add_argument(
             "--shortfall-budget",

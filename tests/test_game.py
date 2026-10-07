@@ -608,7 +608,7 @@ class AutomatedGameTests(unittest.TestCase):
                 return self.reference.condition_shortfalls(events, budget)
 
             def propose_actions(self, context, candidates, budget, **costs):
-                self.action_budgets.append(budget)
+                self.action_budgets.append(budget / len(candidates))
                 return self.reference.propose_actions(
                     context, candidates, budget, **costs
                 )
@@ -626,9 +626,10 @@ class AutomatedGameTests(unittest.TestCase):
         self.assertEqual(backend.diagnosis_budgets, [3, 3])
         self.assertEqual(backend.shortfall_budgets, [7, 7])
         self.assertTrue(backend.action_budgets)
+        # The action budget is per decision candidate.
         self.assertTrue(all(value == 11 for value in backend.action_budgets))
         self.assertEqual(result["diagnosis_budget_per_shift"], 3)
-        self.assertEqual(result["action_budget_per_query"], 11)
+        self.assertEqual(result["action_budget_per_candidate"], 11)
         self.assertEqual(result["shortfall_budget_per_shift"], 7)
 
     def test_backend_receives_only_pre_shift_history_and_visible_incidents(self):

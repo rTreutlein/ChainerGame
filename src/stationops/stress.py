@@ -43,7 +43,7 @@ def summarize_stress_episode(result: dict) -> dict:
         "seed": result["config"]["seed"],
         "backend": result["backend"],
         "diagnosis_budget": result["diagnosis_budget_per_shift"],
-        "action_budget": result["action_budget_per_query"],
+        "action_budget": result["action_budget_per_candidate"],
         "shortfall_budget": result["shortfall_budget_per_shift"],
         "wall_time_seconds": result["wall_time_seconds"],
         "diagnosis_expected": expected,

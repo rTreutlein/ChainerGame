@@ -1164,7 +1164,9 @@ def _query_action_proposals(
         "unnecessary_repair_penalty": session.config.unnecessary_repair_penalty,
     }
     if callable(proposer):
-        return proposer(context, candidates, budget, **arguments)
+        # A decision's work grows with its candidates, so the budget is per
+        # candidate: a chainer derives each candidate's values and proposals.
+        return proposer(context, candidates, budget * len(candidates), **arguments)
     # Small test/demonstration backends written against the older diagnosis-only
     # protocol retain the exact reference action semantics.
     proposals = (
@@ -1753,7 +1755,7 @@ def run_game_episode(
         "backend": backend.name,
         "budget_per_shift": budget,
         "diagnosis_budget_per_shift": budget,
-        "action_budget_per_query": action_budget,
+        "action_budget_per_candidate": action_budget,
         "shortfall_budget_per_shift": shortfall_budget,
         "rounds": rounds,
         "aggregate": {
