@@ -154,15 +154,10 @@ the same ordering and tie-breaks.
   query only, within its budget.
 - The rules' heads (`Outcome`, `ActionValue`) are read by no belief rule, so
   dormant rules keep belief forward runs off them.
-- PeTTaChainer compiles an inverted rule for every implication, from the
-  conclusion back to a premise, unless the rule is named `(no_inverse …)`:
-  all action rules and links are. A rule whose premise is a pure conjunction
-  still gets antecedent-completion rules, which derive one conjunct from the
-  conclusion and the others (PeTTaChainer keeps them under `no_inverse` on
-  purpose, `test_antecedent_completion.metta`). For the action rules they
-  conclude `LeakBelief` or `DecisionCandidate` from an `Outcome` that is
-  derived only from those same premises, so they can only support
-  themselves and are dormant (PeTTaChainer `docs/metta/dormant_rules.md`).
+- PeTTaChainer compiles inverted rules for every implication, from the
+  conclusion back to the antecedent or (for a conjunction) back to one
+  conjunct, unless the rule is named `(no_inverse …)`: all action rules and
+  links are, so none of them gets an inverse.
 
 ## What goes
 
