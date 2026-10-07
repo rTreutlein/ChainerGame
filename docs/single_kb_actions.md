@@ -199,3 +199,26 @@ before and after an inspection).
    - Compute and peak memory should drop.
 3. 60-shift live game: memory per shift close to the replay without actions
    (about 5 MB per shift), and action time per shift flat.
+
+## Results
+
+PeTTaChainer `skeleton-implication-fold` (Assuming queries with context
+cleanup, `docs/metta/assumption_queries.md` there). Live temporal-model
+games, query budget 50, action budget 15 per candidate.
+
+- **Decisions.** `test_live_pettachainer_actions_match_reference_when_available`
+  passes. Over 60 shifts, regret equals the knowledge base per decision
+  (seed 1: 1310.9, seed 2: 636.1). Removing the action rules' antecedent
+  completions (`no_inverse` now drops them) changed regret on some 20-shift
+  seeds; the completions had fed decisions despite being described as dormant
+  above, and without them seeds 2 and 3 match the per-candidate-budget runs
+  exactly.
+- **Time.** Action time per shift stays near 2 s from shift 1 to 60. With a
+  knowledge base per decision it grew from 0.3 s to 38.6 s, and belief
+  forward runs to 14 s per shift; the 60-shift game takes about 3 minutes
+  instead of 32.
+- **Memory.** Peak 1.13 GB at shift 60 against 1.28 GB per decision KB; a
+  replay without decisions peaks at 0.51 GB. The remaining gap is erased
+  clauses SWI-Prolog does not reclaim in the full game (open, PeTTaChainer
+  `assumption_queries.md`).
+
