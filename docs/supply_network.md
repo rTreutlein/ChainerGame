@@ -1,6 +1,6 @@
 # SupplyNet: a supply network with feedback
 
-Status: design, October 2026. Nothing built.
+Status: stage 1 built (`src/supplynet`, see Stage 1 results), October 2026.
 
 ## Why another benchmark
 
@@ -227,3 +227,40 @@ starts.
   the oracle stays exact; a larger version would need an approximate oracle.
 - **MM2.** Whether the MM2 backend takes part from stage 1, as in StationOps,
   or only once stages are stable.
+
+## Stage 1 results
+
+`supplynet run --backend reference|prior|pettachainer`: 3 regions, 10 routes,
+17 shipments; 30 labelled periods of history; 20 rounds, each observing
+every shipment's lateness and a quarter of the routes by inspection. The
+rates are given as certain CTV rules: `(Storm r $p) → (Blocked route $p)` and
+`(Blocked route $p) → (Late shipment $p)`. Base rates come from the history,
+and each round joins it once scored.
+
+Mean over seeds 1–4:
+
+| reasoner | Brier | log loss | error to exact posterior | seconds per run |
+|---|---|---|---|---|
+| exact posterior | 0.028 | 0.105 | 0 | 0 |
+| history base rates only | 0.136 | 0.444 | 0.242 | 0 |
+| PeTTaChainer, budget 20 | 0.113 | 0.368 | 0.151 | 3.4 |
+| PeTTaChainer, budget 100 | 0.113 | 0.368 | 0.151 | 14.7 |
+| PeTTaChainer, budget 400 | 0.113 | 0.368 | 0.151 | 15.7 |
+
+PeTTaChainer answers every belief, but barely beats the base rates, and
+more budget changes nothing: it finds all the evidence and combines it
+wrongly.
+
+**Example.** Seed 7, round 19: 6 of the east region's 9 shipments are late.
+The exact posterior for an east storm is 0.996; PeTTaChainer gives 0.148,
+with confidence 0.997. The proof inverts each shipment's lateness to its
+route and each route to the storm, then merges the pieces by revision.
+Revision averages strengths weighted by confidence. Conditionally
+independent evidence about one hidden cause should instead multiply its
+likelihood ratios, so on-time shipments dilute late ones towards the base
+rate. The confidence, meanwhile, adds up as if the pieces were independent
+observations of the storm itself.
+
+This is the opposite of the double counting stage 1 was designed to catch:
+evidence is under-combined, not over-counted.
+
