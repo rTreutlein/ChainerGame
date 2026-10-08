@@ -433,3 +433,15 @@ Either fix alone is expected to let the window's inversions update the persisten
 prediction, which is the forward filter the exact reference computes. The
 remaining gap would then be backward smoothing: the previous storm also needs
 the current period's inspections through the persistence rule's inversion.
+
+**Stage 2 after the merge fixes** (PeTTaChainer c2fdc232: a certain stored
+fact ends its key's merge; rules certain in every branch carry no rule
+evidence): mean over seeds 1–4, 30 rounds, budget 100: Brier 0.155
+against exact 0.154 (master 0.202), error to the exact posterior 0.010
+(0.166); by kind, storm 0.0012, previous storm 0.039, block 0.0007.
+About 16% slower on stage 2 (answers hold every factored part); StationOps
+unchanged in results and cost. What remains is smoothing: the previous
+period's storm takes the next period's evidence through an antecedent
+completion of the persistence rule, which names no prior and so is revised,
+not factored.
+
