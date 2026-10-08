@@ -1,6 +1,7 @@
 # SupplyNet: a supply network with feedback
 
-Status: stage 1 built (`src/supplynet`, see Stage 1 results), October 2026.
+Status: stages 1 and 2 built (`src/supplynet`, see Stage 1 results and Stage 2
+results), October 2026.
 
 ## Why another benchmark
 
@@ -283,3 +284,152 @@ inversion recovers P(late | open) from the base rates, which can be
 inconsistent in small histories (clipped to 0), and a near-certain update
 then decides a factored merge whatever its confidence.
 
+
+## Stage 2 as built
+
+`supplynet run --stage 2` (stage 1 stays the default). Stage 1 is the special
+case of the same code with transit 0 and no persistence; its reference and
+prior numbers are unchanged.
+
+- **World.** Stage 1's network, plus a transit time of 1–3 periods per route.
+  A storm continues with `p_persist` = 0.7 and starts with the region kind's
+  stage-1 rate (coastal 0.3, inland 0.1); the first history period is drawn
+  from the stationary rate. Blocks and lateness as in stage 1, given the
+  period's storm; every route's shipments depart every period, and a
+  shipment's lateness is decided by its route's block in the departure period.
+- **Observations.** In period t the operator sees the lateness of the
+  shipments departed at t − L on each route with transit L, and the
+  inspected routes of period t (a quarter of them). Nothing departing at t has
+  arrived, so the current storm is seen only through inspections and
+  persistence.
+- **Resolution.** A period is resolved (its storms and blocks labelled) once
+  all its shipments have arrived, i.e. at the end of round d + Lmax for the
+  network's longest transit Lmax. The history periods are resolved before the
+  first round, including the lateness of their shipments still in transit at
+  its end. The reference uses the same information.
+- **Queries per round.** Every region's storm now and in the previous period
+  (when that period is unresolved, i.e. from round 2 on), and every
+  uninspected route's block now.
+- **Exact reference** (`world.Knowledge`). Per region, enumerate the storm
+  sequences of the unresolved window (Lmax + 1 ≤ 4 periods, at most 16
+  sequences), summing each route-period's block out given that period's storm.
+  The distribution carried into the window is the last resolved period's
+  storm, a point mass, because resolution labels it; before any period it is
+  the stationary rate. A test compares it with brute-force enumeration over
+  all storm and block states (1 region, 2 routes, 6 periods), before and
+  after resolving the first period.
+- **MeTTa.** Periods are individuals linked by `(NextPeriod p t)` facts, stated
+  with each period's observations. Persistence per region:
+
+      (: persist-north
+         (Implication (And (NextPeriod $p $t) (Storm north $p)) (Storm north $t))
+         (CTV (STV 0.7 1) (STV <start rate> 1)))
+
+  The persistence rate is given, unlike the design's `(STV 1 1)` with a
+  learned rate. Block rules as in stage 1; lateness is keyed by departure
+  period, `(Late s1-1 t5)`, and stated when the shipment arrives, rather than
+  derived from blocks over the transit periods. Base rates come from the
+  resolved periods, which join the knowledge base as they resolve.
+- **Scoring.** As stage 1, plus a split per query kind (`storm`,
+  `previous_storm`, `blocked`) in every round record and the summary.
+
+## Stage 2 results
+
+3 regions, 7–9 routes; 30 labelled history periods, 30 rounds, inspection
+rate 0.25; PeTTaChainer master 735f2c3d, evidence k 5. Error is the mean
+absolute difference from the exact posterior.
+
+| reasoner | seed | Brier | log loss | error | error: storm now | error: previous storm | error: block now | seconds |
+|---|---|---|---|---|---|---|---|---|
+| exact posterior | mean 1–4 | 0.154 | 0.477 | 0 | 0 | 0 | 0 | 0 |
+| history base rates only | 1 | 0.179 | 0.541 | 0.151 | 0.187 | 0.246 | 0.094 | 0 |
+| | 2 | 0.226 | 0.643 | 0.219 | 0.286 | 0.358 | 0.129 | 0 |
+| | 3 | 0.250 | 0.698 | 0.218 | 0.267 | 0.277 | 0.162 | 0 |
+| | 4 | 0.197 | 0.578 | 0.146 | 0.159 | 0.227 | 0.096 | 0 |
+| | **mean** | **0.213** | **0.615** | **0.183** | **0.225** | **0.277** | **0.120** | 0 |
+| PeTTaChainer, budget 100 | 1 | 0.182 | 0.545 | 0.153 | 0.193 | 0.258 | 0.089 | 17.6 |
+| | 2 | 0.199 | 0.586 | 0.177 | 0.225 | 0.300 | 0.103 | 18.2 |
+| | 3 | 0.225 | 0.638 | 0.179 | 0.221 | 0.241 | 0.126 | 18.6 |
+| | 4 | 0.197 | 0.579 | 0.139 | 0.163 | 0.239 | 0.074 | 13.1 |
+| | **mean** | **0.201** | **0.587** | **0.162** | **0.200** | **0.260** | **0.098** | 16.8 |
+
+Exact-posterior Brier by kind (mean): storm now 0.172, previous storm 0.141,
+block now 0.151. PeTTaChainer answers every query (coverage 1.0) and its
+cost per round stays flat (0.4–0.8 s), but it is only a little better than the
+base rates, and worst on the previous period's storm, the query that needs
+late arrivals.
+
+Budget (seeds 1 and 2, mean):
+
+| budget | Brier | error | storm now | previous storm | block now | seconds |
+|---|---|---|---|---|---|---|
+| 20 | 0.185 | 0.153 | 0.192 | 0.267 | 0.087 | 8.5 |
+| 100 | 0.191 | 0.165 | 0.209 | 0.279 | 0.096 | 17.9 |
+| 400 | 0.191 | 0.169 | 0.216 | 0.284 | 0.099 | 26.7 |
+
+More budget makes it slightly worse: the search finds the same views and
+costs more.
+
+**Diagnosis: the persistence view shuts out the window's evidence.** Seed 2,
+round 26 (window t23–t26; north stormed in the last resolved period). North
+has a late arrival from t25 and route r1 inspected blocked at t26:
+
+| query | exact | PeTTaChainer |
+|---|---|---|
+| Storm north t25 | 0.950 | 0.532 |
+| Storm north t26 | 0.963 | 0.513 |
+| Storm east t25 | 0.029 | 0.468 |
+| Storm south t26 | 0.043 | 0.487 |
+
+Every storm answer in the window is the persistence chain alone, e.g.
+
+    (by persist-north (conjunction next-t25 (by persist-north (conjunction next-t24
+      (by persist-north (conjunction next-t23 (merge/revision storm-north-t22 …)))))))
+    (STV 0.532 0.99994)
+
+i.e. 0.7 → 0.58 → 0.532 from the resolved storm, the exact prediction with
+no evidence; east and south from no storm give 0.3 → 0.42 → 0.468. No
+inversion from the window's late shipments or inspected routes takes part.
+
+A one-region toy (40 history periods with no storm in the last, then period
+w1 with all three shipments late; exact P(Storm w1) = 0.99) isolates it:
+
+| variant | Storm north w1 | proof |
+|---|---|---|
+| persistence rule, w1 linked | 0.300 (conf 0.9999) | the persistence chain alone |
+| same, route r1 also inspected blocked at w1 | 0.300 (conf 0.9999) | the persistence chain alone |
+| persistence rule, w1 not linked (no `NextPeriod` for w1) | 0.988 (conf 0.80) | `factored-revision cpu` over both block inversions |
+| no persistence rule | 0.988 | same |
+
+So the evidence views are derived and dropped in the merge with the
+persistence view, even when the evidence is an inspected fact. The
+persistence view's proof explains why: each resolved period's certain storm
+label is revised with the inversions of that period's block facts
+(`(merge/revision storm-north-h39 ((inverted block-r1 …) blocked-r1-h39) …)`),
+and the chain recurses through every history period. Its evidence set
+therefore contains the region's block rules, and every block inversion about
+the window uses the same rules. Under the prior-factored merge
+(`docs/metta/prior_factored_merge.md`) views that share evidence, rules
+included, are not factored; the overlap rule keeps one view, and keeps the
+persistence view, whose confidence (0.9999, from certain rules and facts) is
+the higher. When the history holds only storm labels, so that the persistence
+view contains no block rule, the merge does factor the persistence view in
+the base rate's place: `(factored-revision (by persist-north …) (prior (STV
+0.3 0.9999)) (block inversions))`. That variant's value is not meaningful,
+since without block and lateness history the inversions are wrong even
+without persistence.
+
+Two causes, both in PeTTaChainer:
+
+1. A certain stored fact (a resolved storm label) is still revised with
+   derived views, so it carries their evidence (the block rules) into
+   everything derived from it, and the forward chain descends through the
+   whole history instead of stopping at the label.
+2. Sharing a rule with given, certain rates counts as shared evidence, so the
+   persistence prior and the window's likelihoods are treated as overlapping
+   and one is discarded instead of multiplied.
+
+Either fix alone is expected to let the window's inversions update the persistence
+prediction, which is the forward filter the exact reference computes. The
+remaining gap would then be backward smoothing: the previous storm also needs
+the current period's inspections through the persistence rule's inversion.

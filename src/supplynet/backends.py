@@ -8,9 +8,7 @@ import sys
 from pathlib import Path
 
 from . import metta
-from .world import Network, Observation, Period, Rates, exact_posterior
-
-Key = tuple[str, str]
+from .world import Key, Knowledge, Network, Observation, Period, Rates
 
 
 class BackendUnavailable(RuntimeError):
@@ -23,14 +21,18 @@ class ReferenceBackend:
     name = "reference"
 
     def begin(self, network: Network, rates: Rates, history: list[tuple[Period, Observation]]) -> None:
-        self.network, self.rates = network, rates
+        self.knowledge = Knowledge(network, rates)
+        for period, observation in history:
+            self.knowledge.observe(observation)
+            self.knowledge.resolve(period)
 
     def beliefs(self, observation: Observation, keys: list[Key], budget: int) -> dict[Key, float]:
-        posterior = exact_posterior(self.network, self.rates, observation)
+        self.knowledge.observe(observation)
+        posterior = self.knowledge.posterior()
         return {key: posterior[key] for key in keys}
 
     def resolve(self, period: Period, observation: Observation) -> None:
-        pass
+        self.knowledge.resolve(period)
 
 
 class PriorBackend:
@@ -40,12 +42,12 @@ class PriorBackend:
     name = "prior"
 
     def begin(self, network: Network, rates: Rates, history: list[tuple[Period, Observation]]) -> None:
-        self.counts: dict[Key, list[int]] = {}
+        self.counts: dict[tuple[str, str], list[int]] = {}
         for period, observation in history:
             self.resolve(period, observation)
 
     def beliefs(self, observation: Observation, keys: list[Key], budget: int) -> dict[Key, float]:
-        return {key: (self.counts.get(key, [0, 0])[0] + 1) / (self.counts.get(key, [0, 0])[1] + 2) for key in keys}
+        return {key: (self.counts.get(key[:2], [0, 0])[0] + 1) / (self.counts.get(key[:2], [0, 0])[1] + 2) for key in keys}
 
     def resolve(self, period: Period, observation: Observation) -> None:
         for kind, values in (("Storm", period.storms), ("Blocked", period.blocked)):
@@ -84,7 +86,7 @@ class PeTTaChainerBackend:
 
     def beliefs(self, observation: Observation, keys: list[Key], budget: int) -> dict[Key, float]:
         self._handler.add_atoms_no_check(metta.observation_facts(observation))
-        goals = [metta.query(key, observation.period) for key in keys]
+        goals = [metta.query(key) for key in keys]
         answers = self._handler.query_many(goals, steps=budget, timeout_sec=0) if goals else []
         beliefs = {}
         for key, proofs in zip(keys, answers, strict=True):
