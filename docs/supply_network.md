@@ -273,3 +273,13 @@ levels (shipments → route, routes → storm). Mean over seeds 1–4, budget
 shipment-factored view with the forward view from the storm, and both
 contain the route's prior, so it is counted twice.
 
+**After factoring a derived view in the base rate's place** (PeTTaChainer
+735f2c3d): a route's forward view from the storm and its shipment
+inversions combine by Bayes' rule too. Mean over seeds 1–4, budget 100:
+Brier 0.034, log loss 0.153, error to the exact posterior 0.019 (exact
+posterior Brier 0.028), at unchanged cost. Every answer is a
+`factored-revision`. The remaining gap comes from degenerate inversions: an
+inversion recovers P(late | open) from the base rates, which can be
+inconsistent in small histories (clipped to 0), and a near-certain update
+then decides a factored merge whatever its confidence.
+
