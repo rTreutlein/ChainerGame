@@ -640,3 +640,13 @@ previous-storm error (0.04) is stage 2's smoothing gap.
 
 Stages 1 and 2 give their earlier reference and prior results for seed 1
 (30 rounds) to 1e-16.
+
+**Stage 3 after connective settling** (PeTTaChainer 07e829a7: a certain stored
+part settles an Or to true or an And to false without proofs of the other
+parts). Untimed, seeds 1–4: production queries answered 100% (were 0%),
+production error 0.052 (0.369), overall error 0.062 (0.106), coverage 0.91.
+Without stock, production stays unanswered where no proof exists outside the
+loop (answered false only when a degraded site breaks it): concluding
+"not running" from the absence of a proof would need closed-world reasoning,
+which the chainer does not do. Timed and stages 1–2 unchanged.
+
