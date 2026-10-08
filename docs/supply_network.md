@@ -264,3 +264,12 @@ observations of the storm itself.
 This is the opposite of the double counting stage 1 was designed to catch:
 evidence is under-combined, not over-counted.
 
+**After factoring plain inversions** (PeTTaChainer master, prior-factored
+merge extended to population priors): plain-implication inversions now combine
+over their antecedent's base rate by Bayes' rule instead of revising, at both
+levels (shipments → route, routes → storm). Mean over seeds 1–4, budget
+100: Brier 0.065, log loss 0.238, error to the exact posterior 0.081 (from
+0.113, 0.368, 0.151). What remains: a route's own belief revises its
+shipment-factored view with the forward view from the storm, and both
+contain the route's prior, so it is counted twice.
+
