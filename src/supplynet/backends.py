@@ -50,8 +50,8 @@ class PriorBackend:
         return {key: (self.counts.get(key[:2], [0, 0])[0] + 1) / (self.counts.get(key[:2], [0, 0])[1] + 2) for key in keys}
 
     def resolve(self, period: Period, observation: Observation) -> None:
-        for kind, values in (("Storm", period.storms), ("Blocked", period.blocked)):
-            for subject, value in values.items():
+        for kind in ("Storm", "Blocked", "Degraded", "Producing"):
+            for subject, value in period.truth(kind).items():
                 count = self.counts.setdefault((kind, subject), [0, 0])
                 count[0] += value
                 count[1] += 1

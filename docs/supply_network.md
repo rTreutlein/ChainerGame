@@ -1,6 +1,6 @@
 # SupplyNet: a supply network with feedback
 
-Status: stages 1 and 2 built (`src/supplynet`, see Stage 1 results and Stage 2
+Status: stages 1 to 3 built (`src/supplynet`, see the Stage 1, 2 and 3
 results), October 2026.
 
 ## Why another benchmark
@@ -445,3 +445,198 @@ period's storm takes the next period's evidence through an antecedent
 completion of the persistence rule, which names no prior and so is revised,
 not factored.
 
+
+## Stage 3 as built
+
+`supplynet run --stage 3 --cycle timed|untimed` (timed by default). Stage 3
+is stage 2's network, with its storms, routes, transits and observations
+unchanged, plus a production cell; the cell is appended to the network after
+it is drawn, so a seed's stage-2 network is kept. Stages 1 and 2 give the
+same reference and prior results as before (to 1e-16: the exact posterior is
+now computed by forward-backward instead of enumerating the window's storm
+sequences).
+
+- **Cell.** A mine, a power plant and two plants (`plant-a`, `plant-b`). The
+  mine's fuel travels to the power plant over a new route `rf` in a random
+  region, blocked by that region's storms like any route; it carries no
+  shipments of its own. Each plant takes its input from one shipment of the
+  network, drawn at random: the input is available in period t when that
+  shipment, departed t − L, is not late. Power is not stored. The fuel
+  warehouse holds stock in a period with probability 0.4, independently of
+  production: it is supplied from outside and observed, so it acts only as the
+  loop's bootstrap. (The design's integer stock levels, drawn down and
+  refilled by the mine, are left out: a stock level the mine refills would
+  itself be evidence about the fuel route, which the chainer's rules do not
+  state.)
+- **Degradation.** `Degraded site` per period, a chain like the storms: it
+  persists with 0.75 (otherwise the site is repaired) and starts with the site
+  kind's hazard (mine 0.08, power plant 0.05, plant 0.1); the first history
+  period is drawn from the stationary rate.
+- **Production** in period t is the *least* fixed point of the rules, iterated
+  from nothing producing (`world.production`): the power plant runs when it is
+  fuelled and not degraded; it is fuelled by stock, or by the mine's fuel over
+  an open fuel route; the mine and each plant run when the power plant runs,
+  their input arrived (plants) and they are not degraded. Nothing produces by
+  itself: without stock, fuel comes only from the mine.
+  - *timed:* the fuel route's transit is 1, and the fuel arriving at t is what
+    the mine produced at t − 1, if `rf` was open at t − 1. Each period's rules
+    are acyclic; the loop passes through time, so once running it sustains
+    itself without stock until a degradation or a block stops it, and stock
+    restarts it.
+  - *untimed:* the transit is 0 and the mine's fuel arrives within the period.
+    The rules are a loop, mine → fuel → power plant → mine, and its least
+    fixed point is that the power plant runs if and only if there is stock and
+    it is not degraded; without stock nothing runs, although everything
+    running is also a fixed point.
+- **Observations per round,** besides stage 2's: the inspected sites'
+  degradation (each site with the inspection rate, all in the history), the
+  fuel stock and the plants' inputs (exact), and the previous period's
+  production of every site (exact, reported at the period's end). The fuel
+  arriving at the power plant is not reported: it is seen only through the
+  power plant's output. In the timed cell a power plant that ran without stock
+  is evidence that `rf` was open in the previous period, and so about the
+  storm there.
+- **Queries per round,** besides stage 2's (which now include `Blocked rf`):
+  `Degraded site` now for every uninspected site, and `Producing site` now for
+  every site, asked before the period's production is reported. Scoring
+  splits production by the period's stock: `producing` (stocked) and
+  `producing_unstocked`. In the untimed cell the exact answer for
+  `producing_unstocked` is 0, so its error is the self-support a reasoner
+  attributes to the loop. Every kind also reports its coverage.
+- **Resolution** as in stage 2, at the end of round d + Lmax; a resolved
+  period also labels its degradations and `rf`'s block.
+- **Exact reference** (`world.Knowledge`). Per region, forward-backward over
+  the window; a region's state is its storm, and in the cell's region also
+  `rf`'s block and the four degradations (2^6 states). The other routes'
+  blocks are summed out per period given the storm, as before. A window
+  period's reported production is a 0/1 factor between consecutive states: it
+  is determined by the period's state, the previous state's `rf` block and the
+  mine's previous production, which is reported (or labelled, for the period
+  before the window). The current production comes from the last pairwise
+  marginal. Tests compare it with brute-force enumeration over every storm,
+  block and degradation of 3 periods (1 region, 1 plant, both cycles), with
+  production computed period by period from the hidden state, before and after
+  resolving the first period; and check that without stock the untimed loop
+  never runs and its exact production is 0.
+- **MeTTa.** Degradation persistence per site as for storms; the cycle as
+  certain rules (`(CTV (STV 1 1) (STV 0 1))`):
+
+      (Implication (And (Fuelled power-plant $t) (Not (Degraded power-plant $t))) (Producing power-plant $t))
+      (Implication (Or (StockedFuel $t) (FuelArrived $t)) (Fuelled power-plant $t))
+      (Implication (And (Producing power-plant $t) (Not (Degraded mine $t))) (Producing mine $t))
+      (Implication (And (Producing power-plant $t) (InputArrived plant-a $t) (Not (Degraded plant-a $t)))
+                   (Producing plant-a $t))
+
+  The two variants differ in one rule:
+
+      timed:   (Implication (And (NextPeriod $p $t) (Producing mine $p) (Not (Blocked rf $p))) (FuelArrived $t))
+      untimed: (Implication (And (Producing mine $t) (Not (Blocked rf $t))) (FuelArrived $t))
+
+  `Powered` is not a predicate of its own: power is not stored, so a site is
+  powered exactly when the power plant produces. Observations add
+  `(StockedFuel t)`, `(InputArrived plant t)`, inspected `(Degraded site t)`
+  and the reported `(Producing site t-1)` as certain facts.
+
+
+## Stage 3 results
+
+Seeds 1–4, 3 regions, 30 labelled history periods, 30 rounds, inspection
+rate 0.25, budget 100; PeTTaChainer master c2fdc232, evidence k 5. Error is
+the mean absolute difference from the exact posterior; an unanswered query
+counts as 0.5. In brackets: the share of queries answered.
+
+**Timed cycle**
+
+| reasoner | seed | Brier | log loss | error | storm | previous storm | block | degraded | producing (stock) | producing (no stock) | seconds |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| exact posterior | mean | 0.140 | 0.429 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1.2 |
+| history base rates | mean | 0.226 | 0.649 | 0.228 | 0.236 | 0.289 | 0.133 | 0.236 | 0.401 | 0.317 | 0 |
+| PeTTaChainer | 1 | 0.133 | 0.413 | 0.022 | 0.001 | 0.050 | 0.001 | 0.069 | 0.063 | 0.006 | 36.4 |
+| | 2 | 0.148 | 0.444 | 0.025 | 0.003 | 0.045 | 0.002 | 0.063 | 0.083 | 0.025 | 36.9 |
+| | 3 | 0.167 | 0.487 | 0.022 | 0.001 | 0.046 | 0.001 | 0.063 | 0.027 | 0.031 | 36.5 |
+| | 4 | 0.136 | 0.432 | 0.028 | 0.002 | 0.028 | 0.001 | 0.078 | 0.075 | 0.036 | 24.0 |
+| | **mean** | **0.146** | **0.444** | **0.024** | 0.002 | 0.042 | 0.001 | 0.068 | 0.059 | 0.025 | 33.5 |
+
+Coverage 1.0 throughout. Exact-posterior Brier by kind: storm 0.172,
+previous storm 0.136, block 0.169, degraded 0.145, producing 0.101,
+producing without stock 0.042; PeTTaChainer's: 0.172, 0.142, 0.169, 0.170,
+0.121, 0.043.
+
+**Untimed cycle**
+
+| reasoner | seed | Brier | log loss | error | storm | previous storm | block | degraded | producing (stock) | producing (no stock) | seconds |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| exact posterior | mean | 0.135 | 0.414 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1.5 |
+| history base rates | mean | 0.212 | 0.617 | 0.214 | 0.236 | 0.288 | 0.133 | 0.225 | 0.422 | 0.209 | 0 |
+| PeTTaChainer | 1 | 0.173 | 0.519 | 0.107 | 0.001 | 0.049 | 0.001 | 0.068 | 0.394 [0] | 0.500 [0] | 33.6 |
+| | 2 | 0.180 | 0.532 | 0.103 | 0.001 | 0.034 | 0.003 | 0.050 | 0.357 [0] | 0.500 [0] | 33.8 |
+| | 3 | 0.200 | 0.578 | 0.104 | 0.000 | 0.043 | 0.000 | 0.055 | 0.373 [0] | 0.500 [0] | 31.8 |
+| | 4 | 0.176 | 0.537 | 0.109 | 0.001 | 0.028 | 0.002 | 0.047 | 0.354 [0] | 0.500 [0] | 19.0 |
+| | **mean** | **0.182** | **0.541** | **0.106** | 0.001 | 0.039 | 0.001 | 0.055 | 0.371 [0] | 0.500 [0] | 29.5 |
+
+Coverage 0.80: every query except production is answered, and no production
+query is (480 queries). Exact-posterior Brier: producing 0.103, without stock 0.
+
+**Self-support.** PeTTaChainer never proves the untimed loop running, with or
+without stock; it proves nothing about production at all. A toy KB isolates
+why (no history, certain facts):
+
+| KB | query | answer |
+|---|---|---|
+| `(A t)` true, `(Or (A $t) (B $t)) → (C $t)`, no statement about B | `C t` | none |
+| same, `(B t)` stated false | `C t` | 1.0 |
+| same, `(B t)` derived from a fact by a rule | `C t` | 1.0 |
+| loop `(Or (S $t) (M $t)) → (P $t)`, `(And (P $t) (Not (Deg $t))) → (M $t)`, S true | `P t`, `M t` | none |
+| same, S false | `P t`, `M t` | none |
+| the Or split into `S → P` and `M → P`, S true | `P t`, `M t` | 1.0, 1.0 |
+| same, S false | `P t`, `M t` | 0, 1e-6 |
+
+An `Or` is proved only when every disjunct has a proof, however certain the
+other one is. Cycle exclusion is sound: `FuelArrived t` can be proved only
+through `Producing mine t`, `Producing power-plant t`, `Fuelled t` and back
+to the `Or` itself, so it has no proof. The `Or` is then unprovable, and so
+is everything after it, even when the stock alone settles it. The design's
+failure mode, a loop supporting itself, does not occur; the opposite one
+does: the least fixed point's reading that an underivable loop is not
+running is never drawn, and the stock case is lost too.
+
+With the `fuelled` rule stated as two certain rules (`StockedFuel → Fuelled`,
+`FuelArrived → Fuelled`; a scratch variant, not in the code: each rule's
+`(STV 0 1)` negative branch is false of the world), the untimed cell is
+answered fully. Error over seeds 1–4 is 0.015–0.021; production without
+stock has error 0.000 (no self-support), and production with stock has
+error 0.021–0.083, as in the timed cell.
+
+**Diagnosis of the largest timed gap: production reports do not reach
+degradation.** Seed 1, round 6. In t5 the power plant ran and the mine did not
+(both reported as certain facts), so the mine was degraded in t5. The exact
+P(Degraded mine t6) is 0.75, the persistence rate. PeTTaChainer:
+
+| query | exact | PeTTaChainer |
+|---|---|---|
+| Degraded mine t6 | 0.750 | 0.134 |
+| Producing mine t6 | 0.250 | 0.866 |
+| Degraded plant-b t6 | 0.750 | 0.253 |
+| Producing plant-b t6 | 0.250 | 0.747 |
+
+    (Degraded mine t5): (by persist-degraded-mine (conjunction next-t5 degraded-mine-t4)) (STV 0.08 0.9999)
+    (Degraded mine t6): (by persist-degraded-mine (conjunction next-t6 (by persist-degraded-mine …))) (STV 0.1336 0.9999)
+
+The only view of the degradation is the persistence chain from the last
+inspection (t4, not degraded). No proof uses the reported production, which
+could only enter through an antecedent completion of
+`runs-mine: (And (Producing power-plant $t) (Not (Degraded mine $t))) →
+(Producing mine $t)`. The production answers are right given that belief:
+`Producing mine t6` is `runs-mine` over a power plant that certainly runs
+(stocked) and the persistence belief. A toy with only `runs-mine` and 40
+fully labelled instances gives no answer for the degradation of an instance
+with the power plant on and the mine off, nor with a positive `Healthy`
+child in place of the `Not`: the completion produces no result here. It
+could not settle this case even if it applied, because its negative branch
+P(M | not K) averages over every way K = (power plant ∧ mine) fails, not over
+"power plant on, mine off". The same gap is the degraded error of both cells
+(0.068 timed, 0.055 untimed) and most of the timed production error. The
+previous-storm error (0.04) is stage 2's smoothing gap.
+
+Stages 1 and 2 give their earlier reference and prior results for seed 1
+(30 rounds) to 1e-16.
