@@ -154,6 +154,13 @@ state).
   the periods the fuel cycle was stalled.
 - **Compute:** time per period, split into belief queries, decision queries
   and forward runs. Peak memory.
+- **Hypotheses (stage 7):**
+  - each candidate's truth over time, against its true conditional
+    probability, which is known to the simulator;
+  - the period at which true candidates become usable and spurious ones
+    stop being confirmed;
+  - the share of search spent on rejected candidates;
+  - the decision gain over the same game without the candidates.
 
 As in StationOps, a run streams one JSON object per period, and a replay
 mode applies a recorded run's actions so only the beliefs differ.
@@ -179,6 +186,20 @@ starts.
    joint reference policy; `Assuming` decisions with shared capacity.
 5. **Lookahead.** Two-period action pairs; repair-now versus later.
 6. **Unreliable reports.** Supplier statements, learned reliability.
+7. **Hypotheses.** The game states candidate implications with a weak prior
+   (PeTTaChainer `docs/metta/hypothesis_rules.md`) and the chainer confirms or
+   rejects them from the data as it arrives. Candidates are a mix of:
+   - **true rules**, such as `(Storm north $t) → (Blocked r2 $t)`, where the
+     rule's rate is left for the data;
+   - **spurious ones** that hold only through a common cause, such as
+     `(Late $s r1) → (Late $s r2)` for two routes in one region;
+   - **noise:** unrelated pairs.
+
+   Observational data confirms the spurious ones as well as the true ones.
+   Interventions (rerouting, expediting) and inspections break them: a
+   rerouted shipment's lateness no longer follows the old route's region.
+   Generating candidates stays outside the chainer, so a pattern miner can
+   replace the game's candidate list later without changing the scoring.
 
 ## What would count as success
 
