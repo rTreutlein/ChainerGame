@@ -30,6 +30,8 @@ def supplynet(dirs: list[Path]) -> None:
             runs[(config, label)].append(summary)
             for kind, record in summary["kinds"].items():
                 kinds[(config, label)][kind].append(record)
+    if not runs:
+        return
     labels = sorted({label for _, label in runs}, key=lambda l: (ORDER.index(l) if l in ORDER else len(ORDER), l))
     mean = lambda rows, field: sum(r[field] for r in rows) / len(rows)  # noqa: E731
     for _, _, config in CONFIGS:
