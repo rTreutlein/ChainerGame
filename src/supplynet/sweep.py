@@ -6,8 +6,10 @@ reasoners as baselines.
     python -m supplynet.sweep report grid.json
 
 Each run is a ``supplynet.cli run --stage scale`` subprocess under a 16 GB
-address-space limit; the JSON is rewritten as runs finish, so a partial grid
-can be reported.
+address-space limit, started only while the machine has ``--reserve-gb`` of
+memory available (PeTTaChainer's memory grows with the budget: about 11 GB
+for size xl at 16 steps per query). The JSON is rewritten as runs finish, so
+a partial grid can be reported.
 """
 
 from __future__ import annotations
@@ -35,6 +37,11 @@ def _limit(kilobytes: int):
     return apply
 
 
+def _available_gb() -> float:
+    with open("/proc/meminfo") as meminfo:
+        return next(int(line.split()[1]) for line in meminfo if line.startswith("MemAvailable")) / 2**20
+
+
 def _run(job: dict, args) -> dict:
     command = [
         sys.executable, "-m", "supplynet.cli", "run", "--stage", "scale", "--backend", job["backend"],
@@ -45,6 +52,8 @@ def _run(job: dict, args) -> dict:
         command += ["--steps-per-query", str(job["steps_per_query"])]
     if job["backend"] == "pettachainer":
         command += ["--pettachainer-path", args.pettachainer_path, "--evidence-k", str(args.evidence_k)]
+    while _available_gb() < args.reserve_gb:
+        time.sleep(5)
     env = {key: value for key, value in os.environ.items() if key != "DISPLAY"} | {"PYTHONPATH": SRC}
     started = time.perf_counter()
     try:
@@ -59,10 +68,14 @@ def _run(job: dict, args) -> dict:
 
 
 def run(args) -> None:
-    sizes, seeds = args.sizes.split(","), [int(seed) for seed in args.seeds.split(",")]
+    seeds = {size: [int(seed) for seed in args.seeds.split(",")] for size in args.sizes.split(",")}
+    for spec in args.seeds_for:
+        size, values = spec.split("=")
+        if size in seeds:
+            seeds[size] = [int(seed) for seed in values.split(",")]
     steps = [float(value) for value in args.steps_per_query.split(",")]
-    jobs = [{"backend": b, "size": s, "seed": n, "steps_per_query": None} for s in sizes for n in seeds for b in BASELINES]
-    jobs += [{"backend": "pettachainer", "size": s, "seed": n, "steps_per_query": q} for s in sizes for n in seeds for q in steps]
+    jobs = [{"backend": b, "size": s, "seed": n, "steps_per_query": None} for s, ns in seeds.items() for n in ns for b in BASELINES]
+    jobs += [{"backend": "pettachainer", "size": s, "seed": n, "steps_per_query": q} for s, ns in seeds.items() for n in ns for q in steps]
     # Largest first, so the longest runs do not start last.
     jobs.sort(key=lambda job: (list(SIZES).index(job["size"]), job["steps_per_query"] or 0), reverse=True)
     out = Path(args.out)
@@ -177,12 +190,14 @@ def main(argv=None):
     grid.add_argument("--out", required=True)
     grid.add_argument("--sizes", default="s,m,l,xl")
     grid.add_argument("--seeds", default="1,2")
+    grid.add_argument("--seeds-for", action="append", default=["xl=1"], metavar="SIZE=SEEDS", help="seeds of one size (default xl=1)")
     grid.add_argument("--steps-per-query", default="0.25,0.5,1,2,4,8,16")
     grid.add_argument("--window", type=int, default=8)
     grid.add_argument("--history", type=int, default=20)
     grid.add_argument("--rounds", type=int, default=10)
     grid.add_argument("--evidence-k", type=float, default=5)
     grid.add_argument("--jobs", type=int, default=16)
+    grid.add_argument("--reserve-gb", type=float, default=8, help="start a run only while this much memory is available")
     grid.add_argument("--memory-kb", type=int, default=16_000_000, help="address-space limit per run (ulimit -v)")
     grid.add_argument("--timeout", type=float, default=1200, help="seconds per run")
     show = sub.add_parser("report", help="markdown tables and an ASCII plot from a grid's JSON")
