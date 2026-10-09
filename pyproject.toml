@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 [project.scripts]
 stationops = "stationops.cli:main"
 supplynet = "supplynet.cli:main"
+combinet = "combinet.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
