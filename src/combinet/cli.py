@@ -26,7 +26,8 @@ def _game_options(parser):
     parser.add_argument("--rule-confidence", type=float, default=1.0)
     parser.add_argument("--form", choices=("complement", "not"), default="complement", help="negative literals of hypotheses")
     parser.add_argument("--min-support", type=int, default=5, help="instances before a hypothesis is written")
-    parser.add_argument("--review-steps", type=int, default=10, help="backward steps per hypothesis review")
+    parser.add_argument("--max-literals", type=int, help="largest cell hypothesis")
+    parser.add_argument("--review-steps", type=int, default=20, help="backward steps per hypothesis review")
     parser.add_argument("--pettachainer-path", default=os.environ.get("PETTACHAINER_PYTHONPATH"))
 
 
@@ -34,7 +35,7 @@ def _forwarded(args) -> list[str]:
     """The game options of ``args`` as command-line flags for ``run``."""
     flags = []
     for name in ("relations", "per_relation", "history", "rounds", "cases", "observe_rate", "budget", "rates", "evidence_k",
-                 "rule_confidence", "form", "min_support", "review_steps", "pettachainer_path"):
+                 "rule_confidence", "form", "min_support", "max_literals", "review_steps", "pettachainer_path"):
         value = getattr(args, name)
         if value is not None:
             flags += ["--" + name.replace("_", "-"), str(value)]
@@ -48,7 +49,7 @@ def _backend(args):
         return CombinationBackend(args.backend)
     hypotheses = args.backend.removeprefix("pettachainer").removeprefix("-") or None
     return PeTTaChainerBackend(
-        args.pettachainer_path, args.evidence_k, hypotheses, args.form, args.min_support, args.rule_confidence, args.review_steps
+        args.pettachainer_path, args.evidence_k, hypotheses, args.form, args.min_support, args.rule_confidence, args.review_steps, args.max_literals
     )
 
 
@@ -117,9 +118,12 @@ def _table(args):
         values += [mean(runs, lambda r, k=k: r["kinds"].get(k, {}).get("posterior_error")) for k in relations]
         print(f"| {parents} | {backend} | {len(runs)} | " + " | ".join(cell(v) for v in values) + " |")
     print()
+    print("Chainer cost:\n")
     print("| n | backend | setup s | s/round | review s/round | rules | hypotheses | folds/round | expansions/round | RSS MB |")
     print("|---" * 10 + "|")
     for (parents, backend), runs in rows:
+        if "rules" not in runs[0]:
+            continue
         values = [
             cell(mean(runs, lambda r: r["setup_seconds"]), 2),
             *(cell(mean(runs, lambda r, f=f: r.get(f) and r[f] / r["rounds"]), 2) for f in ("seconds", "review_seconds")),
@@ -128,8 +132,9 @@ def _table(args):
             cell(mean(runs, lambda r: r["max_rss_mb"]), 0),
         ]
         print(f"| {parents} | {backend} | " + " | ".join(values) + " |")
+    print()
     for failure in failures:
-        print(f"\nFailed: n={failure['parents']} {failure['backend']} seed {failure['seed']}: {failure['error']}")
+        print(f"Failed: n={failure['parents']} {failure['backend']} seed {failure['seed']}: {failure['error']}")
 
 
 def main(argv=None):

@@ -139,12 +139,15 @@ class PeTTaChainerBackend:
     hypotheses (``docs/metta/hypothesis_rules.md`` in PeTTaChainer): refined
     rules ``(Implication (And lit ...) (C $x))`` with a weak prior at the
     revision of their literals' views, learned by the instance fold. Before
-    each round's queries it reviews them all (reads their ``RuleTruth``).
+    each round's queries it reviews them all, each by its own ``RuleTruth``
+    query with ``review_steps``: in one shared batch the first goals take the
+    budget and the later ones are not folded.
     Candidates, each kept once it has ``min_support`` instances in the
     labelled history, re-checked every round:
 
     - ``pairs``: every two observed parents of a history case, with their values;
-    - ``cells``: the full observed pattern of a history case (two or more parents).
+    - ``cells``: the full observed pattern of a history case (two or more
+      parents, at most ``max_literals``).
 
     ``cells-read`` is ``cells`` with the merge's part done by the backend:
     where the review gave a case's exact cell a learned truth (confidence
@@ -167,7 +170,8 @@ class PeTTaChainerBackend:
         form: str = "complement",
         min_support: int = 5,
         rule_confidence: float = 1.0,
-        review_steps: int = 10,
+        review_steps: int = 20,
+        max_literals: int | None = None,
     ):
         if python_path:
             sys.path.insert(0, str(Path(python_path).expanduser().resolve()))
@@ -182,7 +186,7 @@ class PeTTaChainerBackend:
         self.read = hypotheses == "cells-read"
         self.hypotheses_mode = "cells" if self.read else hypotheses
         self.form, self.min_support = form, min_support
-        self.rule_confidence, self.review_steps = rule_confidence, review_steps
+        self.rule_confidence, self.review_steps, self.max_literals = rule_confidence, review_steps, max_literals
         self._handler.set_evidence_confidence_k(evidence_k)
         self._handler.set_query_metrics(True)
         if hypotheses:
@@ -214,7 +218,7 @@ class PeTTaChainerBackend:
                 observed = tuple(sorted(case.observed[consequent.name].items()))
                 if self.hypotheses_mode == "pairs":
                     candidates.update((a, b) for a in observed for b in observed if a[0] < b[0])
-                elif len(observed) >= 2:
+                elif 2 <= len(observed) <= (self.max_literals or len(observed)):
                     candidates.add(observed)
             for pattern in sorted(candidates - self.patterns[consequent.name]):
                 if len(instances(self.history, consequent.name, pattern)) >= self.min_support:
@@ -238,10 +242,9 @@ class PeTTaChainerBackend:
         self._handler.add_atoms_no_check([line for case in cases for line in metta.case_facts(self.problem, case, self._complement)])
         cells = [(c, pattern) for c in self.problem for pattern in sorted(self.patterns[c.name])]
         if cells:
-            reviewed = self._query([metta.review(c, pattern, self.form) for c, pattern in cells], self.review_steps * len(cells), "review_seconds")
             self.counters["folds"] += len(cells)
-            for (c, pattern), proofs in zip(cells, reviewed, strict=True):
-                truth = self._truth(proofs)
+            for c, pattern in cells:
+                truth = self._truth(self._query([metta.review(c, pattern, self.form)], self.review_steps, "review_seconds")[0])
                 if truth and truth[1] > 0.05:
                     self.learned[(c.name, pattern)] = truth[0]
         answers = self._query([metta.query(key) for key in keys], budget * len(keys), "query_seconds")

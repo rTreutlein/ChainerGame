@@ -194,10 +194,21 @@ class PeTTaChainerTests(unittest.TestCase):
     config = GameConfig(seed=3, parents=2, history=40, rounds=2, cases=6)
 
     def test_marginal_rules_are_revised(self):
-        """With two parents the chainer's revision is the views' mean."""
-        chainer = run_game(self.config, PeTTaChainerBackend(os.environ.get("PETTACHAINER_PYTHONPATH")))
-        revision = run_game(self.config, CombinationBackend("revision"))
-        self.assertAlmostEqual(chainer["posterior_error"], revision["posterior_error"], places=3)
+        """With two parents the chainer's revision is the views' mean; a case
+        with no observed parent is not answered."""
+        rng = random.Random(3)
+        problem = generate_problem(rng, 2, RELATIONS)
+        history = [sample_case(problem, rng, f"h{i}", 0.8) for i in range(30)]
+        cases = [sample_case(problem, rng, f"t{i}", 0.6) for i in range(6)]
+        keys = [(c.name, case.name) for case in cases for c in problem]
+        chainer, revision = PeTTaChainerBackend(os.environ.get("PETTACHAINER_PYTHONPATH")), CombinationBackend("revision")
+        for backend in (chainer, revision):
+            backend.begin(problem, true_marginals(problem), history)
+        got, expected = chainer.beliefs(cases, keys, 20), revision.beliefs(cases, keys, 20)
+        observed = {(c.name, case.name): bool(case.observed[c.name]) for case in cases for c in problem}
+        self.assertEqual(set(got), {key for key in keys if observed[key]})
+        for key, value in got.items():
+            self.assertAlmostEqual(value, expected[key], places=6, msg=key)
 
     def test_cell_hypotheses_are_written_and_reviewed(self):
         result = run_game(self.config, PeTTaChainerBackend(os.environ.get("PETTACHAINER_PYTHONPATH"), hypotheses="cells"))
