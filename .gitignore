@@ -6,3 +6,4 @@ episode.metta
 benchmark-runs/*/ona-cache*/
 benchmark-runs/*/*
 !benchmark-runs/*/report.md
+.venv-problog/

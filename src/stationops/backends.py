@@ -1202,4 +1202,9 @@ def create_backend(
         from .nars import NarsBackend
 
         return NarsBackend(config)
+
+    if name == "problog":
+        from .problog_backend import ProblogBackend
+
+        return ProblogBackend(config)
     raise ValueError(f"unknown backend: {name}")

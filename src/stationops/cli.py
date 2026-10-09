@@ -97,9 +97,9 @@ def main(argv=None):
         p.add_argument("--irrelevant", type=int, default=0)
         p.add_argument(
             "--backend",
-            choices=("reference", "mm2", "pettachainer", "nars"),
+            choices=("reference", "mm2", "pettachainer", "nars", "problog"),
             default="reference",
-            help="nars: beliefs only, with --replay; options from NARS_PATH, NARS_CYCLES_PER_STEP, NARS_WINDOW, NARS_CACHE",
+            help="nars and problog: beliefs only, with --replay; nars options from NARS_PATH, NARS_CYCLES_PER_STEP, NARS_WINDOW, NARS_CACHE; problog (with --temporal-model) from PROBLOG_ENGINE, PROBLOG_TIMEOUT",
         )
         p.add_argument("--mm2-path", default=os.environ.get("MM2_CHAINER_PYTHONPATH"))
         p.add_argument(

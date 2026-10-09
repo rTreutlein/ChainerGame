@@ -6,6 +6,7 @@ from . import scale
 from .backends import PeTTaChainerBackend, PriorBackend, ReferenceBackend
 from .game import GameConfig, run_game
 from .nars import NarsBackend
+from .problog_backend import ProblogBackend
 
 
 def main(argv=None):
@@ -14,7 +15,7 @@ def main(argv=None):
     run = sub.add_parser("run", help="play rounds of a stage with one reasoner")
     run.add_argument("--stage", choices=("1", "2", "3", "scale"), default="1")
     run.add_argument("--cycle", choices=("timed", "untimed"), default="timed", help="stage 3: the fuel loop through time or within a period")
-    run.add_argument("--backend", choices=("reference", "local", "prior", "pettachainer", "nars"), default="reference", help="local: stage scale only; nars: stages 1-3")
+    run.add_argument("--backend", choices=("reference", "local", "prior", "pettachainer", "nars", "problog"), default="reference", help="local: stage scale only; nars: stages 1-3")
     run.add_argument("--seed", type=int, default=7)
     run.add_argument("--regions", type=int, help="stages 1-3: regions (default 3); scale: regions per zone")
     run.add_argument("--history", type=int, help="labelled periods before the first round (default 30; scale 20)")
@@ -27,6 +28,8 @@ def main(argv=None):
     run.add_argument("--nars-cycles-per-step", type=float, default=10, help="ONA inference cycles per budget step")
     run.add_argument("--nars-reading", choices=("frequency", "expectation"), default="frequency", help="the answer's value read as a probability")
     run.add_argument("--nars-cache", help="a directory storing ONA's output per round input, shared by readings")
+    run.add_argument("--problog-engine", default="ddnnf", help="ProbLog's knowledge compiler: ddnnf (dsharp), sdd, sddx or fsdd")
+    run.add_argument("--problog-timeout", type=float, default=60, help="seconds per round before ProbLog's inference is killed")
     run.add_argument("--stream", action="store_true", help="print each round as it completes")
     knobs = run.add_argument_group("stage scale")
     knobs.add_argument("--size", choices=sorted(scale.SIZES), default="s", help="a named size; the knobs below override it")
@@ -50,6 +53,7 @@ def main(argv=None):
             "local": lambda: ReferenceBackend(lambda network, rates: scale.Knowledge(network, rates, local=True), "local"),
             "prior": PriorBackend,
             "pettachainer": lambda: PeTTaChainerBackend(args.pettachainer_path, args.evidence_k, scale),
+            "problog": lambda: ProblogBackend(scale, args.problog_engine, args.problog_timeout, priors=lambda network, rates: {}),
         }[args.backend]()
         size = scale.sized(args.size, zones=args.zones, regions=args.regions, routes=args.routes, tiers=args.tiers, fanout=args.fanout, sensors=args.sensors)
         config = scale.GameConfig(
@@ -68,6 +72,7 @@ def main(argv=None):
         "prior": PriorBackend,
         "pettachainer": lambda: PeTTaChainerBackend(args.pettachainer_path, args.evidence_k),
         "nars": lambda: NarsBackend(args.nars_path, args.nars_cycles_per_step, args.nars_reading, args.nars_cache),
+        "problog": lambda: ProblogBackend(engine=args.problog_engine, timeout=args.problog_timeout),
     }[args.backend]()
     config = GameConfig(
         args.seed,

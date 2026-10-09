@@ -158,4 +158,5 @@ def run_game(config: GameConfig, backend, rates: Rates | None = None, on_round=N
         "seconds": round(sum(r["seconds"] for r in rounds), 3),
         **_mean(rounds),
         "kinds": {kind: _mean([r["kinds"][kind] for r in rounds if kind in r["kinds"]]) for kind in kinds},
+        **(backend.summary() if hasattr(backend, "summary") else {}),
     }
