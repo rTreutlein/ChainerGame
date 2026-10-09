@@ -1,7 +1,7 @@
 # SupplyNet: a supply network with feedback
 
-Status: stages 1 to 3 built (`src/supplynet`, see the Stage 1, 2 and 3
-results), October 2026.
+Status: stages 1 to 3 and stage "scale" built (`src/supplynet`, see the
+Stage 1, 2, 3 and scale results), October 2026.
 
 ## Why another benchmark
 
@@ -672,3 +672,212 @@ stock, as the least fixed point says. The declarations change nothing where
 no loop exists: timed seed 1 (error 0.0217, Brier 0.1332) and stage 2 seed 1
 (error 0.0082, Brier 0.1486) are identical to master, within 1% of its time.
 
+
+## Stage "scale" as built
+
+`supplynet run --stage scale --size s|m|l|xl` (`src/supplynet/scale.py`), and
+the grid `python -m supplynet.sweep run|report` (`src/supplynet/sweep.py`).
+
+**Why.** In stages 1 to 3 every query's relevant evidence is small and local:
+regions are independent and only a few periods matter, so about 2 expansions
+per query reach everything, and per-query cost is flat in KB size. Those
+stages cannot show how a reasoner degrades when it cannot reach all the
+evidence. Stage scale makes each query depend on hundreds to thousands of
+observations spread over many regions and periods, while the exact
+posterior stays linear in the network's size.
+
+**World.** Zones, each with a weather **front**: a two-state chain over
+periods that persists with 0.9 and starts with 0.05 (stationary 1/3). Per
+period, a zone is a tree hanging from its front:
+
+    Front z ─┬─ Storm g (region; coastal 0.7/0.05, inland 0.5/0.02 given front / no front)
+             │    ├─ Alarm a (weather sensor; 0.6/0.25 given storm / none)    × sensors
+             │    └─ Blocked k (route; exposed 0.8/0.03, sheltered 0.4/0.03)  × routes
+             │         └─ Delayed d (depot; 0.85/0.05) × fanout, for tiers − 1 levels
+             │              └─ Late s (shipment; 0.9/0.05) × fanout
+             └─ … regions
+
+Zones are independent. Of the ingredients the brief offered, the stage uses:
+
+- *correlated storms across neighbouring regions:* the regions of a zone
+  share its front, so a region's late shipments are evidence about its
+  neighbours;
+- *multi-tier supply chains:* a block reaches a shipment over `tiers` hops
+  (route → depots → shipment), each a noisy transmission;
+- *long persistence:* the front persists with 0.9 over a window of 8
+  unresolved periods, so evidence from every window period matters to every
+  other;
+- *many weak reports:* alarms (likelihood ratio 2.4 when on, 0.53 when off)
+  and noisy late shipments, several per route.
+
+What was left out keeps the structure a chain across time × a tree across
+space: storm persistence of its own (a grid of regions × periods, treewidth
+the number of regions in a zone), and shipments over several legs in
+different regions (loops between regions). With the front as the only
+temporal link, the exact posterior is a forward-backward pass over a 2-state
+chain per zone.
+
+**Sizes** (`scale.SIZES`; knobs `--zones --regions --routes --tiers --fanout
+--sensors` override). Statements are counted over the default 20 history
+periods and 10 rounds; stage 2's default run (3 regions, 30 + 20 periods) has
+about 1.6k.
+
+| size | zones × regions × routes | tiers, fanout | sensors | hidden / observed nodes per period | queries per round | statements |
+|---|---|---|---|---|---|---|
+| s | 1 × 3 × 2 | 2, 2 | 2 | 22 / 30 | 14 | 1.4k (1×) |
+| m | 3 × 4 × 3 | 2, 3 | 3 | 159 / 360 | 65 | 14k (9×) |
+| l | 4 × 6 × 3 | 3, 2 | 3 | 532 / 648 | 125 | 32k (20×) |
+| xl | 6 × 6 × 3 | 3, 3 | 3 | 1446 / 3024 | 188 | 122k (75×) |
+
+**Observations.** Each route has a transit of 1–3 periods. In period t the
+operator sees the alarms of t and the lateness of the shipments that left
+t − L on each route of transit L; a period's own shipments are not seen in
+it. History periods (20 by default) are observed fully and labelled.
+
+**Resolution.** A period is labelled (front, storms, blocks, delays) 8 rounds
+after it is observed (`--window`), so the unresolved window holds up to 8
+periods, every one of them informative about the others through the front.
+
+**Queries per round.** Every front, storm and block now (`front`, `storm`,
+`blocked`), and every front and storm of the oldest window period
+(`past_front`, `past_storm`), which the window's later evidence smooths. A
+round's budget is `--steps-per-query` times its number of queries (or
+`--budget`), shared by the round's queries as in the other stages.
+
+**Exact reference** (`scale.Knowledge`). Per zone and window period, upward
+messages sum each node's subtree evidence into its parent (normalized per
+node, so thousands of observations do not underflow), giving the front's
+likelihood; forward-backward over the front's chain gives its marginals,
+carried in from the last resolved front (a point mass) or the stationary
+rate; a downward pass gives each storm's and block's posterior. Cost is
+linear in nodes × window: under 0.1 s per round at size xl. Tests compare it
+with brute-force enumeration (two regions under one front over 3 periods,
+and a chain of depots below one block), before and after resolving the
+first period.
+
+**Baselines.**
+
+- `reference`: the exact posterior, error 0 by definition.
+- `local` (`Knowledge(local=True)`): exact given only the query's
+  neighbourhood: its own period and the stationary front, the whole zone of
+  that period for a front, the query's region of that period for a storm or
+  a block. It shows what is reachable without the chain across time and the
+  regions around a query. A test checks that it equals the exact posterior
+  for a single region observed in a single period.
+- `prior`: each statement's frequency in the labelled periods.
+
+**MeTTa.** One certain CTV implication per node from its parent, and the
+front's persistence:
+
+    (: persist-z1 (Implication (And (NextPeriod $p $t) (Front z1 $p)) (Front z1 $t)) (CTV (STV 0.9 1) (STV 0.05 1)))
+    (: storm-g1 (Implication (Front z1 $t) (Storm g1 $t)) (CTV (STV 0.7 1) (STV 0.05 1)))
+    (: blocked-k1 (Implication (Storm g1 $t) (Blocked k1 $t)) (CTV (STV 0.8 1) (STV 0.03 1)))
+    (: delayed-d1-1 (Implication (Blocked k1 $t) (Delayed d1-1 $t)) (CTV (STV 0.85 1) (STV 0.05 1)))
+    (: late-s1-1 (Implication (Delayed d1-1 $t) (Late s1-1 $t)) (CTV (STV 0.9 1) (STV 0.05 1)))
+    (: alarm-a1-1 (Implication (Storm g1 $t) (Alarm a1-1 $t)) (CTV (STV 0.6 1) (STV 0.25 1)))
+
+Observations are certain facts, `(Late s1-1 t5)` keyed by departure period
+and `(Alarm a1-1 t5)`, with `(NextPeriod t4 t5)`; resolution adds the labels.
+The backends take the stage's statements and knowledge class
+(`PeTTaChainerBackend(path, k, scale)`, `ReferenceBackend(scale.Knowledge)`).
+
+**Measurements.** `python -m supplynet.sweep run` runs, in parallel, every
+size × seed × steps per query (0.25, 0.5, 1, 2, 4, 8, 16) for PeTTaChainer
+and each baseline once per size and seed. Each run is a CLI subprocess under
+`ulimit -v 16000000`, started only while 8 GB of memory is available. Per
+run it records error to the exact posterior, coverage, Brier against the
+exact posterior's, ms per query, setup seconds, statements and peak RSS. It
+rewrites its JSON as runs finish; `sweep report` prints the curve tables and
+an ASCII plot. Default grid: sizes s, m, l, seeds 1–2; size xl, seed 1.
+
+
+## Stage "scale" results
+
+PeTTaChainer master d8bf4fcc (frozen at `bench/chainers/master-d8bf4fcc`),
+evidence k 5; 20 history periods, 10 rounds, window 8; seeds 1–2 (xl: seed
+1). The whole grid (70 runs, 12 in parallel) took 10 min 48 s, bounded by xl
+at 16 steps per query (11.5 min alone). Raw JSON:
+`bench/results/supplynet_scale/grid_master-d8bf4fcc.json`.
+
+Error to the exact posterior (coverage in brackets; an unanswered query
+counts as 0.5):
+
+| steps/query | s | m | l | xl |
+|---|---|---|---|---|
+| 0.25 | 0.362 (0.00) | 0.421 (0.00) | 0.389 (0.00) | 0.372 (0.00) |
+| 0.5 | 0.362 (0.00) | 0.421 (0.00) | 0.389 (0.00) | 0.372 (0.00) |
+| 1 | 0.083 (1.00) | 0.023 (1.00) | 0.069 (1.00) | 0.042 (1.00) |
+| 2 | 0.083 (1.00) | 0.023 (1.00) | 0.069 (1.00) | 0.042 (1.00) |
+| 4 | 0.052 (1.00) | 0.022 (1.00) | 0.070 (1.00) | 0.039 (1.00) |
+| 8 | 0.022 (1.00) | 0.016 (1.00) | 0.061 (0.99) | 0.039 (1.00) |
+| 16 | 0.028 (1.00) | 0.012 (1.00) | 0.021 (1.00) | 0.026 (1.00) |
+| local | 0.114 | 0.089 | 0.100 | 0.113 |
+| history base rates | 0.174 | 0.223 | 0.172 | 0.196 |
+
+Brier (exact posterior's in brackets) and cost:
+
+| size | Brier at 1 / 4 / 16 steps | local | base rates | ms per query at 1 / 4 / 16 | peak MB at 1 / 4 / 16 | setup s |
+|---|---|---|---|---|---|---|
+| s (0.170) | 0.191 / 0.188 / 0.180 | 0.178 | 0.240 | 17 / 48 / 164 | 205 / 239 / 569 | 0.6–1 |
+| m (0.053) | 0.053 / 0.053 / 0.056 | 0.082 | 0.130 | 11 / 36 / 412 | 333 / 785 / 4324 | 6 |
+| l (0.072) | 0.099 / 0.099 / 0.075 | 0.092 | 0.135 | 14 / 26 / 242 | 661 / 1174 / 6433 | 17 |
+| xl (0.092) | 0.105 / 0.104 / 0.101 | 0.124 | 0.164 | 20 / 41 / 310 | 1188 / 2223 / 10314 | 88 |
+
+Above the cliff the chainer beats the local reasoner at every size, and at m
+it matches the exact Brier from 1 step per query: the front's chain and the
+shared arena let one search serve many roots. The curve is not an anytime
+curve, though: a cliff, then steps.
+
+**Weakness 1: the budget cliff.** Below one step per query nothing is
+answered, at every size, and the error (0.36–0.42) is twice the base rates'.
+Example: size s, seed 1, 0.5 steps per query: 7 steps for 14 roots, coverage
+0 in every round. The fix in progress (a cheap estimate for every root first)
+should turn the 0.25 and 0.5 rows into at least the base-rate row.
+
+**Weakness 2: answers do not take in evidence that arrives later; late
+shipments, the strongest evidence, are reached only at a high budget.** A
+period's shipments arrive 1–3 rounds after it, so the exact posterior of a
+past storm moves a lot over the window. The chainer's answer to a statement
+asked again is, at low budget, the one it gave first. At size m, seed 1, 1
+step per query, 117 of 135 re-asked fronts and storms come back unchanged
+(error 0.064), and `past_storm` is the only kind where the chainer is no
+better than local (l, 4 steps: 0.127 against 0.114). Examples, all from
+proofs that use alarms and the front chain only, no `Late` fact:
+
+| run | query | rounds | exact | local | PeTTaChainer |
+|---|---|---|---|---|---|
+| m, seed 1, 1 step | `Storm g12 t1` | 3 → 4–8 | 0.291 → 0.918 | 0.062 → 0.637 | 0.598 in every round |
+| m, seed 1, 1 step | `Storm g10 t3` | 10 | 0.963 | 0.873 | 0.390 |
+| l, seed 1, 4 steps | `Storm g21 t3` | 10 | 0.007 | 0.037 | 0.800 |
+| s, seed 1, 1 step | `Storm g1 t1` | 4–8 | 0.46–0.49 | 0.846 | 0.018 |
+
+`Storm g10 t3` at round 10 is
+
+    (factored-revision (by storm-g10 (factored-revision (by persist-z3 (conjunction next-t3 …front-z3-h20…))
+        (prior …) ((inverted storm-g9 …) (factored-revision … alarm-a9-1-t1 …)) …))
+      (prior …) (((inverted alarm-a10-1 …) alarm-a10-1-t3) …))
+    (STV 0.390 0.813)
+
+the front chained from the last history label through the window's alarms,
+then the region's own alarms. The region's late shipments of t3 (arrived in
+rounds 4–6, through `blocked-k → delayed-d → late-s`, three inversions down)
+take no part. The search spends its budget on the shallow alarm inversions
+first, and a root answered once is not revisited when new facts below it
+arrive.
+
+**Weakness 3: more budget buys little until it buys too much.** 1 and 2 steps
+per query give identical answers at every size (all 645 answers of m, seed 1);
+l and xl are flat from 1 to 8 steps (0.069 → 0.061, 0.042 → 0.039), then 16
+steps improve the error (l 0.021, xl 0.026) at 10–20 times the cost per query
+and 5–10 GB of memory (xl: 310 ms per query, 10.3 GB peak; memory grows with
+the round's budget, not the KB). A scalable reasoner would improve at every
+step at constant cost; here quality comes in jumps, and the cost per step
+rises with the budget.
+
+**Rerun against another build:**
+
+    cd ChainerGame-scale; unset DISPLAY
+    PYTHONPATH=src /nexus/Dev/OpenCog/NL2PLN_Project/PeTTaChainer/.venv/bin/python -m supplynet.sweep run \
+      --pettachainer-path /nexus/Dev/OpenCog/bench/chainers/<build> \
+      --out /nexus/Dev/OpenCog/bench/results/supplynet_scale/grid_<build>.json --jobs 12
+    PYTHONPATH=src python3 -m supplynet.sweep report /nexus/Dev/OpenCog/bench/results/supplynet_scale/grid_<build>.json
