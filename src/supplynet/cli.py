@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 
+from . import scale
 from .backends import PeTTaChainerBackend, PriorBackend, ReferenceBackend
 from .game import GameConfig, run_game
 
@@ -10,28 +11,66 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="supplynet")
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="play rounds of a stage with one reasoner")
-    run.add_argument("--stage", type=int, choices=(1, 2, 3), default=1)
+    run.add_argument("--stage", choices=("1", "2", "3", "scale"), default="1")
     run.add_argument("--cycle", choices=("timed", "untimed"), default="timed", help="stage 3: the fuel loop through time or within a period")
-    run.add_argument("--backend", choices=("reference", "prior", "pettachainer"), default="reference")
+    run.add_argument("--backend", choices=("reference", "local", "prior", "pettachainer"), default="reference", help="local: stage scale only")
     run.add_argument("--seed", type=int, default=7)
-    run.add_argument("--regions", type=int, default=3)
-    run.add_argument("--history", type=int, default=30, help="labelled periods before the first round")
-    run.add_argument("--rounds", type=int, default=20)
-    run.add_argument("--inspect-rate", type=float, default=0.25)
-    run.add_argument("--budget", type=int, default=100)
+    run.add_argument("--regions", type=int, help="stages 1-3: regions (default 3); scale: regions per zone")
+    run.add_argument("--history", type=int, help="labelled periods before the first round (default 30; scale 20)")
+    run.add_argument("--rounds", type=int, help="default 20; scale 10")
+    run.add_argument("--inspect-rate", type=float, default=0.25, help="stages 1-3")
+    run.add_argument("--budget", type=int, help="one expansion budget per round (default 100; scale: --steps-per-query)")
     run.add_argument("--evidence-k", type=float, default=5)
     run.add_argument("--pettachainer-path", default=os.environ.get("PETTACHAINER_PYTHONPATH"))
     run.add_argument("--stream", action="store_true", help="print each round as it completes")
+    knobs = run.add_argument_group("stage scale")
+    knobs.add_argument("--size", choices=sorted(scale.SIZES), default="s", help="a named size; the knobs below override it")
+    knobs.add_argument("--zones", type=int)
+    knobs.add_argument("--routes", type=int, help="per region")
+    knobs.add_argument("--tiers", type=int, help="hops from a route's block to a shipment's lateness")
+    knobs.add_argument("--fanout", type=int, help="children of a block or a depot")
+    knobs.add_argument("--sensors", type=int, help="weather alarms per region")
+    knobs.add_argument("--window", type=int, default=8, help="rounds before a period resolves")
+    knobs.add_argument("--steps-per-query", type=float, default=4.0, help="the round's budget per query, when --budget is not given")
     args = parser.parse_args(argv)
 
-    if args.backend == "reference":
-        backend = ReferenceBackend()
-    elif args.backend == "prior":
-        backend = PriorBackend()
-    else:
-        backend = PeTTaChainerBackend(args.pettachainer_path, args.evidence_k)
-    config = GameConfig(args.seed, args.regions, args.history, args.rounds, args.inspect_rate, args.budget, args.stage, args.cycle)
+    if args.backend == "local" and args.stage != "scale":
+        parser.error("--backend local needs --stage scale")
     on_round = (lambda record: print(json.dumps(record), flush=True)) if args.stream else None
+    if args.stage == "scale":
+        backend = {
+            "reference": lambda: ReferenceBackend(scale.Knowledge),
+            "local": lambda: ReferenceBackend(lambda network, rates: scale.Knowledge(network, rates, local=True), "local"),
+            "prior": PriorBackend,
+            "pettachainer": lambda: PeTTaChainerBackend(args.pettachainer_path, args.evidence_k, scale),
+        }[args.backend]()
+        size = scale.sized(args.size, zones=args.zones, regions=args.regions, routes=args.routes, tiers=args.tiers, fanout=args.fanout, sensors=args.sensors)
+        config = scale.GameConfig(
+            args.seed,
+            size,
+            args.window,
+            20 if args.history is None else args.history,
+            10 if args.rounds is None else args.rounds,
+            args.budget,
+            args.steps_per_query,
+        )
+        print(json.dumps(scale.run_game(config, backend, on_round=on_round)), flush=True)
+        return
+    backend = {
+        "reference": ReferenceBackend,
+        "prior": PriorBackend,
+        "pettachainer": lambda: PeTTaChainerBackend(args.pettachainer_path, args.evidence_k),
+    }[args.backend]()
+    config = GameConfig(
+        args.seed,
+        3 if args.regions is None else args.regions,
+        30 if args.history is None else args.history,
+        20 if args.rounds is None else args.rounds,
+        args.inspect_rate,
+        100 if args.budget is None else args.budget,
+        int(args.stage),
+        args.cycle,
+    )
     print(json.dumps(run_game(config, backend, on_round=on_round)), flush=True)
 
 

@@ -148,6 +148,10 @@ class Period:
     def truth(self, predicate: str) -> dict[str, bool]:
         return {"Storm": self.storms, "Blocked": self.blocked, "Degraded": self.degraded, "Producing": self.producing}[predicate]
 
+    def labels(self) -> dict[tuple[str, str], bool]:
+        """(predicate, subject) -> value of every labelled statement."""
+        return {(predicate, subject): value for predicate in ("Storm", "Blocked", "Degraded", "Producing") for subject, value in self.truth(predicate).items()}
+
 
 @dataclass(frozen=True)
 class Observation:

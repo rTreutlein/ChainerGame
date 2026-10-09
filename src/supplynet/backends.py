@@ -1,4 +1,8 @@
-"""Reasoners: the exact posterior, history base rates alone, and PeTTaChainer."""
+"""Reasoners: the exact posterior, history base rates alone, and PeTTaChainer.
+
+A backend is given a stage's network, rates, labelled history and rounds of
+observations. Stages 1-3 use ``world`` and ``metta``; stage "scale" passes its
+own knowledge class and statements (``scale``)."""
 
 from __future__ import annotations
 
@@ -16,12 +20,14 @@ class BackendUnavailable(RuntimeError):
 
 
 class ReferenceBackend:
-    """The exact posterior under the true rates."""
+    """The posterior of a stage's ``knowledge`` class, exact by default,
+    under the true rates."""
 
-    name = "reference"
+    def __init__(self, knowledge=Knowledge, name: str = "reference"):
+        self._knowledge, self.name = knowledge, name
 
     def begin(self, network: Network, rates: Rates, history: list[tuple[Period, Observation]]) -> None:
-        self.knowledge = Knowledge(network, rates)
+        self.knowledge = self._knowledge(network, rates)
         for period, observation in history:
             self.knowledge.observe(observation)
             self.knowledge.resolve(period)
@@ -50,23 +56,24 @@ class PriorBackend:
         return {key: (self.counts.get(key[:2], [0, 0])[0] + 1) / (self.counts.get(key[:2], [0, 0])[1] + 2) for key in keys}
 
     def resolve(self, period: Period, observation: Observation) -> None:
-        for kind in ("Storm", "Blocked", "Degraded", "Producing"):
-            for subject, value in period.truth(kind).items():
-                count = self.counts.setdefault((kind, subject), [0, 0])
-                count[0] += value
-                count[1] += 1
+        for var, value in period.labels().items():
+            count = self.counts.setdefault(var, [0, 0])
+            count[0] += value
+            count[1] += 1
 
 
 class PeTTaChainerBackend:
     """PeTTaChainer given the rules with their rates; base rates come from the
-    labelled periods it holds as facts."""
+    labelled periods it holds as facts. ``statements`` translates the stage's
+    world into MeTTa (``metta`` for stages 1-3)."""
 
     name = "pettachainer"
     _stv_re = re.compile(
         r"\(STV\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\)"
     )
 
-    def __init__(self, python_path: str | None = None, evidence_k: float = 5):
+    def __init__(self, python_path: str | None = None, evidence_k: float = 5, statements=metta):
+        self.statements = statements
         if python_path:
             sys.path.insert(0, str(Path(python_path).expanduser().resolve()))
         try:
@@ -79,16 +86,16 @@ class PeTTaChainerBackend:
         self._handler.set_evidence_confidence_k(evidence_k)
 
     def begin(self, network: Network, rates: Rates, history: list[tuple[Period, Observation]]) -> None:
-        for head in metta.complete_predicates(network):
+        for head in self.statements.complete_predicates(network):
             self._handler.set_complete_predicate(head)
-        self._handler.add_atoms_no_check(metta.rules(network, rates))
+        self._handler.add_atoms_no_check(self.statements.rules(network, rates))
         for period, observation in history:
-            self._handler.add_atoms_no_check(metta.observation_facts(observation))
+            self._handler.add_atoms_no_check(self.statements.observation_facts(observation))
             self.resolve(period, observation)
 
     def beliefs(self, observation: Observation, keys: list[Key], budget: int) -> dict[Key, float]:
-        self._handler.add_atoms_no_check(metta.observation_facts(observation))
-        goals = [metta.query(key) for key in keys]
+        self._handler.add_atoms_no_check(self.statements.observation_facts(observation))
+        goals = [self.statements.query(key) for key in keys]
         answers = self._handler.query_many(goals, steps=budget, timeout_sec=0) if goals else []
         beliefs = {}
         for key, proofs in zip(keys, answers, strict=True):
@@ -98,7 +105,7 @@ class PeTTaChainerBackend:
         return beliefs
 
     def resolve(self, period: Period, observation: Observation) -> None:
-        self._handler.add_atoms_no_check(metta.resolution_facts(period, observation))
+        self._handler.add_atoms_no_check(self.statements.resolution_facts(period, observation))
 
     @classmethod
     def _strength(cls, proofs) -> float | None:
