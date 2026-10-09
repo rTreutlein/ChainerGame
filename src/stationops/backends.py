@@ -1198,4 +1198,8 @@ def create_backend(
             sensor_knowledge=sensor_knowledge_map,
             temporal_model=temporal_model,
         )
+    if name == "nars":
+        from .nars import NarsBackend
+
+        return NarsBackend(config)
     raise ValueError(f"unknown backend: {name}")

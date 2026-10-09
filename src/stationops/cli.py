@@ -95,7 +95,12 @@ def main(argv=None):
         p.add_argument("--incidents", type=int, default=100)
         p.add_argument("--repair-slots", type=int)
         p.add_argument("--irrelevant", type=int, default=0)
-        p.add_argument("--backend", choices=("reference", "mm2", "pettachainer"), default="reference")
+        p.add_argument(
+            "--backend",
+            choices=("reference", "mm2", "pettachainer", "nars"),
+            default="reference",
+            help="nars: beliefs only, with --replay; options from NARS_PATH, NARS_CYCLES_PER_STEP, NARS_WINDOW, NARS_CACHE",
+        )
         p.add_argument("--mm2-path", default=os.environ.get("MM2_CHAINER_PYTHONPATH"))
         p.add_argument(
             "--pettachainer-path",

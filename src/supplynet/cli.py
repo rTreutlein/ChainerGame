@@ -5,6 +5,7 @@ import os
 from . import scale
 from .backends import PeTTaChainerBackend, PriorBackend, ReferenceBackend
 from .game import GameConfig, run_game
+from .nars import NarsBackend
 
 
 def main(argv=None):
@@ -13,7 +14,7 @@ def main(argv=None):
     run = sub.add_parser("run", help="play rounds of a stage with one reasoner")
     run.add_argument("--stage", choices=("1", "2", "3", "scale"), default="1")
     run.add_argument("--cycle", choices=("timed", "untimed"), default="timed", help="stage 3: the fuel loop through time or within a period")
-    run.add_argument("--backend", choices=("reference", "local", "prior", "pettachainer"), default="reference", help="local: stage scale only")
+    run.add_argument("--backend", choices=("reference", "local", "prior", "pettachainer", "nars"), default="reference", help="local: stage scale only; nars: stages 1-3")
     run.add_argument("--seed", type=int, default=7)
     run.add_argument("--regions", type=int, help="stages 1-3: regions (default 3); scale: regions per zone")
     run.add_argument("--history", type=int, help="labelled periods before the first round (default 30; scale 20)")
@@ -22,6 +23,10 @@ def main(argv=None):
     run.add_argument("--budget", type=int, help="one expansion budget per round (default 100; scale: --steps-per-query)")
     run.add_argument("--evidence-k", type=float, default=5)
     run.add_argument("--pettachainer-path", default=os.environ.get("PETTACHAINER_PYTHONPATH"))
+    run.add_argument("--nars-path", help="the ONA NAR executable (default $NARS_PATH or /nexus/Dev/OpenCog/ONA/NAR)")
+    run.add_argument("--nars-cycles-per-step", type=float, default=10, help="ONA inference cycles per budget step")
+    run.add_argument("--nars-reading", choices=("frequency", "expectation"), default="frequency", help="the answer's value read as a probability")
+    run.add_argument("--nars-cache", help="a directory storing ONA's output per round input, shared by readings")
     run.add_argument("--stream", action="store_true", help="print each round as it completes")
     knobs = run.add_argument_group("stage scale")
     knobs.add_argument("--size", choices=sorted(scale.SIZES), default="s", help="a named size; the knobs below override it")
@@ -36,6 +41,8 @@ def main(argv=None):
 
     if args.backend == "local" and args.stage != "scale":
         parser.error("--backend local needs --stage scale")
+    if args.backend == "nars" and args.stage == "scale":
+        parser.error("--backend nars runs stages 1-3")
     on_round = (lambda record: print(json.dumps(record), flush=True)) if args.stream else None
     if args.stage == "scale":
         backend = {
@@ -60,6 +67,7 @@ def main(argv=None):
         "reference": ReferenceBackend,
         "prior": PriorBackend,
         "pettachainer": lambda: PeTTaChainerBackend(args.pettachainer_path, args.evidence_k),
+        "nars": lambda: NarsBackend(args.nars_path, args.nars_cycles_per_step, args.nars_reading, args.nars_cache),
     }[args.backend]()
     config = GameConfig(
         args.seed,
