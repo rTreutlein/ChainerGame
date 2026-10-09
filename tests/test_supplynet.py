@@ -313,6 +313,8 @@ class GameTests(unittest.TestCase):
             "(Producing plant-a $t)) (CTV (STV 1 1) (STV 0 1)))",
             timed,
         )
+        self.assertEqual(metta.complete_predicates(cell_network("untimed")), ["Producing", "Fuelled", "FuelArrived"])
+        self.assertEqual(metta.complete_predicates(cell_network("timed")), ["Producing", "Fuelled", "FuelArrived"])
         observation = Observation("t3", "t2", {}, {}, {"mine": True}, False, {"plant-a": True}, {"mine": False})
         self.assertEqual(
             metta.observation_facts(observation),
@@ -334,12 +336,14 @@ class GameTests(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get("SUPPLYNET_LIVE_PETTACHAINER") == "1", "set SUPPLYNET_LIVE_PETTACHAINER=1")
     def test_pettachainer_does_not_run_the_untimed_loop_without_stock(self):
-        # Seed 1's first rounds have no fuel stock, so the exact production is 0.
+        # Seed 1's first rounds have no fuel stock, so the exact production is
+        # 0; with the cycle's predicates complete the chainer answers it.
         backend = PeTTaChainerBackend(os.environ.get("PETTACHAINER_PYTHONPATH"))
         summary = run_game(GameConfig(seed=1, rounds=3, budget=50, stage=3, cycle="untimed"), backend)
         unstocked = summary["kinds"]["producing_unstocked"]
         self.assertEqual(unstocked["posterior_brier"], 0.0)
-        self.assertLessEqual(unstocked["posterior_error"], 0.5)
+        self.assertEqual(unstocked["coverage"], 1.0)
+        self.assertLess(unstocked["posterior_error"], 0.01)
 
 
 if __name__ == "__main__":

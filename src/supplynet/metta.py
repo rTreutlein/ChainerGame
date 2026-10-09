@@ -82,6 +82,14 @@ def _cycle_rules(network: Network, rates: Rates) -> list[str]:
     return lines
 
 
+def complete_predicates(network: Network) -> list[str]:
+    """The predicates whose rules are every way they become true: with a cell,
+    production, fuelling and the fuel's arrival. The untimed loop's least
+    fixed point is then what the chainer reads (nothing runs without stock);
+    the timed cell's rules are as complete, and acyclic within a period."""
+    return ["Producing", "Fuelled", "FuelArrived"] if network.cell else []
+
+
 def observation_facts(observation: Observation) -> list[str]:
     """The period's link to its predecessor, the lateness of the shipments
     arriving now (keyed by departure period), and the inspected routes; with a

@@ -650,3 +650,25 @@ loop (answered false only when a degraded site breaks it): concluding
 "not running" from the absence of a proof would need closed-world reasoning,
 which the chainer does not do. Timed and stages 1–2 unchanged.
 
+**Stage 3 with complete predicates** (PeTTaChainer branch
+complete-predicates fb6a6456, against master 28473546, run concurrently).
+With a cell, the backend declares `Producing`, `Fuelled` and `FuelArrived`
+complete (`metta.complete_predicates`): their rules are every way they become
+true, so a statement whose only support runs through its own loop is false,
+and what it gets from outside the loop is kept (the chainer's
+`docs/metta/complete_predicates.md`). Untimed, seeds 1–4:
+
+| seed | error | coverage | producing (no stock): error [answered] | seconds |
+|---|---|---|---|---|
+| 1 | 0.055 → 0.021 | 0.93 → 1.00 | 0.270 [0.46] → 0.000 [1.00] | 21.6 → 23.4 |
+| 2 | 0.067 → 0.017 | 0.90 → 1.00 | 0.341 [0.32] → 0.000 [1.00] | 22.9 → 24.0 |
+| 3 | 0.052 → 0.015 | 0.93 → 1.00 | 0.312 [0.38] → 0.000 [1.00] | 21.7 → 22.0 |
+| 4 | 0.075 → 0.015 | 0.88 → 1.00 | 0.399 [0.20] → 0.000 [1.00] | 13.5 → 15.4 |
+| mean | **0.062 → 0.017** | **0.91 → 1.00** | **0.331 → 0.000** | +6% |
+
+Brier 0.163 → 0.140 (exact posterior 0.135); production with stock is
+unchanged (error 0.052), and the loop is now answered not running without
+stock, as the least fixed point says. The declarations change nothing where
+no loop exists: timed seed 1 (error 0.0217, Brier 0.1332) and stage 2 seed 1
+(error 0.0082, Brier 0.1486) are identical to master, within 1% of its time.
+

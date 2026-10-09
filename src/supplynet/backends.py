@@ -79,6 +79,8 @@ class PeTTaChainerBackend:
         self._handler.set_evidence_confidence_k(evidence_k)
 
     def begin(self, network: Network, rates: Rates, history: list[tuple[Period, Observation]]) -> None:
+        for head in metta.complete_predicates(network):
+            self._handler.set_complete_predicate(head)
         self._handler.add_atoms_no_check(metta.rules(network, rates))
         for period, observation in history:
             self._handler.add_atoms_no_check(metta.observation_facts(observation))
