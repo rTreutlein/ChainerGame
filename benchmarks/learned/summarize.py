@@ -13,7 +13,7 @@ from collections import defaultdict
 from pathlib import Path
 
 CONFIGS = (("s1", "timed", "Stage 1"), ("s2", "timed", "Stage 2"), ("s3", "timed", "Stage 3 timed"), ("s3", "untimed", "Stage 3 untimed"))
-LABEL = {"pettachainer": "PLN", "problog": "ProbLog", "nars": "NARS", "learned-reference": "Exact, learned rates", "prior": "Base rates"}
+LABEL = {"learned-reference": "Exact, learned rates", "problog": "ProbLog", "pettachainer": "PLN", "nars": "NARS", "prior": "Base rates"}
 ROUNDS = 30
 
 
@@ -51,11 +51,12 @@ def main(root: Path, meta: dict, given: Path | None) -> dict:
     sources = [(load(root / "runs"), None)] + [(load(path), path.name.removeprefix("pln-")) for path in sorted(root.glob("pln-*")) if path.is_dir()]
     rows, exact = [], {}
     for stage, cycle, label in CONFIGS:
-        for runs, build in sources:
-            for backend in LABEL:
+        for backend in LABEL:
+            for runs, build in sources:
                 found = runs.get((stage, cycle, backend))
                 if found and (backend == "pettachainer") == (build is not None):
                     rows.append(row(label, backend, found, build))
+        for runs, _ in sources:
             reference = runs.get((stage, cycle, "reference"))
             if reference:
                 exact[label] = {"brier": mean(reference, "brier"), "log_loss": mean(reference, "log_loss")}
@@ -69,8 +70,30 @@ def main(root: Path, meta: dict, given: Path | None) -> dict:
     return out
 
 
-if __name__ == "__main__":
-    summary = main(Path(sys.argv[1]), json.loads(Path(sys.argv[2]).read_text()), Path(sys.argv[3]) if len(sys.argv) > 3 else None)
+def markdown(summary: dict) -> str:
+    """The rows as tables: overall with the given-rules numbers alongside, and error by query kind."""
+    given = {(r["stage"], r["reasoner"].replace(" (PeTTaChainer)", "")): r for r in summary["meta"].get("given_rules", [])}
+    number = lambda value, digits=3: "" if value is None else f"{value:.{digits}f}"  # noqa: E731
+    lines = [
+        "| stage | reasoner | error | error, given rules | Brier | Brier, given rules | coverage | s per round | s per round, given rules |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
     for r in summary["rows"]:
-        seconds = "" if r["seconds_per_round"] is None else f"{r['seconds_per_round']:.3f}"
-        print(f"{r['stage']:16} {r['reasoner']:22} {r['pln_build'] or '':10} error {r['error']:.4f} brier {r['brier']:.4f} coverage {r['coverage']:.2f} s/round {seconds}")
+        name = r["reasoner"] + (f" ({r['pln_build']})" if r["pln_build"] else "")
+        g = given.get((r["stage"], r["reasoner"]), {})
+        lines.append(
+            f"| {r['stage']} | {name} | {number(r['error'])} | {number(g.get('error'))} | {number(r['brier'])} | {number(g.get('brier'))} "
+            f"| {r['coverage']:.2f} | {number(r['seconds_per_round'], 2)} | {number(g.get('seconds_per_round'), 2)} |"
+        )
+    for stage in dict.fromkeys(r["stage"] for r in summary["rows"]):
+        rows = [r for r in summary["rows"] if r["stage"] == stage]
+        kinds = sorted({kind for r in rows for kind in r["error_by_kind"]})
+        lines += ["", f"{stage}, error by query kind:", "", "| reasoner | " + " | ".join(kinds) + " |", "|---|" + "---|" * len(kinds)]
+        for r in rows:
+            name = r["reasoner"] + (f" ({r['pln_build']})" if r["pln_build"] else "")
+            lines.append(f"| {name} | " + " | ".join(number(r["error_by_kind"].get(kind)) for kind in kinds) + " |")
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    print(markdown(main(Path(sys.argv[1]), json.loads(Path(sys.argv[2]).read_text()), Path(sys.argv[3]) if len(sys.argv) > 3 else None)))
