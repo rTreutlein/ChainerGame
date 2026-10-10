@@ -1,0 +1,15 @@
+;; ONA examples/nal/asthma2.nal (the eternal version)
+!(import! &self /nexus/Dev/OpenCog/NL2PLN_Project/PeTTaChainer/pettachainer/metta/petta_chainer)
+!(compileadd kb (: r1 (Implication (Stressed $x) (Smokes $x)) (STV 1.0 0.99)))
+!(compileadd kb (: r2 (Implication (And (Smokes $y) (Friend $y $x)) (Smokes $x)) (STV 1.0 0.9)))
+!(compileadd kb (: r3 (Implication (Smokes $x) (Asthma $x)) (STV 1.0 0.9)))
+!(compileadd kb (: f1 (Smokes angelika) (STV 1.0 0.9)))
+!(compileadd kb (: f2 (Friend angelika jonas) (STV 1.0 0.9)))
+!(compileadd kb (: f3 (Friend jonas angelika) (STV 1.0 0.9)))
+;; expected (NAL): jonas asthma f=1 c>=.6561; angelika asthma f=1 c>=.81
+!(query 100 kb (: $p (Asthma jonas) $tv))
+!(query 100 kb (: $p (Asthma angelika) $tv))
+!(compileadd kb (: f4 (Stressed jonas) (STV 1.0 0.9)))
+;; after "jonas is stressed": same expectations
+!(query 100 kb (: $p (Asthma jonas) $tv))
+!(query 100 kb (: $p (Asthma angelika) $tv))
