@@ -16,7 +16,7 @@ from pathlib import Path
 from . import metta
 from .world import Round, World, learned_rates, posterior, true_rates
 
-REFERENCES = ("exact", "exact-learned", "prior", "vote", "last-wins", "loudest")
+REFERENCES = ("exact", "exact-learned", "prior", "vote", "last-wins", "loudest", "trust-mean")
 
 
 class BackendUnavailable(RuntimeError):
@@ -41,7 +41,11 @@ class ReferenceBackend:
     - ``last-wins``: the last claim to arrive, read with the pooled share of
       correct claims in the history;
     - ``loudest``: only the source with the most claim copies in the history,
-      read with its own share of correct claims; the prior when it is silent."""
+      read with its own share of correct claims; the prior when it is silent;
+    - ``trust-mean``: the mean of P(up | the source's claim) over the sources
+      that spoke, each estimated from the labelled rounds (Laplace), the
+      prior when none did: revision of learned trust views, without the
+      systems' rules. What the sources encoding can reach by revision."""
 
     def __init__(self, name: str):
         assert name in REFERENCES, name
@@ -69,6 +73,15 @@ class ReferenceBackend:
             accuracy = _laplace(r.up == past.truth[r.node] for past in self.history for r in past.reports)
             last = {r.node: r.up for r in day.reports}
             return {key: (accuracy if last[key[0]] else 1 - accuracy) if key[0] in last else prior[key[0]] for key in keys}
+        if self.name == "trust-mean":
+            samples: dict[tuple[str, bool], list[bool]] = {}
+            for past in self.history:
+                for r in past.reports:
+                    samples.setdefault((r.source, r.up), []).append(past.truth[r.node])
+            views: dict[str, list[float]] = {}
+            for r in day.reports:
+                views.setdefault(r.node, []).append(_laplace(samples.get((r.source, r.up), [])))
+            return {key: sum(views[key[0]]) / len(views[key[0]]) if key[0] in views else prior[key[0]] for key in keys}
         volume: dict[str, int] = {}
         for past in self.history:
             for r in past.reports:
@@ -116,10 +129,12 @@ class PeTTaChainerBackend:
       labelled claims, including the last round's;
     - ``stated``: the same claims, but each source's CTV is learned once, from
       the initial history, by an implication query in a KB of its own, and
-      stated as a given rate (``_learn_trust``)."""
+      stated as a given rate (``_learn_trust``);
+    - ``given``: ``stated`` with CTVs counted by the client (``_count_trust``),
+      an ablation separating PLN's rate learning from its combination."""
 
     def __init__(self, encoding: str, python_path: str | None = None, evidence_k: float = 5, review_steps: int = 20):
-        assert encoding in ("raw", "sources", "stated"), encoding
+        assert encoding in ("raw", "sources", "stated", "given"), encoding
         if python_path:
             sys.path.insert(0, str(Path(python_path).expanduser().resolve()))
         try:
@@ -148,6 +163,8 @@ class PeTTaChainerBackend:
             statements += metta.trust_rules(world)
         elif self.encoding == "stated":
             statements += self._learn_trust(world, history)
+        elif self.encoding == "given":
+            statements += self._count_trust(world, history)
         for day in history:
             statements += (metta.claims(day.reports, day.name) if self.encoding != "raw" else []) + metta.labels(day)
         self._add(statements)
@@ -172,6 +189,22 @@ class PeTTaChainerBackend:
                 tv = [float(v) for v in match.groups()]
                 self.trust[source.name] = [round(v, 4) for v in tv]
                 rules.append(f"(: trust-{source.name} {metta.trust_implication(source.name)} (CTV (STV {tv[0]:.6g} 1) (STV {tv[2]:.6g} 1)))")
+        return rules
+
+    def _count_trust(self, world: World, history: list[Round]) -> list[str]:
+        """``given``: the ablation of ``stated`` whose CTVs the client counts,
+        P(up | claim up) and P(up | claim down) from the labelled claims
+        (Laplace), stated the same way."""
+        samples: dict[tuple[str, bool], list[bool]] = {}
+        for past in history:
+            for r in past.reports:
+                samples.setdefault((r.source, r.up), []).append(past.truth[r.node])
+        rules = []
+        for source in world.sources:
+            if (source.name, True) in samples or (source.name, False) in samples:
+                up, down = (_laplace(samples.get((source.name, claim), [])) for claim in (True, False))
+                self.trust[source.name] = [round(up, 4), 1.0, round(down, 4), 1.0]
+                rules.append(f"(: trust-{source.name} {metta.trust_implication(source.name)} (CTV (STV {up:.6g} 1) (STV {down:.6g} 1)))")
         return rules
 
     def _query(self, goals: list[str], steps: int, clock: str) -> list:

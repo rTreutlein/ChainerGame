@@ -92,7 +92,7 @@ class GameTests(unittest.TestCase):
         exact = run_game(config, ReferenceBackend("exact"))
         self.assertEqual(exact["posterior_error"], 0.0)
         self.assertEqual(set(exact["kinds"]), {"component", "system"})
-        for name in ("exact-learned", "prior", "vote", "last-wins", "loudest"):
+        for name in ("exact-learned", "prior", "vote", "last-wins", "loudest", "trust-mean"):
             summary = run_game(config, ReferenceBackend(name))
             self.assertGreater(summary["posterior_error"], 0.0, name)
             self.assertEqual(summary["coverage"], 1.0)
@@ -206,7 +206,7 @@ class PeTTaChainerTests(unittest.TestCase):
     def test_encodings_answer(self):
         from conflict.backends import PeTTaChainerBackend
 
-        for encoding in ("raw", "sources", "stated"):
+        for encoding in ("raw", "sources", "stated", "given"):
             summary = run_game(GameConfig(seed=1, history=8, rounds=1, steps_per_query=4), PeTTaChainerBackend(encoding, _pettachainer_path()))
             self.assertGreaterEqual(summary["coverage"], 0.75, encoding)
             self.assertLess(summary["posterior_error"], 0.5, encoding)
