@@ -180,7 +180,7 @@ ProbLog 2.3.0 in `ChainerGame-problog/.venv-problog`).
 
 `test_oracle_is_exact_and_learned_is_exact_learned`: per key, ProbLog oracle
 equals `exact` and ProbLog learned equals `exact-learned` to 10⁻⁹ (sizes s
-and m); over the grid the largest difference is below 10⁻¹².
+and m); over the grid ProbLog oracle's mean error to `exact` is at most 5·10⁻¹¹ and ProbLog learned equals `exact-learned` to 10⁻¹¹.
 
 ### NARS (`nars-raw`, `nars-sources`)
 
@@ -213,4 +213,246 @@ rounds, the round's claims, budget × 1 cycles, one question per node.
 | `loudest` | only the source with the most claim copies in the history, read with its own accuracy |
 | `trust-mean` | the mean of the speaking sources' P(up \| claim), each estimated from the labelled rounds: revision of learned trust views, no system rules; what the sources encoding reaches by revision alone |
 
-RESULTS
+## Results
+
+October 10, 2026: ChainerGame `conflicting-sources`, PeTTaChainer master
+b43ad3de, ProbLog 2.3.0 (d-DNNF), ONA v0.9.3. Seeds 1–4, 30 labelled rounds
+then 10 rounds, evidence k = 5, steps per query 1, 4 and 16. Each run in its
+own process under `ulimit -v 16000000`; other agents' benchmarks shared the
+machine, so seconds are indicative. Full per-size tables (component, system,
+contested and agreed error, coverage, Brier):
+`benchmark-runs/conflict-2026-10-10/report.md`; machine-readable rows:
+`/nexus/Dev/OpenCog/bench/results/conflict/summary.json`.
+
+### Error to the exact posterior
+
+At 4 steps per query, mean ± std over seeds (budget-free contenders have
+one value). Lower is better; 0.30–0.40 is where a reasoner that ignores the
+claims sits (`prior`).
+
+| contender | s | m | l | xl |
+|---|---|---|---|---|
+| exact, problog-oracle | 0.000 | 0.000 | 0.000 | 0.000 |
+| exact-learned, problog-learned | 0.053 ± 0.020 | 0.054 ± 0.017 | 0.020 ± 0.007 | 0.017 ± 0.005 |
+| **pln-stated** | **0.123 ± 0.036** | **0.197 ± 0.072** | **0.097 ± 0.037** | **0.092 ± 0.034** |
+| pln-given (ablation) | 0.118 ± 0.035 | 0.144 ± 0.043 | 0.068 ± 0.009 | 0.073 ± 0.013 |
+| trust-mean (Python) | 0.243 ± 0.042 | 0.276 ± 0.025 | 0.337 ± 0.015 | 0.333 ± 0.010 |
+| **pln-raw** | **0.277 ± 0.036** | **0.268 ± 0.037** | **0.318 ± 0.017** | **0.313 ± 0.020** |
+| **pln-sources** | **0.272 ± 0.047** | **0.324 ± 0.022** | **0.373 ± 0.022** | **0.366 ± 0.016** |
+| nars-raw | 0.261 ± 0.013 | 0.295 ± 0.025 | 0.336 ± 0.006 (1 step/query) | — |
+| nars-sources | 0.277 ± 0.050 | 0.307 ± 0.041 | 0.410 ± 0.017 (1 step/query; coverage 0.70) | — |
+| prior | 0.278 ± 0.050 | 0.308 ± 0.040 | 0.380 ± 0.026 | 0.385 ± 0.024 |
+| vote | 0.343 ± 0.027 | 0.314 ± 0.037 | 0.324 ± 0.010 | 0.333 ± 0.017 |
+| last-wins | 0.324 ± 0.034 | 0.320 ± 0.022 | 0.401 ± 0.019 | 0.402 ± 0.012 |
+| loudest | 0.310 ± 0.020 | 0.330 ± 0.032 | 0.401 ± 0.016 | 0.413 ± 0.015 |
+| problog-naive | 0.320 ± 0.030 | 0.343 ± 0.038 | 0.491 ± 0.045 | 0.501 ± 0.036 |
+
+NARS at size l ran at 1 step per query only (about a minute per round); not
+at xl.
+
+The exact posterior is sharp (its Brier score is 0.10 / 0.09 / 0.055 / 0.054
+at s / m / l / xl), because the expert, the contrarian and the biased sources
+are very informative once read correctly. Everything that does not read them
+correctly lands near the prior.
+
+**Budget.** No contender's error moves with the budget by more than 0.01
+(pln-stated at l: 0.097 / 0.097 / 0.093 at 1 / 4 / 16 steps per query;
+pln-sources at xl gets worse at 16, 0.383 against 0.366, as more views are
+found and dropped). The searches are shallow: a node's views are one rule
+away. The budget buys time only.
+
+### Cost
+
+Seconds per round at 4 steps per query (round = the backend's whole work for
+the round's 4 / 8 / 16 / 32 queries: reviews, queries, adding facts; ProbLog:
+ground + compile + evaluate in a child; NARS: one ONA run).
+
+| contender | s | m | l | xl |
+|---|---|---|---|---|
+| exact (Python enumeration) | 0.000 | 0.000 | 0.001 | 0.51 |
+| problog-oracle / learned | 0.09 | 0.10 | 0.26 | 1.5–1.6 |
+| problog-naive | 0.09 | 0.11 | 0.47 | 13.8 (2 rounds timed out at 60 s) |
+| pln-stated | 0.05 | 0.15 | 0.57 | 1.66 (+ setup 0.7 / 2 / 9 / 28 s: the trust queries) |
+| pln-raw | 0.05 | 0.16 | 0.79 | 40.2 (seed 2: 144 s, 10 GB; at 16 steps it timed out at 1 h) |
+| pln-sources | 0.74 | 2.81 | 11.0 | 32.1 (reviews are most of it) |
+| nars-raw / nars-sources | 0.74 / 1.07 | 11.1 / 19.1 | 44 / 148 (1 step/query) | — |
+
+ProbLog's exact compilation stays cheap here: components are independent a
+priori and each system has two parents, so the circuits are small; at xl
+(16 components, 32 queries) a round takes 1.5 s, three times Python's
+enumeration over 2^16 states. This stage has no size at which exact inference
+blows up the way SupplyNet's scale stage does; xl shows the cost growth of
+the reasoners, not a regime where exact fails.
+
+## Discussion
+
+### What PLN gets for free (raw)
+
+Count-weighted revision is a vote by copies. Without source identity it
+cannot tell the expert from the echo or read the contrarian's "up" as "down",
+and the echo's 8–15 copies make it the loudest voice: `vote` is at or above
+the prior's error at every size, and its error on agreed nodes is low (0.08–
+0.18 at m–xl) while contested nodes stay at 0.34–0.37. `pln-raw` is `vote`
+plus the system rules and their inversions, which buy 0.01–0.07 (0.268
+against 0.314 at m). The same holds for NARS raw (revision by evidence weight
+is the same vote) and for ProbLog naive, which is worse: noisy-OR over copies
+saturates at 1 − (1 − t)^n, so a source repeating itself ten times is
+near-certain, and one denial copy vetoes it (0.49–0.50 at l–xl).
+
+### Where PLN wins: sources encoded, rates stated (pln-stated)
+
+With the claim attached to its source and one trust CTV per source learned
+from the labelled claims, the chainer reads the contrarian inverted, the
+optimist's "up" as weak and its "down" as strong, and the echo as noise. The
+error falls to a third to a half of raw (0.092–0.123 at s, l, xl; 0.197 at m), it is
+the best non-exact contender at every size, it improves with size (more
+claims per source to learn from and more sources per node), and it costs
+about as much as raw (0.05–1.7 s per round). Two chainer mechanisms do the
+work:
+
+- **combination modes**: the labelled outcomes stored after the trust rules
+  score revision against odds, and odds wins: views of different sources on
+  one node merge as `(combination odds ...)` (naive Bayes over the trust
+  views), not by averaging. `trust-mean`, the Python revision of the same
+  kind of views, stays at 0.24–0.34, near the prior: averaging P(up | claim)
+  views throws away exactly the agreement that makes the exact posterior
+  sharp. Stating the rules after the history (no outcomes to score, plain
+  revision) gave 0.237 instead of 0.147 at s seed 1;
+- **factored revision with antecedent completion**: a system's claims update
+  its components and back, through the given system rules.
+
+### Where PLN loses, and why
+
+1. **Against exact with learned rates: 0.07–0.14 behind.** `exact-learned`
+   (= ProbLog learned) reaches 0.017–0.054 from the same labelled data. The
+   `pln-given` ablation, which hands the chainer the Laplace-counted CTVs
+   instead of its own, separates the causes:
+   - *learning the rates*: 0.02–0.05 (pln-stated − pln-given: 0.005 at s,
+     0.053 at m, 0.029 at l, 0.019 at xl). The negative branch of a learned
+     CTV comes from base rates, not from the claims of that polarity: P(up |
+     s claims down) is (P(up) − P(claim up) P(up | claim up)) / (1 − P(claim
+     up)), at confidence about 0.2 whatever the sample. At s seed 1 the
+     expert's "down" reads 0.00 (its 3 labelled "down" claims say 0.33), the
+     contrarian's 0.99 (0.86); the positive branches equal the empirical
+     frequencies. Stated as certain, a hard 0 or 1 makes one claim decide a
+     node. The rates are also learned once and not updated with the 10
+     resolved rounds;
+   - *combining*: 0.05–0.09 (pln-given − exact-learned). Odds is applied
+     only between forward views with disjoint evidence; views that meet a
+     completion or a system rule's view are revised, and revision of certain
+     views weights each pair equally whatever the evidence behind them
+     (CombiNet "Chainer problems" 1). One mode per predicate: components and
+     systems share `Up`.
+2. **The hypothesis-rule encoding (`pln-sources`) is no better than raw, and
+   at l–xl worse than the prior (0.37).** Its trust rules learn the right
+   positive branches, but every view of a refined rule carries the rule's
+   samples, so two applications of one source's rule to different nodes are
+   overlapping evidence: a node's own claims are dropped whenever the search
+   also reaches it through a system rule whose proof uses one of the same
+   sources (see Chainer problems 1). The merge then keeps the most confident
+   single view, typically a system rule's view or a completion that ignores
+   the node's own claims. It also costs 10–30 s per round at l–xl, mostly in
+   the per-source reviews, and gets combination modes on none of its views
+   (refined rules are not scored). This is the encoding the chainer's
+   design intends for learned rules, and today it is the wrong one for this
+   problem.
+3. **Rare sources.** A source with a few labelled claims gets a CTV stated at
+   confidence 1 from those few (or no rule at all with none), where
+   exact-learned's Laplace estimate stays near uninformative.
+
+### NARS
+
+NARS raw is a vote by evidence weight, like PLN raw, and lands at the same
+place (0.26 / 0.30 / 0.34 at s / m / l). Given the same identity and trust
+counts, NARS sources does not improve on it (0.28 / 0.31 / 0.41), for the
+reasons `docs/nars_backend.md` found in SupplyNet: deduction through a trust
+implication gives f = f_claim · f_rule at a confidence that shrinks with
+each factor, revision then averages the sources' conclusions by evidence
+weight instead of multiplying likelihood ratios, and conclusions from the
+negated-claim implications are rarely selected. At l the concept table is
+full: 30% of the questions go unanswered (scored 0.5) and a round takes
+2.5 minutes. More cycles change nothing (s and m: identical error at 1, 4 and
+16 steps per query) and only cost time (m: 11 s → 32 s per round for raw).
+
+### What the comparison says
+
+- Identity matters more than inference power. Every contender without the
+  source identity (vote, last-wins, loudest, PLN raw, NARS raw, ProbLog naive)
+  is at or above the prior's error; ProbLog naive, an exact engine, is the
+  worst of all, because its model is wrong.
+- With identity and learned reliabilities, the exact model (ProbLog learned)
+  is the ceiling at 0.02–0.05, and cheap here (0.1–1.6 s per round).
+- PLN with stated learned trust is the best of the approximate reasoners,
+  0.09–0.20, and recovers most of the gap from raw (0.27–0.32). The remaining
+  gap is half rate learning (negative branches from base rates) and half
+  combination (odds only for disjoint forward views; equal-weight revision of
+  certain views).
+- PLN's own learned-rule machinery (refined hypothesis rules) does not work
+  for this problem today because of how refined views overlap.
+
+## Chainer problems
+
+Found while building the backends; reported, not fixed. PeTTaChainer master
+b43ad3de.
+
+1. **Applications of one rule to different facts are treated as overlapping
+   evidence** unless the rule is certain, so a merge keeps only the more
+   confident view. `examples/pettachainer_shared_rule_overlap_repro.py`: w's
+   own claim by source s is dropped from the answer for `(Up w n)` because
+   the forward view through the system rule uses `trust-s` on c1; the same
+   claim by source q is revised in; at trust confidence 1 both revise. For
+   refined rules this is by design (their views carry the samples), and it is
+   what breaks `pln-sources`. In the game it also replaces a node's own
+   claims by an antecedent completion through a system rule when the budget
+   is larger (c2 at s seed 1 round 1: 0.138 from its claims, exact 0.132, at
+   4 steps; 0.820 from the completion alone at 50 steps).
+2. **The negative branch of a learned CTV comes from base rates**, not from
+   the instances whose antecedent is false: biased (0.00 against 0.33, 0.99
+   against 0.86 above) and at confidence about 0.2 regardless of the sample
+   size (47 "down" claims of the echo still give 0.23). A claim fact with
+   strength 0 is a sample of the negative branch; it is not used as one.
+3. **A variable consequent is not supported.** `(Implication (Asserts s $x)
+   $x)`, the most direct way to say "what s asserts holds", gives no answer,
+   neither for its rule truth nor for a claimed statement
+   (`examples/pettachainer_trust_rule_forms_repro.py`, part 1).
+4. **Views of STV rules applied to a certain antecedent are pulled towards
+   the consequent's base rate**: a refined STV rule learned at 0.798 gives a
+   view of 0.666, a stated 0.8 gives 0.775 (same file, part 2). In the game
+   some refined STV views came out at confidence 10⁻⁶.
+5. **pln-raw at xl, seed 2**: 144 s per round and 10 GB at 4 steps per query
+   (the other seeds 1.7–11 s, 0.2–0.9 GB), and a timeout at 1 h at 16 steps.
+   Not reduced to a repro: the KB holds one uncertain fact per source and
+   node beside the system rules.
+
+## Limits
+
+- **One relation between sources and truth.** Claims are conditionally
+  independent given the node; sources do not copy each other (beyond
+  repeats of their own claim) and their reliability does not depend on the
+  node. A copying source would make odds over-count, where revision is safer.
+- **Rates are learned once in pln-stated and pln-given** (from the 30 labelled
+  rounds); the other learned contenders re-learn every round. Re-stating a
+  rule needs the deprecated `remove_statement`.
+- **Exact never becomes expensive** in this stage (see Cost). A world where it
+  does (sources whose reliability depends on a hidden per-round context, or
+  components that persist across rounds) would show the cost side.
+- **NARS gets its trust implications as counts computed by the adapter**, as
+  SupplyNet's NARS backend gets base rates; ONA would not form them itself.
+  NARS ran at l only at 1 step per query and not at xl.
+- 4 seeds; time measurements shared the machine with other agents.
+
+## Rerun
+
+    cd ChainerGame-conflict
+    out=/nexus/Dev/OpenCog/bench/results/conflict
+    G=benchmarks/conflict/run_grid.sh
+    JOBS=2 $G $out/runs "exact exact-learned prior vote last-wins loudest trust-mean problog-oracle problog-learned problog-naive pln-raw pln-stated pln-given pln-sources" "s m l xl" "1 2 3 4" "1 4 16"
+    JOBS=2 $G $out/runs "nars-raw nars-sources" "s m" "1 2 3 4" "1 4 16"
+    JOBS=2 $G $out/runs "nars-raw nars-sources" "l" "1 2 3 4" "1"
+    PYTHONPATH=src python3 -m conflict.cli table $out/runs > benchmark-runs/conflict-2026-10-10/report.md
+    PYTHONPATH=src python3 -m conflict.cli summary $out/runs --out $out/summary.json
+
+Tests: `PYTHONPATH=src <problog venv>/bin/python -m pytest tests/test_conflict.py`
+(ProbLog checks skip without ProbLog); the live PeTTaChainer and ONA tests run
+in PeTTaChainer's venv with `PETTACHAINER_PYTHONPATH` set:
+`PYTHONPATH=src:tests .../PeTTaChainer/.venv/bin/python -m unittest test_conflict`.

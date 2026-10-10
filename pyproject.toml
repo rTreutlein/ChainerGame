@@ -12,6 +12,7 @@ requires-python = ">=3.11"
 stationops = "stationops.cli:main"
 supplynet = "supplynet.cli:main"
 combinet = "combinet.cli:main"
+conflict = "conflict.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
