@@ -112,9 +112,14 @@ and every source has one hypothesis rule with a weak CTV prior:
 
 With `set-rule-refinement` on, the rule's truth is learned from the labelled
 rounds (PeTTaChainer `docs/metta/hypothesis_rules.md`): P(up | s4 claims up)
-from the instances, P(up | s4 claims down) from the base rates. Before each
-round's queries every trust rule is reviewed by its own `RuleTruth` query (20
-steps), so the last round's labels are folded in. The answer for a node is
+from the instances, P(up | s4 claims down) from the base rates (since the
+PeTTaChainer fixes below, from the down-claims). Before each round's queries,
+and before its claims are added, every trust rule is reviewed by its own
+`RuleTruth` query (20 steps, or `--review-steps`), so the last round's labels
+are folded in. Reviewed with the round's claims in the fold, a claim whose
+node the round's other views derive is a soft sample of its rule, a view of
+that node may not read a rule truth depending on it, and every view read the
+rule's prior. The answer for a node is
 the revision of the views of the sources that spoke about it, with the system
 rules' views.
 
@@ -135,6 +140,81 @@ certain, and refined rules carry their samples, so their views always overlap.
 Stated before the history, the labelled outcomes can also score PeTTaChainer's
 combination modes (`docs/metta/combination_modes.md`). The rates are not
 updated after the initial history.
+
+### PLN, latent reliability (`pln-reliable`): one rule per claim
+
+No claim facts. Each source has two latent statements, `(Reliable s4 up)` and
+`(Reliable s4 down)`: its up-claims, its down-claims, are correct. Every
+claim, history and current, is one certain rule from the source's
+reliability for that polarity to the claimed state:
+
+    (: (no_inverse claim-s4-c1-t5) (Implication (Reliable s4 up) (Up c1 t5)) (CTV (STV 1 1) (STV 0 1)))
+    (: (no_inverse claim-s4-w2-t5) (Implication (Reliable s4 down) (Up w2 t5)) (CTV (STV 0 1) (STV 1 1)))
+
+so P(Up c1 t5) = P(Reliable s4 up) and P(Up w2 t5) = 1 - P(Reliable s4
+down): the reliabilities are the trust CTV's two branches, P(up | claim up)
+and P(down | claim down), as statements. Each resolved round adds, per source
+and polarity, the share of the source's claims that were correct, at the
+confidence n/(n + k) of their count:
+
+    (: reliability-s4-up-h3 (Reliable s4 up) (STV 0.75 0.444444))
+
+and revision of the rounds' facts is the pooled share with count-based
+confidence, over a prior of one correct and one wrong claim per polarity
+(`(STV 0.5 2/(2+k))`, Laplace's rule, as exact-learned counts). Rules and
+evidence of a round go in before its outcomes, which so score the
+combination modes (odds wins).
+
+Semantics, and the choices against the alternatives:
+
+- **Two polarities, not one reliability.** A single `(Reliable s)` read as
+  "s's claims are correct" expresses an inverted source (reliability below
+  0.5, no `Inverts s` needed) but not a biased one: an optimist's up-claims
+  are weak and its down-claims strong. Read as "s tells the truth, otherwise
+  its claim is noise" (P(X | not R) = the node's prior), it cannot express
+  an inverted source at all. Two polarities with the claim decided by the
+  reliability express every archetype.
+- **Certain per-claim rules.** Given the reliability, a claim decides its
+  node; the source's uncertainty is all in the reliability. A per-claim CTV
+  would have to be learned from one instance.
+- **`no_inverse`.** Inverting a claim rule over a labelled outcome makes the
+  outcome a certain view of the source-wide statement, true for some claims
+  and false for others; the history would be contradictory certain evidence
+  of one statement. Learning the reliability from the outcomes needs a
+  statement per claim instead.
+- **Evidence facts rather than a learned implication.** The client labels
+  each resolved claim correct or not, as it labels the states. Learning it
+  inside the chainer needs a per-claim latent `(Reliable s4 c1 t5)` with a
+  prior per claim, which only a per-source rule (that is `pln-sources`) or
+  a base rate read as a premise's prior (rows read no population prior)
+  could give.
+
+What PLN computes then differs from the world in one way. `(Reliable s4 up)`
+is one statement shared by all of s4's up-claims: when two views of a node
+share it (s4 claimed a system and one of its components), overlap
+conditioning conditions on it, P(R) P(w | R) + (1 - P(R)) P(w | not R), so
+s4's errors are fully correlated where the world's are independent per
+claim, and with a certain rule the given branch lets s4's claim decide the
+node, other sources aside. In `pln-sources` the per-source quantity is a
+rule's truth, a parameter, and given it the claims' errors are independent,
+as in the world.
+
+### PLN, likelihood rules (`pln-likelihood`): the generating direction
+
+The claims of `pln-sources`, but each source's refined rule runs from the
+node's state to the claim, the way the world generates it:
+
+    (: report-s4 (Implication (Up $n $t) (Claims s4 (Up $n $t))) (CTV (STV 0.5 0.02) (STV 0.5 0.02)))
+
+Refined, it learns P(claim up | up) from the labelled nodes that were up and
+P(claim up | down) from those that were down, exactly the rates exact-learned
+counts; a current claim updates its node by inverting the rule over the base
+rate of `Up` (Bayes' rule), several sources' claims combine as updates of one
+prior (the factored merge), and a system's forward view takes the base
+rate's place under its own claims. It is the encoding whose semantics match
+the generating model: a likelihood per source and polarity, naive Bayes
+given the node, independent errors given the rates. Reviewed like
+`pln-sources`, before the round's claims.
 
 ### Encodings tried and rejected
 
@@ -390,10 +470,63 @@ full: 30% of the questions go unanswered (scored 0.5) and a round takes
 - PLN's own learned-rule machinery (refined hypothesis rules) does not work
   for this problem today because of how refined views overlap.
 
+## After the PeTTaChainer fixes (branch `conflict-fixes`)
+
+October 10, 2026. PeTTaChainer branch `conflict-fixes` at 46d6fd50 against
+master 66a684f1; ChainerGame `pln-reliable` 83bbee5 (the client changes
+below apply to both columns). Seeds 1–4, 4 steps per query, raw runs in
+`/nexus/Dev/OpenCog/bench/results/conflict-fixes/` (`master/`, `fixes/`,
+`fixes-review400/`). Error to the exact posterior, mean ± std over seeds.
+
+| contender | s | m | l | xl |
+|---|---|---|---|---|
+| exact-learned | 0.053 | 0.054 | 0.020 | 0.017 |
+| pln-stated, master | 0.123 ± 0.036 | 0.196 ± 0.070 | 0.097 ± 0.037 | 0.092 ± 0.034 |
+| **pln-stated, fixes** | **0.100 ± 0.022** | **0.147 ± 0.055** | **0.079 ± 0.028** | 0.103 ± 0.062 |
+| pln-sources, master (reviews before claims) | 0.279 ± 0.046 | 0.323 ± 0.029 | 0.374 ± 0.014 | 0.374 ± 0.019 |
+| pln-sources, fixes | 0.167 ± 0.086 | 0.300 ± 0.021 | 0.349 ± 0.013 | 0.326 ± 0.041 |
+| pln-sources, fixes, 400 review steps | 0.105 ± 0.026 | 0.169 ± 0.088 | — | — |
+| pln-reliable (master = fixes) | 0.153 ± 0.084 | 0.219 ± 0.074 | 0.103 ± 0.008 | 0.109 ± 0.016 |
+| **pln-likelihood, fixes, 400 review steps** | 0.117 ± 0.004 | **0.105 ± 0.018** | **0.035 ± 0.010** | — |
+
+Seconds per round (fixes): pln-stated 0.05 / 0.15 / 0.63 / 1.95, pln-reliable
+0.10 / 0.57 / 0.73 / 1.60, pln-sources 0.9 / 4.5 / 14.8 / 78 (master 0.7 /
+2.0 / 7.3 / 19), with 400 review steps 2.0 / 10.5; pln-likelihood (400) 3.1 /
+17.7 / 155. The xl runs at 400 review steps and pln-sources at l were not run
+(the l runs failed on a broken intermediate build; xl would exceed the hour).
+
+- **pln-stated** gains 0.02–0.05 at s–l from the negative branches learned
+  from the down-claims (problem 2). At xl seed 4 it loses (0.143 → 0.195):
+  two rare sources' negative branches are now their one or two labelled
+  down-claims, 0.0, stated at confidence 1, so one claim decides a node
+  (the "rare sources" weakness below, sharper now that the branch is
+  empirical).
+- **pln-sources** was broken by more than problem 1. With it fixed (no view
+  dropped), three more causes showed: reviews made after the round's claims
+  read the prior (fixed in the client: review first); refined rules were
+  never scored for the combination modes (fixed in PeTTaChainer 46d6fd50),
+  so the views averaged; and 20 review steps fold only part of a source's
+  samples beyond size s (ten rows per step; an echo has hundreds of claims).
+  With 400 review steps it matches pln-stated at s and m, and keeps learning
+  from the resolved rounds; it costs 2–10 s per round.
+- **pln-reliable**, the per-claim design, sits between: better than raw and
+  than pln-sources at 20 review steps, behind pln-stated at s–l, level at xl.
+  Its reliabilities are the trust CTV's branches as counted statements, so
+  it learns what pln-stated learns, from every resolved round, cheaply; what
+  it loses is the shared latent (errors correlated through `Reliable s`, see
+  its section) and the component priors.
+- **pln-likelihood** is the best approximate reasoner at m and l (0.035
+  against exact-learned's 0.020 at l, a third of pln-stated's error): it
+  learns the likelihoods exact-learned counts and combines claims by Bayes'
+  rule over the base rate, with the systems' forward views as priors. At s
+  it trails pln-stated (components get the pooled base rate of `Up`, not
+  their own prior; 0.173 component error against 0.061 system). It is slow:
+  every claim is an inversion over a base rate, 155 s per round at l.
+
 ## Chainer problems
 
-Found while building the backends; reported, not fixed. PeTTaChainer master
-b43ad3de.
+Found while building the backends. PeTTaChainer master b43ad3de; status on
+branch `conflict-fixes` (66a684f1 + 5 commits) after each item.
 
 1. **Applications of one rule to different facts are treated as overlapping
    evidence** unless the rule is certain, so a merge keeps only the more
@@ -406,23 +539,62 @@ b43ad3de.
    claims by an antecedent completion through a system rule when the budget
    is larger (c2 at s seed 1 round 1: 0.138 from its claims, exact 0.132, at
    4 steps; 0.820 from the completion alone at 50 steps).
+   **Fixed (5e4fd377).** Given the rule's truth its applications are
+   independent, as rows already assumed; a shared rule, given or estimated,
+   no longer makes views dependent, and a refined rule's `RuleTruth` key is
+   a parameter, not a statement to condition on. The repro gives 0.568 for
+   both claimants. Not conditioning on the rule (a mix over its Beta) is
+   deliberate: given the rule, views of certain claims are certain and
+   revision weighs them equally (PeTTaChainer
+   `docs/metta/overlap_conditioning.md`, "Shared rules"). The rule's
+   uncertainty is counted once per view, so a merge of many views through
+   one estimated rule is overconfident.
 2. **The negative branch of a learned CTV comes from base rates**, not from
    the instances whose antecedent is false: biased (0.00 against 0.33, 0.99
    against 0.86 above) and at confidence about 0.2 regardless of the sample
    size (47 "down" claims of the echo still give 0.23). A claim fact with
    strength 0 is a sample of the negative branch; it is not used as one.
+   **Fixed (8c4adc3e).** The instance fold accumulates both branches, each
+   sample weighted by the antecedent's strength for P(B | A) and by its
+   complement for P(B | not A); the base rates give the negative branch only
+   while no antecedent-false instance exists. 10 down-claims with 3 up now
+   give (0.30, 0.67).
 3. **A variable consequent is not supported.** `(Implication (Asserts s $x)
    $x)`, the most direct way to say "what s asserts holds", gives no answer,
    neither for its rule truth nor for a claimed statement
    (`examples/pettachainer_trust_rule_forms_repro.py`, part 1).
+   Not to be fixed: bare-variable consequents are not wanted.
 4. **Views of STV rules applied to a certain antecedent are pulled towards
    the consequent's base rate**: a refined STV rule learned at 0.798 gives a
    view of 0.666, a stated 0.8 gives 0.775 (same file, part 2). In the game
    some refined STV views came out at confidence 10⁻⁶.
+   **Cause and fix (5203822a).** Neither problem 1 nor 2, nor the Bayes
+   prior: `Asserts` stores only asserted claims, so its base rate is 1, and
+   the STV-to-CTV conversion reconciles P(B | A) with P(A) = 1 and P(B) =
+   0.5 (ConsistentTriple), which forces P(B | A) to P(B). Declaring the
+   predicate positive-only (`set_positive_only_predicate`) now keeps its rate
+   out of the conversion, and the rule applies at 0.798; undeclared, the
+   data still says P(A) = 1. The confidence 10⁻⁶ views were factored merges
+   over a refined rule's prior (0.5, 0.02), read when the review had folded
+   the round's own claims (see 6).
 5. **pln-raw at xl, seed 2**: 144 s per round and 10 GB at 4 steps per query
    (the other seeds 1.7–11 s, 0.2–0.9 GB), and a timeout at 1 h at 16 steps.
    Not reduced to a repro: the KB holds one uncertain fact per source and
    node beside the system rules.
+6. **A refined rule reviewed with the round's claims in its fold is unusable
+   for those claims** (found with the fixes). A claim whose node the round's
+   other views derive is a soft sample of its rule, so the fold depends on
+   the node; a view of the node may not read a value depending on itself, so
+   it falls back to an older version of the rule truth, the prior when the
+   review was the first. Worked around in the client (reviews first). Same
+   root as ChainerGame `benchmarks/ona/repros/stale_after_early_review.py`.
+   A fix would fold a rule's samples for a reader without the reader's own
+   sample (leave one out) instead of rejecting the whole version.
+7. **Refined rules were never scored for the combination modes** (found with
+   the fixes). The truth premise is an open statement, which gave no view
+   when scoring an outcome, so modes tied and the views revised. **Fixed
+   (46d6fd50):** the premise reads the truth key's current value; pln-sources
+   at s seed 1 0.322 → 0.164.
 
 ## Limits
 
@@ -451,6 +623,16 @@ b43ad3de.
     JOBS=2 $G $out/runs "nars-raw nars-sources" "l" "1 2 3 4" "1"
     PYTHONPATH=src python3 -m conflict.cli table $out/runs > benchmark-runs/conflict-2026-10-10/report.md
     PYTHONPATH=src python3 -m conflict.cli summary $out/runs --out $out/summary.json
+
+After the PeTTaChainer fixes (`W` the PeTTaChainer checkout, `M` master's):
+
+    out=/nexus/Dev/OpenCog/bench/results/conflict-fixes
+    PYTHON=$W/.venv/bin/python PETTACHAINER_PATH=$W JOBS=4 $G $out/fixes "exact-learned pln-reliable pln-stated pln-sources" "s m l xl" "1 2 3 4" "4"
+    PYTHON=$M/.venv/bin/python PETTACHAINER_PATH=$M JOBS=4 $G $out/master "pln-reliable pln-stated pln-sources" "s m l xl" "1 2 3 4" "4"
+    REVIEW_STEPS=400 PYTHON=$W/.venv/bin/python PETTACHAINER_PATH=$W JOBS=4 $G $out/fixes-review400 "pln-likelihood pln-sources" "s m l" "1 2 3 4" "4"
+
+A grid imports the PeTTaChainer checkout it is given when each run starts:
+do not edit that checkout while it runs.
 
 Tests: `PYTHONPATH=src <problog venv>/bin/python -m pytest tests/test_conflict.py`
 (ProbLog checks skip without ProbLog); the live PeTTaChainer and ONA tests run

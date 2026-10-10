@@ -141,10 +141,13 @@ class PeTTaChainerBackend:
       (``metta.reliability_rules``), and each resolved round's correct share
       per source and polarity as evidence of the reliability
       (``metta.reliability_evidence``). Rules and evidence go in before the
-      round's outcomes, which so score the combination modes."""
+      round's outcomes, which so score the combination modes;
+    - ``likelihood``: the claims of ``sources`` with one refined rule per
+      source from a node's state to its claim (``metta.likelihood_rules``),
+      reviewed the same way; a claim updates its node by Bayes' rule."""
 
     def __init__(self, encoding: str, python_path: str | None = None, evidence_k: float = 5, review_steps: int = 20):
-        assert encoding in ("raw", "sources", "stated", "given", "reliable"), encoding
+        assert encoding in ("raw", "sources", "stated", "given", "reliable", "likelihood"), encoding
         if python_path:
             sys.path.insert(0, str(Path(python_path).expanduser().resolve()))
         try:
@@ -156,7 +159,7 @@ class PeTTaChainerBackend:
         self.encoding, self.evidence_k, self.review_steps = encoding, evidence_k, review_steps
         self._handler.set_evidence_confidence_k(evidence_k)
         self._handler.set_query_metrics(True)
-        if encoding == "sources":
+        if encoding in ("sources", "likelihood"):
             self._handler.set_rule_refinement(True)
         self.counters = {"statements": 0, "expansions": 0, "review_seconds": 0.0, "query_seconds": 0.0}
         self.trust: dict[str, list[float]] = {}
@@ -177,6 +180,8 @@ class PeTTaChainerBackend:
             statements += self._count_trust(world, history)
         elif self.encoding == "reliable":
             statements += metta.reliability_priors(world, self.evidence_k)
+        elif self.encoding == "likelihood":
+            statements += metta.likelihood_rules(world)
         for day in history:
             statements += self._evidence(day) + metta.labels(day)
         self._add(statements)
@@ -243,9 +248,10 @@ class PeTTaChainerBackend:
         return answers
 
     def beliefs(self, day: Round, keys: list[tuple[str, str]], budget: int) -> dict:
-        if self.encoding == "sources":
+        if self.encoding in ("sources", "likelihood"):
+            implication = metta.trust_implication if self.encoding == "sources" else metta.likelihood_implication
             for source in self.world.sources:
-                (proofs,) = self._query([metta.review(source.name)], self.review_steps, "review_seconds")
+                (proofs,) = self._query([metta.review(implication(source.name))], self.review_steps, "review_seconds")
                 match = _ctv_re.search(proofs[0]) if proofs else None
                 if match:
                     self.trust[source.name] = [round(float(v), 4) for v in match.groups()]

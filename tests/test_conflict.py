@@ -136,6 +136,7 @@ class MettaTests(unittest.TestCase):
             "(: reliability-s4-down-h2 (Reliable s4 down) (STV 0 0.166667))",
             "(: reliability-s5-up-h2 (Reliable s5 up) (STV 1 0.285714))",
         ])
+        self.assertEqual(metta.likelihood_rules(world)[0], "(: report-s1 (Implication (Up $n $t) (Claims s1 (Up $n $t))) (CTV (STV 0.5 0.02) (STV 0.5 0.02)))")
         self.assertEqual(metta.reliability_priors(world, 5)[:2], [
             "(: reliability-s1-up-prior (Reliable s1 up) (STV 0.5 0.285714))",
             "(: reliability-s1-down-prior (Reliable s1 down) (STV 0.5 0.285714))",
@@ -221,7 +222,7 @@ class PeTTaChainerTests(unittest.TestCase):
 
         # Fifteen labelled rounds: from eight, a source has one or two claims of
         # a polarity, and its rates learned from them decide a node alone.
-        for encoding in ("raw", "sources", "stated", "given", "reliable"):
+        for encoding in ("raw", "sources", "stated", "given", "reliable", "likelihood"):
             summary = run_game(GameConfig(seed=1, history=15, rounds=1, steps_per_query=4), PeTTaChainerBackend(encoding, _pettachainer_path()))
             self.assertGreaterEqual(summary["coverage"], 0.75, encoding)
             self.assertLess(summary["posterior_error"], 0.5, encoding)

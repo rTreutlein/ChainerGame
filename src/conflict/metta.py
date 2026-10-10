@@ -23,7 +23,12 @@ rounds' states as certain facts.
   The reliabilities are evidence: each resolved round adds, per source and
   polarity, the share of its claims that were correct at the confidence of
   their count, which revision pools across rounds, over a prior of one
-  correct and one wrong claim."""
+  correct and one wrong claim.
+- **likelihood:** the claims as in ``sources``, but each source's rule runs
+  the way the world does, from the node's state to the claim,
+  ``(Implication (Up $n $t) (Claims s1 (Up $n $t)))`` with a weak CTV prior:
+  refined, it learns P(claim up | up) and P(claim up | down), and a claim
+  updates its node by inverting it over the base rate of ``Up``."""
 
 from __future__ import annotations
 
@@ -105,8 +110,17 @@ def reliability_priors(world: World, k: float) -> list[str]:
     ]
 
 
-def review(source: str) -> str:
-    return f"(: $prf (RuleTruth {trust_implication(source)}) $tv)"
+def likelihood_implication(source: str) -> str:
+    return f"(Implication (Up $n $t) (Claims {source} (Up $n $t)))"
+
+
+def likelihood_rules(world: World, prior: float = 0.5, confidence: float = 0.02) -> list[str]:
+    tv = f"(STV {_number(prior)} {_number(confidence)})"
+    return [f"(: report-{s.name} {likelihood_implication(s.name)} (CTV {tv} {tv}))" for s in world.sources]
+
+
+def review(implication: str) -> str:
+    return f"(: $prf (RuleTruth {implication}) $tv)"
 
 
 def query(key: tuple[str, str]) -> str:
