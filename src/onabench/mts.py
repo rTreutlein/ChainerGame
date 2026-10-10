@@ -139,10 +139,12 @@ class PLNAgent:
     - sample-pairs: the sample with one comparison stimulus (the pairs
       ONA's scripts ask about).
 
-    Decision: first the hypotheses that match the trial are reviewed
-    (their RuleTruth goals queried in one query-many, so their instance
-    folds read the new outcomes; applying a refined rule does not refresh
-    its fold). The desire of op is then the expectation c(f - 0.5) + 0.5 of
+    Decision: first the truths of the hypotheses that match the trial are
+    read (their RuleTruth goals queried in one query-many), with budget only
+    when one was never read, to fold its instances: PeTTaChainer takes each
+    new outcome into the truths at its next query (docs/metta/
+    hypothesis_rules.md, "Instance tallies"), so a read needs no budget. The
+    desire of op is then the expectation c(f - 0.5) + 0.5 of
     the best-confidence answer to (Reward op t), the merged application of
     the hypotheses. The choice copies ONA's Decision_Suggest: with probability
     0.2 babble a random operation unless the best desire exceeds 0.55;
@@ -167,6 +169,7 @@ class PLNAgent:
         self.space = space
         self.t = 0
         self.hyps = set()
+        self.reviewed = set()
         self.timing = []
 
     def _antecedents(self, sample, left, right):
@@ -188,15 +191,17 @@ class PLNAgent:
         t = self.t
         t0 = time.perf_counter()
         self.context = (sample, left, right)
-        review = [f"(: $p (RuleTruth (Implication {a} (Reward {op} $t))) $tv)"
-                  for a in self._antecedents(sample, left, right) for op in self.OPS if (a, op) in self.hyps]
+        matching = [(a, op) for a in self._antecedents(sample, left, right) for op in self.OPS if (a, op) in self.hyps]
+        steps = self.steps if any(h not in self.reviewed for h in matching) else 0
+        self.reviewed.update(matching)
+        review = [f"(: $p (RuleTruth (Implication {a} (Reward {op} $t))) $tv)" for a, op in matching]
         self.h.add_atoms_no_check([f"(: s{t} (Sample {sample} t{t}) (STV 1 1))",
                                    f"(: l{t} (LeftStim {left} t{t}) (STV 1 1))",
                                    f"(: r{t} (RightStim {right} t{t}) (STV 1 1))"])
         t1 = time.perf_counter()
         if review:
             print(f"  trial {t} reviewing {len(review)}", file=sys.stderr, flush=True)
-            self.h.query_many(review, steps=self.steps, timeout_sec=None)
+            self.h.query_many(review, steps=steps, timeout_sec=None)
         t1r = time.perf_counter()
         desire = {}
         for op in self.OPS:

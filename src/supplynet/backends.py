@@ -99,10 +99,13 @@ class PeTTaChainerBackend:
     With ``learned`` (stages 1-3) the rules come with a weak prior in their
     rates' place and the knowledge base refines them from their instances
     (``set-rule-refinement``, PeTTaChainer ``docs/metta/hypothesis_rules.md``).
-    Before a round's queries, when periods were labelled since the last round,
-    each learned rule is reviewed by its own ``RuleTruth`` query of
-    ``review_steps``, so its truth folds the labelled instances; the review is
-    part of the round's time."""
+    Before the first round's queries each learned rule is reviewed by its own
+    ``RuleTruth`` query of ``review_steps``, which folds the labelled history.
+    From then on the chainer takes a resolved period's instances into each
+    truth at its next query, whatever the query asks ("Instance tallies"):
+    later rounds only read the truths, all in one query without budget,
+    before the round's queries, so the search scores the rules with them. The
+    reviews and reads are part of the round's time."""
 
     name = "pettachainer"
 
@@ -120,7 +123,7 @@ class PeTTaChainerBackend:
         self._handler.set_evidence_confidence_k(evidence_k)
         if learned:
             self._handler.set_rule_refinement(True)
-        self.rule_truths: dict[str, list[float]] = {}  # learned rule's review -> its last CTV
+        self.rule_truths: dict[str, list[float]] = {}  # learned rule's review -> its CTV
         self.review_seconds = 0.0
 
     def begin(self, network: Network, rates: Rates, history: list[tuple[Period, Observation]]) -> None:
@@ -130,23 +133,30 @@ class PeTTaChainerBackend:
         self.reviews = [goal for goal in map(self.statements.review, rules) if goal] if self.learned else []
         self._handler.add_atoms_no_check(rules)
         self.unreviewed = bool(self.reviews)
+        self.unread = False
         for period, observation in history:
             self._handler.add_atoms_no_check(self.statements.observation_facts(observation))
             self.resolve(period, observation)
 
-    def _review(self) -> None:
-        started = time.perf_counter()
-        for goal in self.reviews:
-            (answers,) = self._handler.query_many_refs([goal], steps=self.review_steps)
-            for answer in answers:
+    def _record(self, goals: list[str], answers) -> None:
+        for goal, root_answers in zip(goals, answers, strict=True):
+            for answer in root_answers:
                 if answer.tv[0] == "CTV":
                     self.rule_truths[goal] = [round(value, 4) for branch in answer.tv[1:] for value in branch[1:]]
-        self.review_seconds += time.perf_counter() - started
-        self.unreviewed = False
+
+    def _review(self) -> None:
+        for goal in self.reviews:
+            self._record([goal], self._handler.query_many_refs([goal], steps=self.review_steps))
 
     def beliefs(self, observation: Observation, keys: list[Key], budget: int) -> dict[Key, float]:
-        if self.unreviewed:
-            self._review()
+        if self.unreviewed or self.unread:
+            started = time.perf_counter()
+            if self.unreviewed:
+                self._review()
+            else:
+                self._record(self.reviews, self._handler.query_many_refs(self.reviews, steps=0))
+            self.review_seconds += time.perf_counter() - started
+            self.unreviewed = self.unread = False
         self._handler.add_atoms_no_check(self.statements.observation_facts(observation))
         goals = [self.statements.query(key) for key in keys]
         answers = self._handler.query_many_refs(goals, steps=budget) if goals else []
@@ -159,7 +169,7 @@ class PeTTaChainerBackend:
 
     def resolve(self, period: Period, observation: Observation) -> None:
         self._handler.add_atoms_no_check(self.statements.resolution_facts(period, observation))
-        self.unreviewed = bool(self.reviews)
+        self.unread = bool(self.reviews)
 
     def summary(self) -> dict:
         return {"review_seconds": round(self.review_seconds, 3), "rule_truths": self.rule_truths} if self.learned else {}

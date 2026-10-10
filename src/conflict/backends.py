@@ -122,14 +122,17 @@ class PeTTaChainerBackend:
     - ``raw``: each source's claims on a node as one fact about the node, its
       copy count as evidence (``metta.raw_facts``);
     - ``sources``: claims as ``(Claims s (Up n t))`` facts and one refined
-      trust rule per source (``metta.trust_rules``). Before a round's queries
-      each trust rule is reviewed by its own ``RuleTruth`` query of
+      trust rule per source (``metta.trust_rules``). Before the first round's
+      queries each trust rule is reviewed by its own ``RuleTruth`` query of
       ``review_steps`` (in one shared batch the first reviews take the budget,
       ChainerGame ``docs/combination_bench.md``), so its truth folds the
-      labelled claims, including the last round's. The round's claims are
-      no samples: their nodes are only derived, and an instance sample reads
-      no value a refined rule estimates (PeTTaChainer
-      ``docs/metta/hypothesis_rules.md``, "Cross-feeding");
+      labelled history; from then on the chainer takes each labelled round's
+      claims into the truths at its next query (PeTTaChainer
+      ``docs/metta/hypothesis_rules.md``, "Instance tallies"), and later
+      rounds only read them, in one query without budget, before the round's
+      queries. The round's claims are no samples: their nodes
+      are only derived, and an instance sample reads no value a refined rule
+      estimates ("Cross-feeding");
     - ``stated``: the same claims, but each source's CTV is learned once, from
       the initial history, by an implication query in a KB of its own, and
       stated as a given rate (``_learn_trust``);
@@ -162,6 +165,7 @@ class PeTTaChainerBackend:
             self._handler.set_rule_refinement(True)
         self.counters = {"statements": 0, "expansions": 0, "review_seconds": 0.0, "query_seconds": 0.0}
         self.trust: dict[str, list[float]] = {}
+        self.unreviewed = encoding in ("sources", "likelihood")
 
     def _add(self, statements: list[str]) -> None:
         if statements:  # PeTTa rejects an empty batch
@@ -246,15 +250,22 @@ class PeTTaChainerBackend:
         self.counters["expansions"] += self._handler.last_query_metrics().get("expansions", 0)
         return answers
 
+    def _review(self, batch: bool) -> None:
+        """Each source's rule truth: reviewed one query of ``review_steps`` per
+        source, or read, all in one query without budget."""
+        implication = metta.trust_implication if self.encoding == "sources" else metta.likelihood_implication
+        goals = [metta.review(implication(source.name)) for source in self.world.sources]
+        answers = self._query(goals, 0, "review_seconds") if batch else [self._query([goal], self.review_steps, "review_seconds")[0] for goal in goals]
+        for source, proofs in zip(self.world.sources, answers, strict=True):
+            match = _ctv_re.search(proofs[0]) if proofs else None
+            if match:
+                self.trust[source.name] = [round(float(v), 4) for v in match.groups()]
+
     def beliefs(self, day: Round, keys: list[tuple[str, str]], budget: int) -> dict:
         self._add(self._claims(day))
         if self.encoding in ("sources", "likelihood"):
-            implication = metta.trust_implication if self.encoding == "sources" else metta.likelihood_implication
-            for source in self.world.sources:
-                (proofs,) = self._query([metta.review(implication(source.name))], self.review_steps, "review_seconds")
-                match = _ctv_re.search(proofs[0]) if proofs else None
-                if match:
-                    self.trust[source.name] = [round(float(v), 4) for v in match.groups()]
+            self._review(batch=not self.unreviewed)
+            self.unreviewed = False
         answers = self._query([metta.query(key) for key in keys], budget, "query_seconds")
         beliefs = {}
         for key, proofs in zip(keys, answers, strict=True):
