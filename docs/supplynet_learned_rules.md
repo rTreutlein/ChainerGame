@@ -136,7 +136,76 @@ frequency reading. "Given rules" is the same game with the rates given
 well). Error is to the exact posterior under the true rates; seconds are per
 round and indicative (other agents' benchmarks shared the machine).
 
-TABLE
+| stage | reasoner | error | error, given rules | Brier | Brier, given rules | coverage | s per round | s per round, given rules |
+|---|---|---|---|---|---|---|---|---|
+| Stage 1 | Exact, learned rates | 0.022 |  | 0.029 |  | 1.00 |  |  |
+| Stage 1 | ProbLog | 0.022 | 0.000 | 0.029 | 0.027 | 1.00 | 0.12 | 0.12 |
+| Stage 1 | PLN (29c78d00) | 0.055 | 0.008 | 0.044 | 0.028 | 1.00 | 1.09 | 0.15 |
+| Stage 1 | PLN (90264687) | 0.024 | 0.008 | 0.032 | 0.028 | 1.00 | 0.95 | 0.15 |
+| Stage 1 | NARS | 0.238 | 0.242 | 0.141 | 0.139 | 0.99 | 30.71 | 33.67 |
+| Stage 1 | Base rates | 0.239 | 0.239 | 0.134 | 0.134 | 1.00 |  |  |
+| Stage 2 | Exact, learned rates | 0.071 |  | 0.162 |  | 1.00 |  |  |
+| Stage 2 | ProbLog | 0.071 | 0.000 | 0.162 | 0.154 | 1.00 | 0.16 | 0.15 |
+| Stage 2 | PLN (29c78d00) | 0.129 | 0.000 | 0.190 | 0.154 | 1.00 | 1.57 | 0.33 |
+| Stage 2 | PLN (90264687) | 0.121 | 0.000 | 0.187 | 0.154 | 1.00 | 2.46 | 0.33 |
+| Stage 2 | NARS | 0.196 | 0.196 | 0.224 | 0.223 | 0.92 | 32.90 | 36.05 |
+| Stage 2 | Base rates | 0.183 | 0.183 | 0.213 | 0.213 | 1.00 |  |  |
+| Stage 3 timed | Exact, learned rates | 0.067 |  | 0.151 |  | 1.00 |  |  |
+| Stage 3 timed | ProbLog | 0.067 | 0.000 | 0.151 | 0.140 | 1.00 | 0.26 | 0.26 |
+| Stage 3 timed | PLN (29c78d00) | 0.108 | 0.003 | 0.167 | 0.140 | 1.00 | 2.08 | 0.46 |
+| Stage 3 timed | PLN (90264687) | 0.095 | 0.003 | 0.162 | 0.140 | 1.00 | 2.87 | 0.46 |
+| Stage 3 timed | NARS | 0.221 | 0.214 | 0.227 | 0.227 | 0.98 | 66.72 | 70.83 |
+| Stage 3 timed | Base rates | 0.229 | 0.229 | 0.226 | 0.226 | 1.00 |  |  |
+| Stage 3 untimed | Exact, learned rates | 0.064 |  | 0.146 |  | 1.00 |  |  |
+| Stage 3 untimed | ProbLog | 0.064 | 0.000 | 0.146 | 0.135 | 1.00 | 0.20 | 0.18 |
+| Stage 3 untimed | PLN (29c78d00) | 0.104 | 0.001 | 0.163 | 0.135 | 1.00 | 2.11 | 0.48 |
+| Stage 3 untimed | PLN (90264687) | 0.092 | 0.001 | 0.158 | 0.135 | 1.00 | 2.87 | 0.48 |
+| Stage 3 untimed | NARS | 0.209 | 0.206 | 0.220 | 0.217 | 0.97 | 66.24 | 70.56 |
+| Stage 3 untimed | Base rates | 0.214 | 0.214 | 0.212 | 0.212 | 1.00 |  |  |
+
+Stage 1, error by query kind:
+
+| reasoner | blocked | storm |
+|---|---|---|
+| Exact, learned rates | 0.017 | 0.032 |
+| ProbLog | 0.017 | 0.032 |
+| PLN (29c78d00) | 0.046 | 0.077 |
+| PLN (90264687) | 0.017 | 0.042 |
+| NARS | 0.229 | 0.258 |
+| Base rates | 0.233 | 0.254 |
+
+Stage 2, error by query kind:
+
+| reasoner | blocked | previous_storm | storm |
+|---|---|---|---|
+| Exact, learned rates | 0.063 | 0.081 | 0.080 |
+| ProbLog | 0.063 | 0.081 | 0.080 |
+| PLN (29c78d00) | 0.089 | 0.193 | 0.150 |
+| PLN (90264687) | 0.087 | 0.172 | 0.145 |
+| NARS | 0.148 | 0.272 | 0.226 |
+| Base rates | 0.120 | 0.277 | 0.225 |
+
+Stage 3 timed, error by query kind:
+
+| reasoner | blocked | degraded | previous_storm | producing | producing_unstocked | storm |
+|---|---|---|---|---|---|---|
+| Exact, learned rates | 0.070 | 0.085 | 0.074 | 0.054 | 0.027 | 0.075 |
+| ProbLog | 0.070 | 0.085 | 0.074 | 0.054 | 0.027 | 0.075 |
+| PLN (29c78d00) | 0.089 | 0.113 | 0.198 | 0.075 | 0.040 | 0.136 |
+| PLN (90264687) | 0.087 | 0.086 | 0.168 | 0.045 | 0.025 | 0.133 |
+| NARS | 0.139 | 0.221 | 0.305 | 0.355 | 0.253 | 0.237 |
+| Base rates | 0.131 | 0.235 | 0.289 | 0.399 | 0.316 | 0.236 |
+
+Stage 3 untimed, error by query kind:
+
+| reasoner | blocked | degraded | previous_storm | producing | producing_unstocked | storm |
+|---|---|---|---|---|---|---|
+| Exact, learned rates | 0.070 | 0.090 | 0.073 | 0.059 | 0.000 | 0.075 |
+| ProbLog | 0.070 | 0.090 | 0.073 | 0.059 | 0.000 | 0.075 |
+| PLN (29c78d00) | 0.088 | 0.118 | 0.198 | 0.081 | 0.003 | 0.135 |
+| PLN (90264687) | 0.087 | 0.093 | 0.162 | 0.056 | 0.004 | 0.131 |
+| NARS | 0.138 | 0.224 | 0.304 | 0.397 | 0.158 | 0.232 |
+| Base rates | 0.131 | 0.225 | 0.288 | 0.420 | 0.212 | 0.236 |
 
 **Reading.**
 
@@ -169,16 +238,20 @@ TABLE
 (`history120/summary.json`; NARS and ProbLog not rerun, ProbLog equals the
 ceiling):
 
-| stage | Exact, learned rates: 30 / 120 | PLN: 30 / 120 | Base rates: 30 / 120 | PLN s per round: 30 / 120 |
-|---|---|---|---|---|
-| Stage 1 | 0.022 / 0.014 | 0.055 / 0.046 | 0.239 / 0.229 | 1.09 / 2.26 |
-| Stage 2 | 0.071 / 0.041 | 0.129 / 0.117 | 0.183 / 0.176 | 1.57 / 3.34 |
-| Stage 3 timed | 0.067 / 0.036 | 0.108 / 0.091 | 0.229 / 0.215 | 2.08 / 4.49 |
-| Stage 3 untimed | 0.064 / 0.034 | 0.104 / 0.087 | 0.214 / 0.205 | 2.11 / 4.48 |
+| stage | Exact, learned rates: 30 / 120 | PLN 29c78d00: 30 / 120 | PLN 90264687: 30 / 120 | Base rates: 30 / 120 | PLN s per round, 29c78d00: 30 / 120 | 90264687: 30 / 120 |
+|---|---|---|---|---|---|---|
+| Stage 1 | 0.022 / 0.014 | 0.055 / 0.046 | 0.024 / 0.015 | 0.239 / 0.229 | 1.09 / 2.26 | 0.95 / 1.94 |
+| Stage 2 | 0.071 / 0.041 | 0.129 / 0.117 | 0.121 / 0.102 | 0.183 / 0.176 | 1.57 / 3.34 | 2.46 / 6.11 |
+| Stage 3 timed | 0.067 / 0.036 | 0.108 / 0.091 | 0.095 / 0.073 | 0.229 / 0.215 | 2.08 / 4.49 | 2.87 / 7.01 |
+| Stage 3 untimed | 0.064 / 0.034 | 0.104 / 0.087 | 0.092 / 0.070 | 0.214 / 0.205 | 2.11 / 4.48 | 2.87 / 7.04 |
 
-The ceiling halves with four times the data; PLN improves by 0.01–0.02 and
-its cost per round doubles. PLN's error is dominated by how it combines
-uncertain rules, which more data does not fix.
+The ceiling halves with four times the data. On 29c78d00 PLN improves by
+only 0.01–0.02: its error is how it combines uncertain rules, which more data
+does not fix. On 90264687 stage 1 follows the ceiling (0.015 against 0.014),
+and stages 2–3 improve by 0.02, still 0.035–0.06 above it, with the storm
+queries (`previous_storm` 0.145–0.156, ceiling 0.041–0.047) the largest gap.
+PLN's cost per round grows with the history on both builds (2–2.5× for 4×
+the periods): each review folds all of a rule's instances again.
 
 ## What limits PLN
 
