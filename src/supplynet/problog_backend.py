@@ -23,6 +23,11 @@ exact, is in docs/problog_backend.md:
   false (ProbLog's closed world);
 - a statement no rule derives but the round asks about (stage 1's storms)
   takes its given rate: ``r::storm(R, T) :- live(T).``;
+- with learned rules (``learned``), a rule stated with a confidence below 1
+  (a weak prior) and stage 1's storm rates are estimated each round from the
+  labelled periods by Laplace's rule, (k + 1) / (n + 2) per branch
+  (``Learner``); for fully observed periods these counts are the exact
+  posterior mean of each rate under a uniform prior;
 - every key is a ``query/1``; the cyclic untimed production rules are read
   under ProbLog's least-fixpoint semantics, the same as the chainer's
   complete predicates.
@@ -40,6 +45,7 @@ import resource
 import signal
 import tempfile
 import time
+from dataclasses import dataclass
 
 from . import metta
 from .world import Key, Network, Observation, Period, Rates
@@ -91,20 +97,90 @@ def _probability(p: float) -> str:
     return "" if p == 1 else f"{p:.10g}::"
 
 
-def rule(text: str, index: int) -> tuple[list[str], tuple[str, tuple[str, ...]]]:
-    """A CTV implication as ProbLog clauses, and its head as (predicate, constant arguments)."""
-    _, _, (implication, antecedent, consequent), (ctv, (_, p, _), (_, q, _)) = parse(text)
+Head = tuple[str, tuple[str, ...]]  # (predicate, constant arguments)
+
+
+@dataclass(frozen=True)
+class Rule:
+    """A CTV implication: P(consequent | antecedent) and P(consequent | not
+    antecedent) as ``rates``, or None when it is stated with a confidence
+    below 1, a weak prior whose rates are learned."""
+
+    index: int
+    antecedent: list
+    consequent: list
+    rates: tuple[float, float] | None
+
+    @property
+    def head(self) -> Head:
+        return (self.consequent[0], tuple(self.consequent[1:-1]))
+
+    def clauses(self, p: float, q: float) -> list[str]:
+        head, period = term(self.consequent), argument(self.consequent[-1])
+        name = f"ant_{self.index}({', '.join(_variables(self.consequent))})"
+        clauses = [f"{name} :- {_conjunction(part)}." for part in (self.antecedent[1:] if self.antecedent[0] == "Or" else [self.antecedent])]
+        if p > 0:
+            clauses.append(f"{_probability(p)}{head} :- live({period}), {name}.")
+        if q > 0:
+            clauses.append(f"{_probability(q)}{head} :- live({period}), \\+{name}.")
+        return clauses
+
+
+def rule(text: str, index: int) -> Rule:
+    _, _, (implication, antecedent, consequent), (ctv, (_, p, c), (_, q, d)) = parse(text)
     assert implication == "Implication" and ctv == "CTV", text
-    head, period = term(consequent), argument(consequent[-1])
-    variables = ", ".join(_variables(consequent))
-    name = f"ant_{index}({variables})"
-    clauses = [f"{name} :- {_conjunction(part)}." for part in (antecedent[1:] if antecedent[0] == "Or" else [antecedent])]
-    p, q = float(p), float(q)
-    if p > 0:
-        clauses.append(f"{_probability(p)}{head} :- live({period}), {name}.")
-    if q > 0:
-        clauses.append(f"{_probability(q)}{head} :- live({period}), \\+{name}.")
-    return clauses, (consequent[0], tuple(consequent[1:-1]))
+    return Rule(index, antecedent, consequent, (float(p), float(q)) if float(c) == float(d) == 1 else None)
+
+
+STRUCTURAL = {"NextPeriod"}  # given links: a rule's negative branch keeps them
+
+
+class Learner:
+    """Rates counted from the labelled periods' MeTTa facts. A rule's sample
+    is a labelled period of its consequent whose structural antecedent parts
+    (the ``NextPeriod`` link) hold and whose other parts are labelled; it
+    counts towards P(consequent | antecedent) when they all hold and towards
+    P(consequent | not antecedent) otherwise. A prior's sample is any
+    labelled period of its statement."""
+
+    def __init__(self, facts: list[tuple[list, bool]]):
+        self.truth = {tuple(expr): value for expr, value in facts}
+        self.links: dict[tuple[str, str], list[tuple]] = {}  # (predicate, last argument) -> facts
+        for statement, value in self.truth.items():
+            if statement[0] in STRUCTURAL and value:
+                self.links.setdefault((statement[0], statement[-1]), []).append(statement)
+
+    def antecedent(self, antecedent: list, binding: dict[str, str]) -> bool | None:
+        """The antecedent's value under ``binding``, None when it is no sample."""
+        parts = antecedent[1:] if antecedent[0] == "And" else [antecedent]
+        for part in (part for part in parts if part[0] in STRUCTURAL):
+            pattern = [binding.get(atom, atom) for atom in part]
+            (link,) = [found for found in self.links.get((pattern[0], pattern[-1]), ()) if all(a == b or a.startswith("$") for a, b in zip(pattern, found))] or [None]
+            if link is None:
+                return None
+            binding = binding | {a: b for a, b in zip(pattern, link) if a.startswith("$")}
+        values = []
+        for part in (part for part in parts if part[0] not in STRUCTURAL):
+            atom = part[1] if part[0] == "Not" else part
+            value = self.truth.get(tuple(binding.get(a, a) for a in atom))
+            if value is None:
+                return None
+            values.append(value != (part[0] == "Not"))
+        return all(values)
+
+    def rates(self, rule: Rule, periods: list[str]) -> tuple[float, float]:
+        tally = {True: [0, 0], False: [0, 0]}
+        for period in periods:
+            value = self.truth.get(tuple(rule.consequent[:-1]) + (period,))
+            parent = None if value is None else self.antecedent(rule.antecedent, {rule.consequent[-1]: period})
+            if parent is not None:
+                tally[parent][0] += value
+                tally[parent][1] += 1
+        return tuple((tally[branch][0] + 1) / (tally[branch][1] + 2) for branch in (True, False))
+
+    def prior(self, head: Head, periods: list[str]) -> float:
+        values = [value for value in (self.truth.get((head[0], *head[1], period)) for period in periods) if value is not None]
+        return (sum(values) + 1) / (len(values) + 2)
 
 
 def given_priors(network: Network, rates: Rates) -> dict[tuple[str, tuple[str, ...]], float]:
@@ -206,27 +282,26 @@ class ProblogBackend:
     """ProbLog given the translated rules and, per round, the live periods'
     observations and the last resolved period's labels. ``engine`` is a
     ProbLog knowledge compiler ("sdd", "ddnnf", ...); a round taking longer
-    than ``timeout`` seconds is killed and left unanswered."""
+    than ``timeout`` seconds is killed and left unanswered. With ``learned``
+    the rules come without rates, which each round counts from the labelled
+    periods (``Learner``), as it does the priors' rates."""
 
     name = "problog"
 
-    def __init__(self, statements=metta, engine: str = "ddnnf", timeout: float = 60, priors=given_priors):
+    def __init__(self, statements=metta, engine: str = "ddnnf", timeout: float = 60, priors=given_priors, learned: bool = False):
         load(engine)
-        self.statements, self.engine, self.timeout, self.priors = statements, engine, timeout, priors
+        self.statements, self.engine, self.timeout, self.priors, self.learned = statements, engine, timeout, priors, learned
         self.rounds: list[dict] = []
 
     def begin(self, network: Network, rates: Rates, history: list[tuple[Period, Observation]]) -> None:
-        self.clauses, self.derived = [], set()
-        for index, text in enumerate(self.statements.rules(network, rates)):
-            clauses, head = rule(text, index)
-            assert head not in self.derived, f"one rule per head keeps a CTV exact: {head}"
-            self.clauses += clauses
-            self.derived.add(head)
-        for (predicate, constants), p in self.priors(network, rates).items():
-            self.clauses.append(f"{_probability(p)}{term([predicate, *constants, '$t'])} :- live(Vt).")
-            self.derived.add((predicate, constants))
+        texts = self.statements.rules(network, rates, learned=True) if self.learned else self.statements.rules(network, rates)
+        self.rules = [rule(text, index) for index, text in enumerate(texts)]
+        assert self.learned or all(r.rates for r in self.rules), "a rule without rates needs learned rules"
+        self.prior_rates = self.priors(network, rates)  # replaced by counts with learned rules
+        self.derived = {r.head for r in self.rules} | set(self.prior_rates)
+        assert len(self.derived) == len(self.rules) + len(self.prior_rates), "one rule per head keeps a CTV exact"
         self.facts: dict[str, list[tuple[list, bool]]] = {}  # period -> its statements and values
-        self.resolved: set[str] = set()
+        self.resolved: list[str] = []
         self.last: str | None = None
         for period, observation in history:
             self._observe(observation)
@@ -242,15 +317,25 @@ class ProblogBackend:
 
     def resolve(self, period, observation) -> None:
         self._add(self.statements.resolution_facts(period, observation))
-        self.resolved.add(period.name)
+        self.resolved.append(period.name)
         self.last = period.name
+
+    def clauses(self) -> list[str]:
+        """The rules and priors with their rates, counted from the labelled
+        periods where they are learned."""
+        learner = Learner([fact for name in self.resolved for fact in self.facts.get(name, ())]) if self.learned else None
+        clauses = [line for r in self.rules for line in r.clauses(*(r.rates or learner.rates(r, self.resolved)))]
+        for head, p in self.prior_rates.items():
+            p = learner.prior(head, self.resolved) if learner else p
+            clauses.append(f"{_probability(p)}{term([head[0], *head[1], '$t'])} :- live(Vt).")
+        return clauses
 
     def program(self, keys: list[Key]) -> str:
         """The round's program: rules, the live periods, their observations
         as evidence (facts for statements no rule derives), and the last
         resolved period's labels as facts."""
         live = sorted({name for name in self.facts if name not in self.resolved} | {key[2] for key in keys})
-        lines = [*self.clauses, *(f"live('{name}')." for name in live)]
+        lines = [*self.clauses(), *(f"live('{name}')." for name in live)]
         for name in [*live, *([self.last] if self.last else [])]:
             for expr, value in self.facts.get(name, ()):
                 if name != self.last and (expr[0], tuple(expr[1:-1])) in self.derived:

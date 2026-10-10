@@ -1,5 +1,6 @@
-"""The MeTTa a reasoner receives: the network's rules with their known rates,
-labelled periods as facts, a period's observations, and belief queries."""
+"""The MeTTa a reasoner receives: the network's rules with their known rates
+(or, with learned rules, with a weak prior in their rates' place), labelled
+periods as facts, a period's observations, and belief queries."""
 
 from __future__ import annotations
 
@@ -14,40 +15,48 @@ def _tv(value: bool) -> str:
     return f"(STV {1 if value else 0} 1)"
 
 
+PRIOR = "(CTV (STV 0.5 0.02) (STV 0.5 0.02))"  # a learned rule's weak prior on both branches
+
+
 def _certain(name: str, antecedent: str, consequent: str) -> str:
     return f"(: {name} (Implication {antecedent} {consequent}) (CTV (STV 1 1) (STV 0 1)))"
 
 
-def rules(network: Network, rates: Rates) -> list[str]:
+def rules(network: Network, rates: Rates, learned: bool = False) -> list[str]:
     """A storm blocks each route of its region with the route's rate, and a
     blocked route delays each shipment departing on it; when storms persist, a
     storm continues into the next period or starts with the region's rate.
     With a cell, a degradation persists or starts likewise, and the cycle's
     production rules hold with certainty. All stated as certain CTVs, so the
-    rates are given, not learned."""
+    rates are given; with ``learned`` every rule but the certain production
+    rules states its structure only, with the weak ``PRIOR`` in place of its
+    rates, which are left for the labelled history."""
+    nodes = rates.nodes(network).table
+
+    def ctv(node: tuple[str, str]) -> str:
+        return PRIOR if learned else "(CTV (STV {} 1) (STV {} 1))".format(*map(_number, nodes[node]))
+
     lines = []
     if rates.persist is not None:
-        for region, kind in network.regions.items():
-            lines.append(
-                f"(: persist-{region} (Implication (And (NextPeriod $p $t) (Storm {region} $p)) (Storm {region} $t)) "
-                f"(CTV (STV {_number(rates.persist)} 1) (STV {_number(rates.storm[kind])} 1)))"
-            )
+        lines += [
+            f"(: persist-{region} (Implication (And (NextPeriod $p $t) (Storm {region} $p)) (Storm {region} $t)) {ctv(('Storm', region))})"
+            for region in network.regions
+        ]
     for route in network.routes:
-        lines.append(
-            f"(: block-{route.name} (Implication (Storm {route.region} $p) (Blocked {route.name} $p)) "
-            f"(CTV (STV {_number(rates.block_given_storm[route.kind])} 1) "
-            f"(STV {_number(rates.block_without_storm)} 1)))"
-        )
-        for shipment in route.shipments:
-            lines.append(
-                f"(: late-{shipment} (Implication (Blocked {route.name} $p) (Late {shipment} $p)) "
-                f"(CTV (STV {_number(rates.late_given_blocked)} 1) "
-                f"(STV {_number(rates.late_given_open)} 1)))"
-            )
-    return lines + (_cycle_rules(network, rates) if network.cell else [])
+        lines.append(f"(: block-{route.name} (Implication (Storm {route.region} $p) (Blocked {route.name} $p)) {ctv(('Blocked', route.name))})")
+        lines += [
+            f"(: late-{shipment} (Implication (Blocked {route.name} $p) (Late {shipment} $p)) {ctv(('Late', shipment))})"
+            for shipment in route.shipments
+        ]
+    if network.cell:
+        lines += [
+            f"(: persist-degraded-{site} (Implication (And (NextPeriod $p $t) (Degraded {site} $p)) (Degraded {site} $t)) {ctv(('Degraded', site))})"
+            for site in network.cell.sites
+        ]
+    return lines + (_cycle_rules(network) if network.cell else [])
 
 
-def _cycle_rules(network: Network, rates: Rates) -> list[str]:
+def _cycle_rules(network: Network) -> list[str]:
     """The power plant runs when fuelled, by stock or by the mine's fuel
     arriving over the open fuel route, and is not degraded; the mine and the
     plants run when the power plant does, their input arrived, and they are
@@ -55,17 +64,12 @@ def _cycle_rules(network: Network, rates: Rates) -> list[str]:
     untimed, it is the mine's production now, and the rules form a loop."""
     cell = network.cell
     fuel = cell.fuel_route.name
-    lines = [
-        f"(: persist-degraded-{site} (Implication (And (NextPeriod $p $t) (Degraded {site} $p)) (Degraded {site} $t)) "
-        f"(CTV (STV {_number(rates.degraded_persist)} 1) (STV {_number(rates.degrade[kind])} 1)))"
-        for site, kind in cell.sites.items()
-    ]
     arriving = (
         f"(And (NextPeriod $p $t) (Producing {MINE} $p) (Not (Blocked {fuel} $p)))"
         if cell.timed
         else f"(And (Producing {MINE} $t) (Not (Blocked {fuel} $t)))"
     )
-    lines += [
+    lines = [
         _certain("fuel-arrives", arriving, "(FuelArrived $t)"),
         _certain("fuelled", "(Or (StockedFuel $t) (FuelArrived $t))", f"(Fuelled {POWER} $t)"),
         _certain(f"runs-{POWER}", f"(And (Fuelled {POWER} $t) (Not (Degraded {POWER} $t)))", f"(Producing {POWER} $t)"),
@@ -123,6 +127,15 @@ def resolution_facts(period: Period, observation: Observation) -> list[str]:
         if site not in observation.degraded
     ]
     return lines
+
+
+def review(rule: str) -> str | None:
+    """The ``RuleTruth`` query of a learned rule, one stated with ``PRIOR``,
+    which folds the rule's labelled instances; None for a rule with rates."""
+    if not rule.endswith(f" {PRIOR})"):
+        return None
+    implication = rule[: -len(PRIOR) - 2].split(" ", 2)[2]
+    return f"(: $prf (RuleTruth {implication}) $tv)"
 
 
 def query(key: Key) -> str:

@@ -78,7 +78,7 @@ def run_game(config: GameConfig, backend, rates: Rates | None = None, on_round=N
     rates = rates or stage_rates(config.stage)
     rng = random.Random(config.seed)
     network = generate_network(rng, config.regions, 3 if config.stage >= 2 else 0, config.cycle if config.stage == 3 else None)
-    knowledge = Knowledge(network, rates)
+    knowledge = Knowledge(network, rates.nodes(network))
     timeline = []
 
     def next_period(name):

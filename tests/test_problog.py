@@ -4,41 +4,37 @@ import unittest
 from types import SimpleNamespace
 
 from supplynet import scale
-from supplynet.backends import ReferenceBackend
+from supplynet.backends import LearnedReferenceBackend, ReferenceBackend
 from supplynet.game import GameConfig, run_game
 from supplynet.problog_backend import ProblogBackend, rule, solve
 
 HAVE_PROBLOG = importlib.util.find_spec("problog") is not None
 
 
-class RecordingReference(ReferenceBackend):
-    def __init__(self, *args):
-        super().__init__(*args)
-        self.answers = []
+def recording(backend):
+    """``backend`` keeping every round's beliefs."""
 
-    def beliefs(self, observation, keys, budget):
-        self.answers.append(super().beliefs(observation, keys, budget))
-        return self.answers[-1]
+    class Recording(backend):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.answers = []
+
+        def beliefs(self, observation, keys, budget):
+            self.answers.append(super().beliefs(observation, keys, budget))
+            return self.answers[-1]
+
+    return Recording
 
 
-class RecordingProblog(ProblogBackend):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.answers = []
-
-    def beliefs(self, observation, keys, budget):
-        self.answers.append(super().beliefs(observation, keys, budget))
-        return self.answers[-1]
+RecordingReference, RecordingLearnedReference, RecordingProblog = map(recording, (ReferenceBackend, LearnedReferenceBackend, ProblogBackend))
 
 
 class TranslationTests(unittest.TestCase):
     def test_a_ctv_rule_is_two_exclusive_clauses(self):
-        clauses, head = rule(
-            "(: persist-north (Implication (And (NextPeriod $p $t) (Storm north $p)) (Storm north $t)) (CTV (STV 0.7 1) (STV 0.3 1)))", 0
-        )
-        self.assertEqual(head, ("Storm", ("north",)))
+        persist = rule("(: persist-north (Implication (And (NextPeriod $p $t) (Storm north $p)) (Storm north $t)) (CTV (STV 0.7 1) (STV 0.3 1)))", 0)
+        self.assertEqual(persist.head, ("Storm", ("north",)))
         self.assertEqual(
-            clauses,
+            persist.clauses(*persist.rates),
             [
                 "ant_0(Vt) :- nextperiod(Vp, Vt), storm('north', Vp).",
                 "0.7::storm('north', Vt) :- live(Vt), ant_0(Vt).",
@@ -47,19 +43,17 @@ class TranslationTests(unittest.TestCase):
         )
 
     def test_or_negation_and_certain_rules(self):
-        clauses, _ = rule("(: fuelled (Implication (Or (StockedFuel $t) (FuelArrived $t)) (Fuelled power-plant $t)) (CTV (STV 1 1) (STV 0 1)))", 3)
+        fuelled = rule("(: fuelled (Implication (Or (StockedFuel $t) (FuelArrived $t)) (Fuelled power-plant $t)) (CTV (STV 1 1) (STV 0 1)))", 3)
         self.assertEqual(
-            clauses,
+            fuelled.clauses(*fuelled.rates),
             [
                 "ant_3(Vt) :- stockedfuel(Vt).",
                 "ant_3(Vt) :- fuelarrived(Vt).",
                 "fuelled('power-plant', Vt) :- live(Vt), ant_3(Vt).",
             ],
         )
-        clauses, _ = rule(
-            "(: runs (Implication (And (Not (Degraded mine $t)) (Producing power-plant $t)) (Producing mine $t)) (CTV (STV 1 1) (STV 0 1)))", 4
-        )
-        self.assertEqual(clauses[0], "ant_4(Vt) :- producing('power-plant', Vt), \\+degraded('mine', Vt).")
+        runs = rule("(: runs (Implication (And (Not (Degraded mine $t)) (Producing power-plant $t)) (Producing mine $t)) (CTV (STV 1 1) (STV 0 1)))", 4)
+        self.assertEqual(runs.clauses(*runs.rates)[0], "ant_4(Vt) :- producing('power-plant', Vt), \\+degraded('mine', Vt).")
 
 
 @unittest.skipUnless(HAVE_PROBLOG, "problog is not installed")
@@ -78,6 +72,14 @@ class ExactnessTests(unittest.TestCase):
             with self.subTest(stage=stage, cycle=cycle, engine=engine):
                 config = GameConfig(seed=2, rounds=6, stage=stage, cycle=cycle)
                 self.assert_matches_reference(lambda backend: run_game(config, backend), RecordingReference(), RecordingProblog(engine=engine))
+
+    def test_learned_rates_match_the_exact_posterior_under_counted_rates(self):
+        """With learned rules ProbLog counts every rate from the labelled
+        periods' facts; the reference counts them from the simulator's labels."""
+        for stage, cycle in ((1, "timed"), (2, "timed"), (3, "timed"), (3, "untimed")):
+            with self.subTest(stage=stage, cycle=cycle):
+                config = GameConfig(seed=3, rounds=8, stage=stage, cycle=cycle)
+                self.assert_matches_reference(lambda backend: run_game(config, backend), RecordingLearnedReference(), RecordingProblog(learned=True))
 
     def test_scale_matches_the_exact_reference(self):
         config = scale.GameConfig(1, scale.SIZES["s"], rounds=4)

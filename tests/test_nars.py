@@ -25,6 +25,18 @@ class TranslationTest(unittest.TestCase):
             ],
         )
 
+    def test_a_learned_rule_takes_its_branches_from_the_labelled_samples(self):
+        """k of n samples per branch, as revision sums NARS's induction; a
+        branch with no sample is left out."""
+        text = "(: block-r1 (Implication (Storm north $p) (Blocked r1 $p)) (CTV (STV 0.5 0.02) (STV 0.5 0.02)))"
+        self.assertEqual(
+            nars.rule(text, {("Blocked", "r1"): ((3, 4), (0, 0))}),
+            [
+                "<<(north * $p) --> storm> ==> <(r1 * $p) --> blocked>>. %0.75;0.8%",
+                "<<(north * $p) --> storm> ==> (! <(r1 * $p) --> blocked>)>. %0.25;0.8%",
+            ],
+        )
+
     def test_persistence_keeps_the_period_link_in_the_negative_branch(self):
         lines = nars.rule(
             "(: persist-north (Implication (And (NextPeriod $p $t) (Storm north $p)) (Storm north $t)) (CTV (STV 0.7 1) (STV 0.3 1)))"

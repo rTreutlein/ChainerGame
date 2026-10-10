@@ -2,9 +2,10 @@ import itertools
 import os
 import random
 import unittest
+from dataclasses import replace
 
 from supplynet import metta
-from supplynet.backends import PeTTaChainerBackend, PriorBackend, ReferenceBackend
+from supplynet.backends import LearnedReferenceBackend, PeTTaChainerBackend, PriorBackend, ReferenceBackend
 from supplynet.game import GameConfig, run_game, stage_rates
 from supplynet.world import (
     MINE,
@@ -13,9 +14,12 @@ from supplynet.world import (
     Knowledge,
     Network,
     Observation,
+    Period,
     Rates,
     Route,
+    counts,
     generate_network,
+    learned_rates,
     observe,
     production,
     sample_period,
@@ -127,7 +131,7 @@ class WorldTests(unittest.TestCase):
         for index in range(20):
             period = sample_period(network, rates, rng, f"t{index}", [])
             observation = observe(network, period, rng, 0.3, {(s, period.name): v for s, v in period.late.items()})
-            knowledge = Knowledge(network, rates)
+            knowledge = Knowledge(network, rates.nodes(network))
             knowledge.observe(observation)
             before = {("Storm", region): rates.stationary(kind) for region, kind in network.regions.items()}
             self.assert_matches_brute_force(knowledge, brute_force_posterior(network, rates, before, [period.name], [observation]))
@@ -141,7 +145,7 @@ class WorldTests(unittest.TestCase):
         for seed in range(3):
             periods, observations = linked_run(network, rates, random.Random(seed), 6, 0.3)
             names = [period.name for period in periods]
-            knowledge = Knowledge(network, rates)
+            knowledge = Knowledge(network, rates.nodes(network))
             for observation in observations:
                 knowledge.observe(observation)
             before = {("Storm", "north"): rates.stationary("coastal")}
@@ -158,7 +162,7 @@ class WorldTests(unittest.TestCase):
             for seed in range(2):
                 periods, observations = linked_run(network, rates, random.Random(seed), 3, 0.3)
                 names = [period.name for period in periods]
-                knowledge = Knowledge(network, rates)
+                knowledge = Knowledge(network, rates.nodes(network))
                 for observation in observations:
                     knowledge.observe(observation)
                 before = {("Storm", "north"): rates.stationary("coastal"), ("Blocked", "rf"): False, ("Producing", MINE): False}
@@ -195,7 +199,7 @@ class WorldTests(unittest.TestCase):
         rates = stage_rates(3)
         network = cell_network("untimed")
         periods, observations = linked_run(network, rates, random.Random(5), 30, 0.3)
-        knowledge = Knowledge(network, rates)
+        knowledge = Knowledge(network, rates.nodes(network))
         for period, observation in zip(periods, observations):
             knowledge.observe(observation)
             posterior = knowledge.posterior()
@@ -214,7 +218,7 @@ class WorldTests(unittest.TestCase):
         late = quiet | {(first.shipments[0], "t"): True}
 
         def storm(late, inspected):
-            knowledge = Knowledge(network, rates)
+            knowledge = Knowledge(network, rates.nodes(network))
             knowledge.observe(Observation("t", None, late, inspected))
             return knowledge.posterior()[("Storm", region, "t")]
 
@@ -227,7 +231,7 @@ class WorldTests(unittest.TestCase):
         network = Network({"north": "coastal"}, (Route("r1", "north", "exposed", ("s1-1",), 1),))
 
         def posterior(arrivals):
-            knowledge = Knowledge(network, rates)
+            knowledge = Knowledge(network, rates.nodes(network))
             knowledge.observe(Observation("t1", None, {}, {}))
             knowledge.observe(Observation("t2", "t1", arrivals, {}))
             return knowledge.posterior()
@@ -235,6 +239,42 @@ class WorldTests(unittest.TestCase):
         quiet, late = posterior({("s1-1", "t1"): False}), posterior({("s1-1", "t1"): True})
         self.assertGreater(late[("Storm", "north", "t1")], quiet[("Storm", "north", "t1")])
         self.assertGreater(late[("Storm", "north", "t2")], quiet[("Storm", "north", "t2")])
+
+
+class LearnedRatesTests(unittest.TestCase):
+    def test_counts_and_laplace(self):
+        """Persistence samples are consecutive labelled periods; a block's
+        parent is its region's storm and a lateness's its route's block."""
+        route = Route("r1", "north", "exposed", ("s1-1",))
+        network = Network({"north": "coastal"}, (route,))
+        periods = [
+            Period(name, previous, {"north": storm}, {"r1": blocked}, {"s1-1": late})
+            for name, previous, storm, blocked, late in (
+                ("h1", None, True, True, True),
+                ("h2", "h1", True, False, False),
+                ("h3", "h2", False, False, True),
+                ("h4", "h3", False, False, False),
+            )
+        ]
+        tally = counts(network, periods, linked=True)
+        self.assertEqual(tally[("Storm", "north")], ((1, 2), (0, 1)))
+        self.assertEqual(tally[("Blocked", "r1")], ((1, 2), (0, 2)))
+        self.assertEqual(tally[("Late", "s1-1")], ((1, 1), (1, 3)))
+        independent = counts(network, [replace(period, previous=None) for period in periods], linked=False)
+        self.assertEqual(independent[("Storm", "north")], ((2, 4), (2, 4)))
+        rates = learned_rates(network, periods, linked=True)
+        self.assertEqual(rates.table[("Storm", "north")], (2 / 4, 1 / 3))
+        self.assertEqual(rates.table[("Late", "s1-1")], (2 / 3, 2 / 5))
+
+    def test_the_learned_reference_converges_to_the_exact_posterior(self):
+        """With a long labelled history the counted rates approach the true
+        ones, and so does its posterior."""
+        short, long = (
+            run_game(GameConfig(seed=5, rounds=5, stage=2, history=history), LearnedReferenceBackend())["posterior_error"]
+            for history in (30, 3000)
+        )
+        self.assertLess(long, short)
+        self.assertLess(long, 0.01)
 
 
 class GameTests(unittest.TestCase):
@@ -292,6 +332,22 @@ class GameTests(unittest.TestCase):
         )
         self.assertEqual(metta.query(("Storm", "north", "t3")), "(: $prf (Storm north t3) $tv)")
 
+    def test_learned_statements_leave_every_rate_but_the_certain_rules_to_the_data(self):
+        network, rates = cell_network("timed"), stage_rates(3)
+        given, learned = metta.rules(network, rates), metta.rules(network, rates, learned=True)
+        self.assertEqual(len(given), len(learned))
+        for stated, open_ in zip(given, learned, strict=True):
+            if "(CTV (STV 1 1) (STV 0 1))" in stated:  # the production rules
+                self.assertEqual(open_, stated)
+                self.assertIsNone(metta.review(open_))
+            else:
+                self.assertTrue(open_.endswith(f" {metta.PRIOR})"))
+                self.assertEqual(open_.split(" (CTV")[0], stated.split(" (CTV")[0])
+        self.assertIn(
+            "(: $prf (RuleTruth (Implication (And (NextPeriod $p $t) (Degraded mine $p)) (Degraded mine $t))) $tv)",
+            [metta.review(line) for line in learned],
+        )
+
     def test_cycle_statements(self):
         rates = stage_rates(3)
         timed, untimed = (metta.rules(cell_network(cycle), rates) for cycle in ("timed", "untimed"))
@@ -333,6 +389,17 @@ class GameTests(unittest.TestCase):
             backend = PeTTaChainerBackend(os.environ.get("PETTACHAINER_PYTHONPATH"))
             summary = run_game(GameConfig(seed=7, rounds=3, budget=50, stage=stage), backend)
             self.assertEqual(summary["coverage"], 1.0)
+
+    @unittest.skipUnless(os.environ.get("SUPPLYNET_LIVE_PETTACHAINER") == "1", "set SUPPLYNET_LIVE_PETTACHAINER=1")
+    def test_pettachainer_learns_every_rule(self):
+        """With learned rules every rule's review folds its instances: no
+        rule keeps its prior (in this game every rule's antecedent holds in
+        some labelled period; one that never holds would keep it)."""
+        backend = PeTTaChainerBackend(os.environ.get("PETTACHAINER_PYTHONPATH"), learned=True)
+        summary = run_game(GameConfig(seed=1, rounds=2, budget=50, stage=3), backend)
+        self.assertEqual(summary["coverage"], 1.0)
+        self.assertEqual(len(summary["rule_truths"]), len(backend.reviews))
+        self.assertFalse([goal for goal, truth in summary["rule_truths"].items() if truth[1] <= 0.02])
 
     @unittest.skipUnless(os.environ.get("SUPPLYNET_LIVE_PETTACHAINER") == "1", "set SUPPLYNET_LIVE_PETTACHAINER=1")
     def test_pettachainer_does_not_run_the_untimed_loop_without_stock(self):

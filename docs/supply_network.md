@@ -673,6 +673,15 @@ no loop exists: timed seed 1 (error 0.0217, Brier 0.1332) and stage 2 seed 1
 (error 0.0082, Brier 0.1486) are identical to master, within 1% of its time.
 
 
+## Learned rules
+
+`supplynet run --learned-rules` (stages 1–3) hands every reasoner the rules'
+structure with a weak prior in place of their rates, which each learns from
+the labelled periods; the stage 3 production rules stay given. The encodings
+for PLN, ProbLog and NARS, the exact posterior under counted rates (the
+ceiling for any learner) and the results: `docs/supplynet_learned_rules.md`.
+
+
 ## Stage "scale" as built
 
 `supplynet run --stage scale --size s|m|l|xl` (`src/supplynet/scale.py`), and
