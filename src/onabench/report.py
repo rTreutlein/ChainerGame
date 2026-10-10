@@ -27,7 +27,8 @@ def main(raw):
     runs = defaultdict(list)
     for path in sorted(glob.glob(f"{raw}/*.json")):
         r = json.load(open(path))
-        label = r["agent"] if r["agent"] == "ona" else f"pln-{r.get('space', '?')}"
+        label = (r["agent"] if r["agent"] == "ona"
+                 else "pln-mined-{}-{}".format(*r["mined"]) if r.get("mined") else f"pln-{r.get('space', '?')}")
         runs[(r["task"], label)].append(r)
     for (task, label), rs in sorted(runs.items()):
         phases = list(rs[0]["phase_scores"])
@@ -52,6 +53,9 @@ def main(raw):
                 1000 * statistics.mean(tot), 1000 * statistics.median(tot), 1000 * max(tot),
                 *(1000 * parts[k] for k in ("add", "review", "decide", "feedback")),
                 statistics.mean(r["wall"] for r in rs), sorted({r["hypotheses"] for r in rs})))
+            if rs[0].get("mined"):
+                print("mined: hypotheses reviewed per trial mean {:.1f}, dropped per run mean {:.1f}".format(
+                    statistics.mean(x.get("reviewed", 0) for x in tim), statistics.mean(r["dropped"] for r in rs)))
         print()
 
 

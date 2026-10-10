@@ -94,6 +94,13 @@ def complete_predicates(network: Network) -> list[str]:
     return ["Producing", "Fuelled", "FuelArrived"] if network.cell else []
 
 
+def positive_only_predicates(network: Network) -> list[str]:
+    """The predicates whose statements are stored only when true: a period's
+    link to the previous one. A knowledge base mining its own hypotheses
+    concludes none of them (PeTTaChainer set-positive-only-predicate)."""
+    return ["NextPeriod"]
+
+
 def observation_facts(observation: Observation) -> list[str]:
     """The period's link to its predecessor, the lateness of the shipments
     arriving now (keyed by departure period), and the inspected routes; with a

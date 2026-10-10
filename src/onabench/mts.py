@@ -139,6 +139,12 @@ class PLNAgent:
     - sample-pairs: the sample with one comparison stimulus (the pairs
       ONA's scripts ask about).
 
+    With ``mined`` (PeTTaChainer ``set-hypothesis-mining``) the harness
+    creates no hypotheses: the knowledge base proposes them itself from the
+    facts it is given (at most ``max_new`` per fact, ``max_live`` per
+    consequent pattern), and the review is its ``review-hypotheses`` of the
+    trial's ``(Reward $op t)``, which also drops the ones that do not predict.
+
     Decision: first the truths of the hypotheses that match the trial are
     read (their RuleTruth goals queried in one query-many), with budget only
     when one was never read, to fold its instances: PeTTaChainer takes each
@@ -154,7 +160,7 @@ class PLNAgent:
     name = "pln"
     OPS = ("left", "right")
 
-    def __init__(self, seed, steps, pettachainer_path=None, relational=True, space="sample-pairs"):
+    def __init__(self, seed, steps, pettachainer_path=None, relational=True, space="sample-pairs", mined=None):
         if pettachainer_path:
             sys.path.insert(0, pettachainer_path)
         from pettachainer import PeTTaChainer
@@ -163,6 +169,10 @@ class PLNAgent:
         self.h.set_rule_refinement(True)
         for p in ("Sample", "LeftStim", "RightStim"):
             self.h.set_positive_only_predicate(p)
+        self.mined = mined
+        self.dropped = 0
+        if mined:
+            self.h.set_hypothesis_mining(*mined)
         self.rng = random.Random(seed * 7919 + 1)
         self.steps = steps
         self.relational = relational
@@ -199,7 +209,11 @@ class PLNAgent:
                                    f"(: l{t} (LeftStim {left} t{t}) (STV 1 1))",
                                    f"(: r{t} (RightStim {right} t{t}) (STV 1 1))"])
         t1 = time.perf_counter()
-        if review:
+        if self.mined:
+            verdicts = self.h.review_hypotheses(f"(Reward $op t{t})", steps=self.steps)
+            self.dropped += sum(v.endswith(" dropped)") for v in verdicts)
+            review = verdicts
+        elif review:
             print(f"  trial {t} reviewing {len(review)}", file=sys.stderr, flush=True)
             self.h.query_many(review, steps=steps, timeout_sec=None)
         t1r = time.perf_counter()
@@ -217,7 +231,7 @@ class PLNAgent:
             op = best
         else:
             op = None
-        self.timing.append({"t": t, "add": t1 - t0, "review": t1r - t1, "decide": t2 - t1r,
+        self.timing.append({"t": t, "add": t1 - t0, "review": t1r - t1, "decide": t2 - t1r, "reviewed": len(review),
                             "desire": {k: round(v, 4) for k, v in desire.items()}})
         print(f"  trial {t} {sample} {left} {right} review {t1r - t1:.2f}s decide {t2 - t1r:.2f}s", file=sys.stderr, flush=True)
         return None if op is None else "^" + op
@@ -225,7 +239,7 @@ class PLNAgent:
     def feedback(self, op, success):
         t0 = time.perf_counter()
         new = []
-        for a in self._antecedents(*self.context):
+        for a in ([] if self.mined else self._antecedents(*self.context)):
             if (a, op[1:]) not in self.hyps:
                 self.hyps.add((a, op[1:]))
                 new.append(f"(: h{len(self.hyps)} (Implication {a} (Reward {op[1:]} $t)) (STV 0.5 0.01))")
@@ -278,13 +292,15 @@ def main():
     ap.add_argument("--steps", type=int, default=200, help="PLN query budget")
     ap.add_argument("--no-relational", action="store_true")
     ap.add_argument("--space", choices=("all", "sample-pairs"), default="sample-pairs")
+    ap.add_argument("--mined", nargs=2, type=int, metavar=("MAX_NEW", "MAX_LIVE"),
+                    help="the knowledge base mines its own hypotheses (set-hypothesis-mining)")
     ap.add_argument("--ona-dir", default="/nexus/Dev/OpenCog/ONA")
     ap.add_argument("--pettachainer-path")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     out = os.path.abspath(a.out)
     agent = (ONAAgent(a.ona_dir, a.seed) if a.agent == "ona"
-             else PLNAgent(a.seed, a.steps, a.pettachainer_path, not a.no_relational, a.space))
+             else PLNAgent(a.seed, a.steps, a.pettachainer_path, not a.no_relational, a.space, a.mined))
     t0 = time.perf_counter()
     res = run(a.task, agent, a.seed)
     res["wall"] = time.perf_counter() - t0
@@ -292,6 +308,8 @@ def main():
         res["steps"] = a.steps
         res["space"] = a.space
         res["hypotheses"] = len(agent.hyps)
+        res["mined"] = a.mined
+        res["dropped"] = agent.dropped
         res["timing"] = agent.timing
     with open(out, "w") as f:
         json.dump(res, f, indent=1)

@@ -105,12 +105,19 @@ class PeTTaChainerBackend:
     truth at its next query, whatever the query asks ("Instance tallies"):
     later rounds only read the truths, all in one query without budget,
     before the round's queries, so the search scores the rules with them. The
-    reviews and reads are part of the round's time."""
+    reviews and reads are part of the round's time.
+
+    With ``mined`` (``(max_new, max_live)``, with ``learned``) the learned
+    rules are not stated at all: the knowledge base proposes its own
+    hypotheses from the facts (PeTTaChainer ``set-hypothesis-mining``), and
+    each round's review or read is its ``review-hypotheses`` of all live
+    ones, which also drops those that do not predict."""
 
     name = "pettachainer"
 
-    def __init__(self, python_path: str | None = None, evidence_k: float = 5, statements=metta, learned: bool = False, review_steps: int = 200):
-        self.statements, self.learned, self.review_steps = statements, learned, review_steps
+    def __init__(self, python_path: str | None = None, evidence_k: float = 5, statements=metta, learned: bool = False, review_steps: int = 200,
+                 mined: tuple[int, int] | None = None):
+        self.statements, self.learned, self.review_steps, self.mined = statements, learned, review_steps, mined
         if python_path:
             sys.path.insert(0, str(Path(python_path).expanduser().resolve()))
         try:
@@ -123,7 +130,11 @@ class PeTTaChainerBackend:
         self._handler.set_evidence_confidence_k(evidence_k)
         if learned:
             self._handler.set_rule_refinement(True)
+        if mined:
+            self._handler.set_hypothesis_mining(*mined)
         self.rule_truths: dict[str, list[float]] = {}  # learned rule's review -> its CTV
+        self.hypotheses: dict[str, str] = {}  # mined: live hypothesis name -> its implication
+        self.dropped = 0
         self.review_seconds = 0.0
 
     def begin(self, network: Network, rates: Rates, history: list[tuple[Period, Observation]]) -> None:
@@ -131,12 +142,28 @@ class PeTTaChainerBackend:
             self._handler.set_complete_predicate(head)
         rules = self.statements.rules(network, rates, learned=True) if self.learned else self.statements.rules(network, rates)
         self.reviews = [goal for goal in map(self.statements.review, rules) if goal] if self.learned else []
-        self._handler.add_atoms_no_check(rules)
+        if self.mined:
+            for head in self.statements.positive_only_predicates(network):
+                self._handler.set_positive_only_predicate(head)
+            rules = [rule for rule in rules if not self.statements.review(rule)]
+            self.reviews = ["$goal"]
+        if rules:
+            self._handler.add_atoms_no_check(rules)
         self.unreviewed = bool(self.reviews)
         self.unread = False
         for period, observation in history:
             self._handler.add_atoms_no_check(self.statements.observation_facts(observation))
             self.resolve(period, observation)
+
+    def _review_mined(self) -> None:
+        for verdict in self._handler.review_hypotheses("$goal", self.review_steps):
+            name, rest = verdict[len("(hypothesis "):].split(" ", 1)
+            implication, kept = rest.rsplit(" ", 1)
+            if kept == "dropped)":
+                self.dropped += 1
+                self.hypotheses.pop(name, None)
+            else:
+                self.hypotheses[name] = implication
 
     def _record(self, goals: list[str], answers) -> None:
         for goal, root_answers in zip(goals, answers, strict=True):
@@ -151,7 +178,9 @@ class PeTTaChainerBackend:
     def beliefs(self, observation: Observation, keys: list[Key], budget: int) -> dict[Key, float]:
         if self.unreviewed or self.unread:
             started = time.perf_counter()
-            if self.unreviewed:
+            if self.mined:
+                self._review_mined()
+            elif self.unreviewed:
                 self._review()
             else:
                 self._record(self.reviews, self._handler.query_many_refs(self.reviews, steps=0))
@@ -172,6 +201,9 @@ class PeTTaChainerBackend:
         self.unread = bool(self.reviews)
 
     def summary(self) -> dict:
+        if self.mined:
+            return {"review_seconds": round(self.review_seconds, 3), "mined": list(self.mined), "dropped": self.dropped,
+                    "hypotheses": sorted(self.hypotheses.values())}
         return {"review_seconds": round(self.review_seconds, 3), "rule_truths": self.rule_truths} if self.learned else {}
 
     @staticmethod
