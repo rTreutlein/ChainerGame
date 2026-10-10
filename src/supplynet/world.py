@@ -64,6 +64,86 @@ class Rates:
     def block_rate(self, kind: str, storm: bool) -> float:
         return self.block_given_storm[kind] if storm else self.block_without_storm
 
+    def nodes(self, network: Network) -> NodeRates:
+        """The rates per node of ``network``: each region's storm, each
+        route's block, each shipment's lateness and each site's degradation.
+        Without persistence a storm's rate does not depend on its parent."""
+        table = {
+            ("Storm", region): (self.storm[kind] if self.persist is None else self.persist, self.storm[kind])
+            for region, kind in network.regions.items()
+        }
+        for route in network.routes:
+            table[("Blocked", route.name)] = (self.block_given_storm[route.kind], self.block_without_storm)
+            table.update({("Late", shipment): (self.late_given_blocked, self.late_given_open) for shipment in route.shipments})
+        if network.cell:
+            table.update({("Degraded", site): (self.degraded_persist, self.degrade[kind]) for site, kind in network.cell.sites.items()})
+        return NodeRates(table)
+
+
+@dataclass(frozen=True)
+class NodeRates:
+    """P(node | parent) and P(node | not parent) per (predicate, subject). A
+    node's parent is fixed by the network: a storm's or a degradation's is its
+    own state in the previous period, a block's its region's storm, a
+    lateness its route's block."""
+
+    table: dict[tuple[str, str], tuple[float, float]]
+
+    def rate(self, predicate: str, subject: str, parent: float) -> float:
+        """P(node) given P(parent)."""
+        given, without = self.table[(predicate, subject)]
+        return parent * given + (1 - parent) * without
+
+    def stationary(self, predicate: str, subject: str) -> float:
+        given, without = self.table[(predicate, subject)]
+        return stationary(without, given)
+
+
+Count = tuple[int, int]  # (samples with the node true, samples)
+
+
+def counts(network: Network, periods: list[Period], linked: bool) -> dict[tuple[str, str], tuple[Count, Count]]:
+    """Per node, its labelled samples in ``periods`` (resolved, in order)
+    with the parent true and with it false. With ``linked`` periods a storm's
+    or degradation's parent is its state in the previous period, so the first
+    period is no sample; with independent periods a storm has no parent, and
+    every period counts in both branches."""
+    tally: dict[tuple[str, str], list[list[int]]] = {}
+
+    def add(node: tuple[str, str], parent: bool, value: bool) -> None:
+        branch = tally.setdefault(node, [[0, 0], [0, 0]])[0 if parent else 1]
+        branch[0] += value
+        branch[1] += 1
+
+    by_name = {period.name: period for period in periods}
+    for period in periods:
+        previous = by_name.get(period.previous)
+        for region, storm in period.storms.items():
+            if not linked:
+                add(("Storm", region), True, storm)
+                add(("Storm", region), False, storm)
+            elif previous:
+                add(("Storm", region), previous.storms[region], storm)
+        for route in network.routes:
+            add(("Blocked", route.name), period.storms[route.region], period.blocked[route.name])
+            for shipment in route.shipments:
+                add(("Late", shipment), period.blocked[route.name], period.late[shipment])
+        if previous:
+            for site, degraded in period.degraded.items():
+                add(("Degraded", site), previous.degraded[site], degraded)
+    return {node: (tuple(given), tuple(without)) for node, (given, without) in tally.items()}
+
+
+def laplace(count: Count) -> float:
+    return (count[0] + 1) / (count[1] + 2)
+
+
+def learned_rates(network: Network, periods: list[Period], linked: bool) -> NodeRates:
+    """Every node's rates estimated from the labelled ``periods`` by Laplace's
+    rule, (k + 1) / (n + 2) per branch; a node with no samples gets 1/2."""
+    tally = counts(network, periods, linked)
+    return NodeRates({node: tuple(laplace(count) for count in tally.get(node, ((0, 0), (0, 0)))) for node in Rates().nodes(network).table})
+
 
 @dataclass(frozen=True)
 class Route:
@@ -260,9 +340,10 @@ class Knowledge:
     factor between consecutive states. The state carried into the window is
     the resolved period's, or before any period a pseudo-state holding the
     stationary probabilities, from which the chains' onset gives the
-    stationary distribution."""
+    stationary distribution. ``rates`` are read when the posterior is
+    computed, so they may be replaced between rounds."""
 
-    def __init__(self, network: Network, rates: Rates):
+    def __init__(self, network: Network, rates: NodeRates):
         self.network, self.rates = network, rates
         self.window: list[str] = []
         self.late: dict[tuple[str, str], bool] = {}
@@ -283,13 +364,10 @@ class Knowledge:
         }
         self.before = {
             region: {
-                (rates.stationary(kind),)
-                + tuple(
-                    0.0 if predicate == "Blocked" else rates.degraded_stationary(cell.sites[subject])
-                    for predicate, subject in self.variables[region][1:]
-                ): 1.0
+                (rates.stationary("Storm", region),)
+                + tuple(0.0 if predicate == "Blocked" else rates.stationary(predicate, subject) for predicate, subject in self.variables[region][1:]): 1.0
             }
-            for region, kind in network.regions.items()
+            for region in network.regions
         }
 
     def observe(self, observation: Observation) -> None:
@@ -322,7 +400,7 @@ class Knowledge:
         P(Producing site now) for the last window period."""
         rates, cell = self.rates, self.network.cell
         posterior = {}
-        for region, kind in self.network.regions.items():
+        for region in self.network.regions:
             variables = self.variables[region]
             in_cell = len(variables) > 1
             routes = [route for route in self.network.routes_of(region) if not (in_cell and route == cell.fuel_route)]
@@ -334,17 +412,17 @@ class Knowledge:
             for period, storm in itertools.product(self.window, (True, False)):
                 weight = 1.0
                 for route in routes:
-                    p_block = rates.block_rate(route.kind, storm)
+                    p_block = rates.rate("Blocked", route.name, storm)
                     like = {}
                     for blocked in (True, False):
                         if self.inspected.get((route.name, period), blocked) != blocked:
                             like[blocked] = 0.0
                             continue
-                        p_late = rates.late_given_blocked if blocked else rates.late_given_open
                         value = p_block if blocked else 1 - p_block
                         for shipment in route.shipments:
                             late = self.late.get((shipment, period))
                             if late is not None:
+                                p_late = rates.rate("Late", shipment, blocked)
                                 value *= p_late if late else 1 - p_late
                         like[blocked] = value
                     total = like[True] + like[False]
@@ -359,7 +437,7 @@ class Knowledge:
                     if self.inspected.get((subject, period), value) != value:
                         return 0.0
                     if predicate == "Blocked":
-                        p_block = rates.block_rate(cell.fuel_route.kind, state[0])
+                        p_block = rates.rate(predicate, subject, state[0])
                         weight *= p_block if value else 1 - p_block
                 return weight
 
@@ -367,7 +445,7 @@ class Knowledge:
                 weight = 1.0
                 for (predicate, subject), before, now in zip(variables, previous, state):
                     if predicate != "Blocked":
-                        p = rates.storm_rate(kind, before) if predicate == "Storm" else rates.degraded_rate(cell.sites[subject], before)
+                        p = rates.rate(predicate, subject, before)
                         weight *= p if now else 1 - p
                 return weight
 

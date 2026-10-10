@@ -8,21 +8,26 @@ from __future__ import annotations
 
 import importlib
 import sys
+import time
 from pathlib import Path
 
 from . import metta
-from .world import Key, Knowledge, Network, Observation, Period, Rates
+from .world import Key, Knowledge, Network, NodeRates, Observation, Period, Rates, learned_rates
 
 
 class BackendUnavailable(RuntimeError):
     pass
 
 
+def exact(network: Network, rates: Rates) -> Knowledge:
+    return Knowledge(network, rates.nodes(network))
+
+
 class ReferenceBackend:
     """The posterior of a stage's ``knowledge`` class, exact by default,
     under the true rates."""
 
-    def __init__(self, knowledge=Knowledge, name: str = "reference"):
+    def __init__(self, knowledge=exact, name: str = "reference"):
         self._knowledge, self.name = knowledge, name
 
     def begin(self, network: Network, rates: Rates, history: list[tuple[Period, Observation]]) -> None:
@@ -38,6 +43,31 @@ class ReferenceBackend:
 
     def resolve(self, period: Period, observation: Observation) -> None:
         self.knowledge.resolve(period)
+
+
+class LearnedReferenceBackend(ReferenceBackend):
+    """The exact posterior under rates estimated from the labelled periods by
+    Laplace's rule (``world.learned_rates``), re-estimated each round as
+    periods resolve: what any learner of the rules' rates can reach from the
+    same history, so it separates learning error from inference error."""
+
+    def __init__(self):
+        super().__init__(lambda network, rates: Knowledge(network, self.estimate(network)), "learned-reference")
+
+    def begin(self, network: Network, rates: Rates, history: list[tuple[Period, Observation]]) -> None:
+        self.periods, self.linked = [period for period, _ in history], rates.persist is not None
+        super().begin(network, rates, history)
+
+    def estimate(self, network: Network) -> NodeRates:
+        return learned_rates(network, self.periods, self.linked)
+
+    def beliefs(self, observation: Observation, keys: list[Key], budget: int) -> dict[Key, float]:
+        self.knowledge.rates = self.estimate(self.knowledge.network)
+        return super().beliefs(observation, keys, budget)
+
+    def resolve(self, period: Period, observation: Observation) -> None:
+        self.periods.append(period)
+        super().resolve(period, observation)
 
 
 class PriorBackend:
@@ -64,12 +94,20 @@ class PriorBackend:
 class PeTTaChainerBackend:
     """PeTTaChainer given the rules with their rates; base rates come from the
     labelled periods it holds as facts. ``statements`` translates the stage's
-    world into MeTTa (``metta`` for stages 1-3)."""
+    world into MeTTa (``metta`` for stages 1-3).
+
+    With ``learned`` (stages 1-3) the rules come with a weak prior in their
+    rates' place and the knowledge base refines them from their instances
+    (``set-rule-refinement``, PeTTaChainer ``docs/metta/hypothesis_rules.md``).
+    Before a round's queries, when periods were labelled since the last round,
+    each learned rule is reviewed by its own ``RuleTruth`` query of
+    ``review_steps``, so its truth folds the labelled instances; the review is
+    part of the round's time."""
 
     name = "pettachainer"
 
-    def __init__(self, python_path: str | None = None, evidence_k: float = 5, statements=metta):
-        self.statements = statements
+    def __init__(self, python_path: str | None = None, evidence_k: float = 5, statements=metta, learned: bool = False, review_steps: int = 200):
+        self.statements, self.learned, self.review_steps = statements, learned, review_steps
         if python_path:
             sys.path.insert(0, str(Path(python_path).expanduser().resolve()))
         try:
@@ -80,16 +118,35 @@ class PeTTaChainerBackend:
                 "PeTTaChainer is not importable; pass --pettachainer-path or set PETTACHAINER_PYTHONPATH"
             ) from exc
         self._handler.set_evidence_confidence_k(evidence_k)
+        if learned:
+            self._handler.set_rule_refinement(True)
+        self.rule_truths: dict[str, list[float]] = {}  # learned rule's review -> its last CTV
+        self.review_seconds = 0.0
 
     def begin(self, network: Network, rates: Rates, history: list[tuple[Period, Observation]]) -> None:
         for head in self.statements.complete_predicates(network):
             self._handler.set_complete_predicate(head)
-        self._handler.add_atoms_no_check(self.statements.rules(network, rates))
+        rules = self.statements.rules(network, rates, learned=True) if self.learned else self.statements.rules(network, rates)
+        self.reviews = [goal for goal in map(self.statements.review, rules) if goal] if self.learned else []
+        self._handler.add_atoms_no_check(rules)
+        self.unreviewed = bool(self.reviews)
         for period, observation in history:
             self._handler.add_atoms_no_check(self.statements.observation_facts(observation))
             self.resolve(period, observation)
 
+    def _review(self) -> None:
+        started = time.perf_counter()
+        for goal in self.reviews:
+            (answers,) = self._handler.query_many_refs([goal], steps=self.review_steps)
+            for answer in answers:
+                if answer.tv[0] == "CTV":
+                    self.rule_truths[goal] = [round(value, 4) for branch in answer.tv[1:] for value in branch[1:]]
+        self.review_seconds += time.perf_counter() - started
+        self.unreviewed = False
+
     def beliefs(self, observation: Observation, keys: list[Key], budget: int) -> dict[Key, float]:
+        if self.unreviewed:
+            self._review()
         self._handler.add_atoms_no_check(self.statements.observation_facts(observation))
         goals = [self.statements.query(key) for key in keys]
         answers = self._handler.query_many_refs(goals, steps=budget) if goals else []
@@ -102,6 +159,10 @@ class PeTTaChainerBackend:
 
     def resolve(self, period: Period, observation: Observation) -> None:
         self._handler.add_atoms_no_check(self.statements.resolution_facts(period, observation))
+        self.unreviewed = bool(self.reviews)
+
+    def summary(self) -> dict:
+        return {"review_seconds": round(self.review_seconds, 3), "rule_truths": self.rule_truths} if self.learned else {}
 
     @staticmethod
     def _strength(answers) -> float | None:

@@ -3,7 +3,7 @@ import json
 import os
 
 from . import scale
-from .backends import PeTTaChainerBackend, PriorBackend, ReferenceBackend
+from .backends import LearnedReferenceBackend, PeTTaChainerBackend, PriorBackend, ReferenceBackend
 from .game import GameConfig, run_game
 from .nars import NarsBackend
 from .problog_backend import ProblogBackend
@@ -15,7 +15,18 @@ def main(argv=None):
     run = sub.add_parser("run", help="play rounds of a stage with one reasoner")
     run.add_argument("--stage", choices=("1", "2", "3", "scale"), default="1")
     run.add_argument("--cycle", choices=("timed", "untimed"), default="timed", help="stage 3: the fuel loop through time or within a period")
-    run.add_argument("--backend", choices=("reference", "local", "prior", "pettachainer", "nars", "problog"), default="reference", help="local: stage scale only; nars: stages 1-3")
+    run.add_argument(
+        "--backend",
+        choices=("reference", "learned-reference", "local", "prior", "pettachainer", "nars", "problog"),
+        default="reference",
+        help="local: stage scale only; nars, learned-reference: stages 1-3",
+    )
+    run.add_argument(
+        "--learned-rules",
+        action="store_true",
+        help="stages 1-3: rules without their rates, which the reasoners learn from the labelled periods (docs/supplynet_learned_rules.md)",
+    )
+    run.add_argument("--review-steps", type=int, default=200, help="pettachainer with --learned-rules: budget of each learned rule's review")
     run.add_argument("--seed", type=int, default=7)
     run.add_argument("--regions", type=int, help="stages 1-3: regions (default 3); scale: regions per zone")
     run.add_argument("--history", type=int, help="labelled periods before the first round (default 30; scale 20)")
@@ -44,8 +55,8 @@ def main(argv=None):
 
     if args.backend == "local" and args.stage != "scale":
         parser.error("--backend local needs --stage scale")
-    if args.backend == "nars" and args.stage == "scale":
-        parser.error("--backend nars runs stages 1-3")
+    if args.stage == "scale" and (args.backend in ("nars", "learned-reference") or args.learned_rules):
+        parser.error("--backend nars, --backend learned-reference and --learned-rules run stages 1-3")
     on_round = (lambda record: print(json.dumps(record), flush=True)) if args.stream else None
     if args.stage == "scale":
         backend = {
@@ -67,12 +78,14 @@ def main(argv=None):
         )
         print(json.dumps(scale.run_game(config, backend, on_round=on_round)), flush=True)
         return
+    learned = args.learned_rules
     backend = {
         "reference": ReferenceBackend,
+        "learned-reference": LearnedReferenceBackend,
         "prior": PriorBackend,
-        "pettachainer": lambda: PeTTaChainerBackend(args.pettachainer_path, args.evidence_k),
-        "nars": lambda: NarsBackend(args.nars_path, args.nars_cycles_per_step, args.nars_reading, args.nars_cache),
-        "problog": lambda: ProblogBackend(engine=args.problog_engine, timeout=args.problog_timeout),
+        "pettachainer": lambda: PeTTaChainerBackend(args.pettachainer_path, args.evidence_k, learned=learned, review_steps=args.review_steps),
+        "nars": lambda: NarsBackend(args.nars_path, args.nars_cycles_per_step, args.nars_reading, args.nars_cache, learned=learned),
+        "problog": lambda: ProblogBackend(engine=args.problog_engine, timeout=args.problog_timeout, learned=learned),
     }[args.backend]()
     config = GameConfig(
         args.seed,
@@ -84,7 +97,7 @@ def main(argv=None):
         int(args.stage),
         args.cycle,
     )
-    print(json.dumps(run_game(config, backend, on_round=on_round)), flush=True)
+    print(json.dumps({**run_game(config, backend, on_round=on_round), "learned_rules": learned}), flush=True)
 
 
 if __name__ == "__main__":

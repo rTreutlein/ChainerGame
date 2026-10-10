@@ -19,6 +19,12 @@ its losses are described in docs/nars_backend.md:
 - a base rate is NARS's induction over the labelled periods, as revision would
   sum it: ``<<$t --> period> ==> x($t)>`` with frequency k/n and confidence
   n/(n+1), and the same for ``(! x($t))``;
+- with learned rules (``learned``), a rule stated with a confidence below 1
+  (a weak prior) takes each branch from its labelled samples the same way:
+  frequency k/n and confidence n/(n+1) over the n labelled periods with the
+  antecedent true (or false), counted by the client (``world.counts``)
+  because ONA does not induce them from the facts within a round's budget
+  (docs/supplynet_learned_rules.md);
 - the KB of a round holds the rules, the base rates, and the facts of the
   unresolved periods and of the last resolved one; older periods enter only
   through the base rates.
@@ -37,7 +43,7 @@ from collections import Counter
 from pathlib import Path
 
 from . import metta
-from .world import Key, Network, Observation, Period, Rates
+from .world import Count, Key, Network, Observation, Period, Rates, counts
 
 DEFAULT_NAR = os.environ.get("NARS_PATH", "/nexus/Dev/OpenCog/ONA/NAR")
 MAX_CONFIDENCE = 0.99  # ONA's MAX_CONFIDENCE: a certain MeTTa truth value
@@ -111,10 +117,22 @@ def _stv(expr) -> tuple[float, float]:
     return float(expr[1]), float(expr[2])
 
 
-def rule(text: str) -> list[str]:
-    """A CTV implication as Narsese (``implication``)."""
+def evidence(count: Count) -> tuple[float, float] | None:
+    """k of n samples as NARS's induction and revision would sum them."""
+    positive, total = count
+    return (positive / total, total / (total + 1)) if total else None
+
+
+def rule(text: str, tally: dict | None = None) -> list[str]:
+    """A CTV implication as Narsese (``implication``). A rule stated with a
+    confidence below 1, a weak prior, takes its branches from ``tally``, its
+    consequent's labelled samples with the antecedent true and false
+    (``world.counts``)."""
     _, _, (_, antecedent, consequent), (_, positive, negative) = parse(text)
-    return implication(antecedent, consequent, _stv(positive), _stv(negative))
+    positive, negative = _stv(positive), _stv(negative)
+    if positive[1] < 1:
+        positive, negative = map(evidence, tally.get((consequent[0], consequent[1]), ((0, 0), (0, 0))))
+    return implication(antecedent, consequent, positive, negative)
 
 
 def implication(antecedent, consequent, positive: tuple[float, float], negative: tuple[float, float] | None) -> list[str]:
@@ -199,16 +217,24 @@ class NarsBackend:
     with ``reading="expectation"``; ``cache`` as for ``run``."""
 
     def __init__(
-        self, nar: str | None = None, cycles_per_step: float = 10, reading: str = "frequency", cache: str | None = None, timeout: float = 3600
+        self,
+        nar: str | None = None,
+        cycles_per_step: float = 10,
+        reading: str = "frequency",
+        cache: str | None = None,
+        timeout: float = 3600,
+        learned: bool = False,
     ):
         self.nar = executable(nar)
         assert reading in ("frequency", "expectation")
-        self.cycles_per_step, self.reading, self.timeout = cycles_per_step, reading, timeout
+        self.cycles_per_step, self.reading, self.timeout, self.learned = cycles_per_step, reading, timeout, learned
         self.cache = Path(cache) if cache else None
         self.name = "nars" if reading == "frequency" else "nars-expectation"
 
     def begin(self, network: Network, rates: Rates, history: list[tuple[Period, Observation]]) -> None:
-        self.rules = [line for text in metta.rules(network, rates) for line in rule(text)]
+        self.network, self.linked = network, rates.persist is not None
+        self.rules = metta.rules(network, rates, learned=self.learned)
+        self.periods: list[Period] = []
         self.counts: Counter = Counter()  # (predicate, subject) -> [positives, total]
         self.totals: Counter = Counter()
         self.facts: dict[str, list[str]] = {}  # period -> its facts
@@ -228,13 +254,15 @@ class NarsBackend:
             self.counts[(predicate, subject)] += value
             self.totals[(predicate, subject)] += 1
         self.resolved.append(period.name)
+        self.periods.append(period)
 
     def kb(self, keys: list[Key]) -> list[str]:
         """The round's Narsese: rules, base rates, and the facts of the last
         resolved period and every later one."""
         last = self.resolved[-1] if self.resolved else None
         live = [name for name in self.facts if name not in self.resolved or name == last]
-        lines = list(self.rules)
+        tally = counts(self.network, self.periods, self.linked) if self.learned else None
+        lines = [line for text in self.rules for line in rule(text, tally)]
         for (predicate, subject), total in sorted(self.totals.items()):
             lines += base_rate(predicate, subject, self.counts[(predicate, subject)], total)
         periods = sorted(set(live) | {key[2] for key in keys})
