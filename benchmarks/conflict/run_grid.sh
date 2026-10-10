@@ -7,6 +7,9 @@
 # ($PROBLOG_PYTHON), the others in PeTTaChainer's ($PYTHON).
 #
 #   benchmarks/conflict/run_grid.sh OUT_DIR "exact pln-raw ..." "s m l" "1 2 3 4" "1 4 16"
+#
+# REVIEW_STEPS sets the backward steps of each refined rule's review
+# (pln-sources, pln-likelihood; default 20).
 set -euo pipefail
 out=$1 backends=$2 sizes=$3 seeds=$4 budgets=$5
 here=$(cd "$(dirname "$0")/../.." && pwd)
@@ -26,7 +29,7 @@ run() {
   [[ $backend == problog-* ]] && interpreter=$problog_python
   while (( $(free -g | awk '/^Mem:/ {print $7}') < 8 )); do sleep 5; done
   if "$capped" timeout "$timeout" bash -c "ulimit -v 16000000; cd '$out' && PYTHONPATH='$here/src' '$interpreter' -m conflict.cli run \
-      --backend $backend --size $size --seed $seed --steps-per-query $spq --pettachainer-path '$petta'" \
+      --backend $backend --size $size --seed $seed --steps-per-query $spq --review-steps ${REVIEW_STEPS:-20} --pettachainer-path '$petta'" \
       < /dev/null > "$out/$name.json.tmp" 2> "$out/$name.err"; then
     mv "$out/$name.json.tmp" "$out/$name.json"
   else

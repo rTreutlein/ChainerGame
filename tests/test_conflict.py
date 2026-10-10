@@ -127,6 +127,20 @@ class MettaTests(unittest.TestCase):
         self.assertEqual(metta.claims(reports, "t3")[1], "(: claim-s4-w2-t3 (Claims s4 (Up w2 t3)) (STV 0 1))")
         self.assertEqual(metta.trust_rules(world)[0], "(: trust-s1 (Implication (Claims s1 (Up $n $t)) (Up $n $t)) (CTV (STV 0.5 0.02) (STV 0.5 0.02)))")
         self.assertEqual(metta.labels(Round("h1", {"c1": True, "w1": False}, ())), ["(: up-c1-h1 (Up c1 h1) (STV 1 1))", "(: up-w1-h1 (Up w1 h1) (STV 0 1))"])
+        self.assertEqual(metta.reliability_rules(reports, "t3"), [
+            "(: (no_inverse claim-s5-c1-t3) (Implication (Reliable s5 up) (Up c1 t3)) (CTV (STV 1 1) (STV 0 1)))",
+            "(: (no_inverse claim-s4-w2-t3) (Implication (Reliable s4 down) (Up w2 t3)) (CTV (STV 0 1) (STV 1 1)))",
+        ])
+        day = Round("h2", {"c1": True, "w2": True}, (*reports, Report("s5", "w2", True, 15)))
+        self.assertEqual(metta.reliability_evidence(day, 5), [
+            "(: reliability-s4-down-h2 (Reliable s4 down) (STV 0 0.166667))",
+            "(: reliability-s5-up-h2 (Reliable s5 up) (STV 1 0.285714))",
+        ])
+        self.assertEqual(metta.likelihood_rules(world)[0], "(: report-s1 (Implication (Up $n $t) (Claims s1 (Up $n $t))) (CTV (STV 0.5 0.02) (STV 0.5 0.02)))")
+        self.assertEqual(metta.reliability_priors(world, 5)[:2], [
+            "(: reliability-s1-up-prior (Reliable s1 up) (STV 0.5 0.285714))",
+            "(: reliability-s1-down-prior (Reliable s1 down) (STV 0.5 0.285714))",
+        ])
 
 
 def _problog_available() -> bool:
@@ -206,8 +220,10 @@ class PeTTaChainerTests(unittest.TestCase):
     def test_encodings_answer(self):
         from conflict.backends import PeTTaChainerBackend
 
-        for encoding in ("raw", "sources", "stated", "given"):
-            summary = run_game(GameConfig(seed=1, history=8, rounds=1, steps_per_query=4), PeTTaChainerBackend(encoding, _pettachainer_path()))
+        # Fifteen labelled rounds: from eight, a source has one or two claims of
+        # a polarity, and its rates learned from them decide a node alone.
+        for encoding in ("raw", "sources", "stated", "given", "reliable", "likelihood"):
+            summary = run_game(GameConfig(seed=1, history=15, rounds=1, steps_per_query=4), PeTTaChainerBackend(encoding, _pettachainer_path()))
             self.assertGreaterEqual(summary["coverage"], 0.75, encoding)
             self.assertLess(summary["posterior_error"], 0.5, encoding)
 
