@@ -124,23 +124,34 @@ def _table(args) -> None:
 
 
 def _summary(args) -> None:
-    """contender -> size -> steps per query -> statistics; a budget-free
-    contender's entry is repeated under every budget of the grid."""
-    runs, failures = _load(args.results)
-    cells = _cells(runs, failures)
+    """A flat array of rows, one per contender, size and budget: mean error,
+    its std over seeds, seconds per round and failures, with the parts. A
+    budget-free contender's row is repeated under every budget of the grid,
+    marked ``budget_independent``."""
+    cells = _cells(*_load(args.results))
     budgets = sorted({q for _, _, q in cells if q is not None}) or [None]
-    results: dict = {}
-    for (backend, size, spq), cell in sorted(cells.items(), key=lambda item: (_order(item[0][0]), item[0][1], item[0][2] or 0)):
-        stat = _stats(cell) | {"budget_independent": spq is None}
+    rows = []
+    for (backend, size, spq), cell in sorted(cells.items(), key=lambda item: (list(SIZES).index(item[0][1]), _order(item[0][0]), item[0][2] or 0)):
+        stat = _stats(cell)
         for budget in [spq] if spq is not None else budgets:
-            results.setdefault(backend, {}).setdefault(size, {})[f"{budget:g}" if budget is not None else "any"] = stat
+            rows.append({
+                "contender": backend,
+                "size": size,
+                "budget": budget,
+                "budget_independent": spq is None,
+                "mean_error": stat["mean_error"],
+                "std_error": stat["std_error"],
+                "mean_seconds_per_round": stat["mean_seconds_per_round"],
+                "failures": stat["failures"],
+                **{k: v for k, v in stat.items() if k not in ("mean_error", "std_error", "mean_seconds_per_round", "failures")},
+            })
     summary = {
         "stage": "conflicting-sources",
         "metric": "mean absolute error to the exact posterior under the true model, per query; mean over rounds, then over seeds",
         "time": "seconds per round: the backend's beliefs and resolve calls",
         "budget": "steps per query (PLN backward steps, NARS inference cycles); exact, Python and ProbLog contenders are budget-free",
         "sizes": {name: vars(SIZES[name]) for name in sorted({s for _, s, _ in cells}, key=list(SIZES).index)},
-        "results": results,
+        "rows": rows,
     }
     Path(args.out).write_text(json.dumps(summary, indent=1))
 
