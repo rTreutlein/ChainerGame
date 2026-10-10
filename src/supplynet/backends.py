@@ -7,7 +7,6 @@ own knowledge class and statements (``scale``)."""
 from __future__ import annotations
 
 import importlib
-import re
 import sys
 from pathlib import Path
 
@@ -68,9 +67,6 @@ class PeTTaChainerBackend:
     world into MeTTa (``metta`` for stages 1-3)."""
 
     name = "pettachainer"
-    _stv_re = re.compile(
-        r"\(STV\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\)"
-    )
 
     def __init__(self, python_path: str | None = None, evidence_k: float = 5, statements=metta):
         self.statements = statements
@@ -96,10 +92,10 @@ class PeTTaChainerBackend:
     def beliefs(self, observation: Observation, keys: list[Key], budget: int) -> dict[Key, float]:
         self._handler.add_atoms_no_check(self.statements.observation_facts(observation))
         goals = [self.statements.query(key) for key in keys]
-        answers = self._handler.query_many(goals, steps=budget, timeout_sec=0) if goals else []
+        answers = self._handler.query_many_refs(goals, steps=budget) if goals else []
         beliefs = {}
-        for key, proofs in zip(keys, answers, strict=True):
-            strength = self._strength(proofs)
+        for key, root_answers in zip(keys, answers, strict=True):
+            strength = self._strength(root_answers)
             if strength is not None:
                 beliefs[key] = strength
         return beliefs
@@ -107,15 +103,13 @@ class PeTTaChainerBackend:
     def resolve(self, period: Period, observation: Observation) -> None:
         self._handler.add_atoms_no_check(self.statements.resolution_facts(period, observation))
 
-    @classmethod
-    def _strength(cls, proofs) -> float | None:
-        """The strength of the most confident answer; an answer's own truth
-        value is its last."""
+    @staticmethod
+    def _strength(answers) -> float | None:
+        """The strength of the most confident answer."""
         best = None
-        for proof in proofs or ():
-            matches = cls._stv_re.findall(str(proof))
-            if matches:
-                strength, confidence = float(matches[-1][0]), float(matches[-1][1])
+        for answer in answers:
+            if answer.tv[0] == "STV":
+                strength, confidence = answer.tv[1:]
                 if best is None or confidence > best[1]:
                     best = (strength, confidence)
         return None if best is None else min(1.0, max(0.0, best[0]))

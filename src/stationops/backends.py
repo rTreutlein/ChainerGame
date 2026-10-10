@@ -807,11 +807,6 @@ class PeTTaChainerBackend:
     # against the public base rate as one pseudo-observation of prior, which
     # the confidence blend of decision_beliefs relies on.
     _evidence_confidence_k = 1
-    _stv_re = re.compile(
-        r"\((?:STV|stv)\s+"
-        r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s+"
-        r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\)"
-    )
 
     def __init__(
         self,
@@ -853,18 +848,14 @@ class PeTTaChainerBackend:
                 "set PETTACHAINER_PYTHONPATH"
             ) from exc
 
-    @classmethod
-    def _strongest_belief(cls, proofs) -> Belief | None:
-        truth_values = []
-        for proof in proofs or ():
-            # An answer is (: proof statement tv): its own truth value is the
-            # last one; a proof may hold others (a prior's, for instance).
-            matches = cls._stv_re.findall(str(proof))
-            if matches:
-                strength = float(matches[-1][0])
-                confidence = float(matches[-1][1])
-                if math.isfinite(strength) and math.isfinite(confidence):
-                    truth_values.append(Belief(strength, confidence))
+    @staticmethod
+    def _strongest_belief(answers) -> Belief | None:
+        truth_values = [
+            Belief(float(answer.tv[1]), float(answer.tv[2]))
+            for answer in answers
+            if answer.tv[0] in ("STV", "stv")
+            and math.isfinite(answer.tv[1]) and math.isfinite(answer.tv[2])
+        ]
         return max(truth_values, key=float) if truth_values else None
 
     def _new_handler(self):
@@ -1072,15 +1063,15 @@ class PeTTaChainerBackend:
             self._belief_goals[incident.id] = goal
             goals.append(f"(: $prf {goal} $tv)")
 
-        proof_batches = (
-            self._handler.query_many(goals, steps=budget, timeout_sec=0)
+        answer_batches = (
+            self._handler.query_many_refs(goals, steps=budget)
             if goals
             else []
         )
 
         beliefs = {}
-        for incident, proofs in zip(incidents, proof_batches, strict=True):
-            belief = self._strongest_belief(proofs)
+        for incident, answers in zip(incidents, answer_batches, strict=True):
+            belief = self._strongest_belief(answers)
             if belief is not None:
                 beliefs[incident.id] = belief
         counters.update({

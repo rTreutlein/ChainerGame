@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import importlib
 import math
-import re
 import sys
 import time
 from pathlib import Path
@@ -158,10 +157,6 @@ class PeTTaChainerBackend:
     ``form`` writes a negative literal as ``(NotA $x)`` over complement facts
     (``complement``) or as ``(Not (A $x))`` (``not``)."""
 
-    _stv_re = re.compile(
-        r"\(STV\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\)"
-    )
-
     def __init__(
         self,
         python_path: str | None = None,
@@ -231,7 +226,7 @@ class PeTTaChainerBackend:
 
     def _query(self, goals: list[str], steps: int, clock: str) -> list:
         started = time.perf_counter()
-        answers = self._handler.query_many(goals, steps=steps, timeout_sec=0)
+        answers = self._handler.query_many_refs(goals, steps=steps)
         self.counters[clock] += time.perf_counter() - started
         metrics = self._handler.last_query_metrics()
         self.counters["expansions"] += metrics.get("expansions", 0)
@@ -250,9 +245,9 @@ class PeTTaChainerBackend:
         answers = self._query([metta.query(key) for key in keys], budget * len(keys), "query_seconds")
         by_name = {case.name: case for case in cases}
         beliefs = {}
-        for key, proofs in zip(keys, answers, strict=True):
+        for key, root_answers in zip(keys, answers, strict=True):
             cell = (key[0], tuple(sorted(by_name[key[1]].observed[key[0]].items())))
-            truth = self._truth(proofs)
+            truth = self._truth(root_answers)
             if self.read and cell in self.learned:
                 beliefs[key] = self.learned[cell]
             elif truth:
@@ -267,15 +262,13 @@ class PeTTaChainerBackend:
     def stats(self) -> dict:
         return {key: round(value, 3) for key, value in self.counters.items()}
 
-    @classmethod
-    def _truth(cls, proofs) -> tuple[float, float] | None:
-        """The most confident answer's (strength, confidence); an answer's own
-        truth value is its last."""
+    @staticmethod
+    def _truth(answers) -> tuple[float, float] | None:
+        """The most confident answer's (strength, confidence)."""
         best = None
-        for proof in proofs or ():
-            matches = cls._stv_re.findall(str(proof))
-            if matches:
-                strength, confidence = float(matches[-1][0]), float(matches[-1][1])
+        for answer in answers:
+            if answer.tv[0] == "STV":
+                strength, confidence = answer.tv[1:]
                 if best is None or confidence > best[1]:
                     best = (min(1.0, max(0.0, strength)), confidence)
         return best
