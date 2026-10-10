@@ -126,11 +126,10 @@ class PeTTaChainerBackend:
       each trust rule is reviewed by its own ``RuleTruth`` query of
       ``review_steps`` (in one shared batch the first reviews take the budget,
       ChainerGame ``docs/combination_bench.md``), so its truth folds the
-      labelled claims, including the last round's. The reviews come before
-      the round's claims: a claim whose node the round's other views derive
-      is a soft sample of its rule, and a view of that node may not read a
-      rule truth depending on the node, so reviewed with the claims in its
-      fold, every view read the rule's prior;
+      labelled claims, including the last round's. The round's claims are
+      no samples: their nodes are only derived, and an instance sample reads
+      no value a refined rule estimates (PeTTaChainer
+      ``docs/metta/hypothesis_rules.md``, "Cross-feeding");
     - ``stated``: the same claims, but each source's CTV is learned once, from
       the initial history, by an implication query in a KB of its own, and
       stated as a given rate (``_learn_trust``);
@@ -248,6 +247,7 @@ class PeTTaChainerBackend:
         return answers
 
     def beliefs(self, day: Round, keys: list[tuple[str, str]], budget: int) -> dict:
+        self._add(self._claims(day))
         if self.encoding in ("sources", "likelihood"):
             implication = metta.trust_implication if self.encoding == "sources" else metta.likelihood_implication
             for source in self.world.sources:
@@ -255,7 +255,6 @@ class PeTTaChainerBackend:
                 match = _ctv_re.search(proofs[0]) if proofs else None
                 if match:
                     self.trust[source.name] = [round(float(v), 4) for v in match.groups()]
-        self._add(self._claims(day))
         answers = self._query([metta.query(key) for key in keys], budget, "query_seconds")
         beliefs = {}
         for key, proofs in zip(keys, answers, strict=True):

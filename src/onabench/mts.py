@@ -126,15 +126,16 @@ class PLNAgent:
     (STV 0.5 0.01); two features with the same stimulus also give the
     relational form with a shared variable, e.g.
     (And (Sample $x $t) (LeftStim $x $t)). ONA likewise forms a hypothesis
-    from an experienced sequence. (Creating them earlier triggers a
-    PeTTaChainer bug: a refined rule first reviewed while its only samples
-    are a co-extensive sibling's derivations is applied with its prior ever
-    after; see the report.) The data decides their strengths
+    from an experienced sequence. Creating them for both operations when a
+    context is first seen works too since PeTTaChainer pln-gaps (a refined
+    rule reviewed before its outcomes no longer keeps its prior), but scores
+    lower (identity matching 0.847 against 0.956, 10 seeds) and takes twice
+    as long: the hypotheses never tried stay at their prior and join every
+    review and merge. The data decides their strengths
     (set-rule-refinement); no rate is handed in. Evidence k = 1, NARS's
     evidential horizon. Hypothesis spaces:
     - all: every single feature and every pair of features (ONA's sequence
-      hypotheses are up to three events long; PeTTaChainer's instance fold
-      takes at most two conjuncts, see the report);
+      hypotheses are up to three events long);
     - sample-pairs: the sample with one comparison stimulus (the pairs
       ONA's scripts ask about).
 

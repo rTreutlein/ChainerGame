@@ -590,6 +590,12 @@ branch `conflict-fixes` (66a684f1 + 5 commits) after each item.
    root as ChainerGame `benchmarks/ona/repros/stale_after_early_review.py`.
    A fix would fold a rule's samples for a reader without the reader's own
    sample (leave one out) instead of rejecting the whole version.
+   **Fixed (PeTTaChainer branch pln-gaps, de0589cf).** An instance sample
+   reads no value a refined rule estimates, so the round's claims are no
+   samples; a rule applied to an instance whose own sample is in its fold
+   reads the fold without it (leave one out); and a rule application
+   depends on its truth's key, not the samples below it. `pln-sources`
+   now adds the round's claims before the reviews.
 7. **Refined rules were never scored for the combination modes** (found with
    the fixes). The truth premise is an open statement, which gave no view
    when scoring an outcome, so modes tied and the views revised. **Fixed
