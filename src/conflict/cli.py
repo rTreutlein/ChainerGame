@@ -17,7 +17,7 @@ from .world import SIZES
 
 PROBLOG = ("problog-naive", "problog-oracle", "problog-learned")
 NARS = ("nars-raw", "nars-sources")
-BACKENDS = (*REFERENCES, "pln-raw", "pln-sources", "pln-stated", "pln-given", *PROBLOG, *NARS)
+BACKENDS = (*REFERENCES, "pln-raw", "pln-sources", "pln-stated", "pln-given", "pln-reliable", *PROBLOG, *NARS)
 
 
 def _backend(args):

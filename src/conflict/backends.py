@@ -126,15 +126,25 @@ class PeTTaChainerBackend:
       each trust rule is reviewed by its own ``RuleTruth`` query of
       ``review_steps`` (in one shared batch the first reviews take the budget,
       ChainerGame ``docs/combination_bench.md``), so its truth folds the
-      labelled claims, including the last round's;
+      labelled claims, including the last round's. The reviews come before
+      the round's claims: a claim whose node the round's other views derive
+      is a soft sample of its rule, and a view of that node may not read a
+      rule truth depending on the node, so reviewed with the claims in its
+      fold, every view read the rule's prior;
     - ``stated``: the same claims, but each source's CTV is learned once, from
       the initial history, by an implication query in a KB of its own, and
       stated as a given rate (``_learn_trust``);
     - ``given``: ``stated`` with CTVs counted by the client (``_count_trust``),
-      an ablation separating PLN's rate learning from its combination."""
+      an ablation separating PLN's rate learning from its combination;
+    - ``reliable``: no claim facts, one certain rule per claim from its
+      source's latent reliability for that polarity to the claimed state
+      (``metta.reliability_rules``), and each resolved round's correct share
+      per source and polarity as evidence of the reliability
+      (``metta.reliability_evidence``). Rules and evidence go in before the
+      round's outcomes, which so score the combination modes."""
 
     def __init__(self, encoding: str, python_path: str | None = None, evidence_k: float = 5, review_steps: int = 20):
-        assert encoding in ("raw", "sources", "stated", "given"), encoding
+        assert encoding in ("raw", "sources", "stated", "given", "reliable"), encoding
         if python_path:
             sys.path.insert(0, str(Path(python_path).expanduser().resolve()))
         try:
@@ -165,9 +175,27 @@ class PeTTaChainerBackend:
             statements += self._learn_trust(world, history)
         elif self.encoding == "given":
             statements += self._count_trust(world, history)
+        elif self.encoding == "reliable":
+            statements += metta.reliability_priors(world, self.evidence_k)
         for day in history:
-            statements += (metta.claims(day.reports, day.name) if self.encoding != "raw" else []) + metta.labels(day)
+            statements += self._evidence(day) + metta.labels(day)
         self._add(statements)
+
+    def _claims(self, day: Round) -> list[str]:
+        if self.encoding == "raw":
+            return metta.raw_facts(day.reports, day.name, self.evidence_k)
+        if self.encoding == "reliable":
+            return metta.reliability_rules(day.reports, day.name)
+        return metta.claims(day.reports, day.name)
+
+    def _evidence(self, day: Round) -> list[str]:
+        """What a labelled round adds before its outcomes: its claims, and in
+        ``reliable`` the sources' correct shares."""
+        if self.encoding == "raw":
+            return []
+        if self.encoding == "reliable":
+            return self._claims(day) + metta.reliability_evidence(day, self.evidence_k)
+        return self._claims(day)
 
     def _learn_trust(self, world: World, history: list[Round]) -> list[str]:
         """Each source's CTV from an implication query over the labelled claims,
@@ -215,16 +243,13 @@ class PeTTaChainerBackend:
         return answers
 
     def beliefs(self, day: Round, keys: list[tuple[str, str]], budget: int) -> dict:
-        if self.encoding == "raw":
-            self._add(metta.raw_facts(day.reports, day.name, self.evidence_k))
-        else:
-            self._add(metta.claims(day.reports, day.name))
         if self.encoding == "sources":
             for source in self.world.sources:
                 (proofs,) = self._query([metta.review(source.name)], self.review_steps, "review_seconds")
                 match = _ctv_re.search(proofs[0]) if proofs else None
                 if match:
                     self.trust[source.name] = [round(float(v), 4) for v in match.groups()]
+        self._add(self._claims(day))
         answers = self._query([metta.query(key) for key in keys], budget, "query_seconds")
         beliefs = {}
         for key, proofs in zip(keys, answers, strict=True):
@@ -234,7 +259,7 @@ class PeTTaChainerBackend:
         return beliefs
 
     def resolve(self, day: Round) -> None:
-        self._add(metta.labels(day))
+        self._add((metta.reliability_evidence(day, self.evidence_k) if self.encoding == "reliable" else []) + metta.labels(day))
 
     def stats(self) -> dict:
         return {**{k: round(v, 3) for k, v in self.counters.items()}, **({"trust": self.trust} if self.trust else {})}
