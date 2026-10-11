@@ -181,7 +181,7 @@ class ScaleGameTests(unittest.TestCase):
 
     def test_runs_are_deterministic(self):
         first, second = (
-            {k: v for k, v in run_game(self.config(), ReferenceBackend(Knowledge)).items() if "seconds" not in k and k != "peak_rss_mb"}
+            {k: v for k, v in run_game(self.config(), ReferenceBackend(Knowledge)).items() if not k.startswith("ms_") and "seconds" not in k and k != "peak_rss_mb"}
             for _ in range(2)
         )
         self.assertEqual(first, second)
