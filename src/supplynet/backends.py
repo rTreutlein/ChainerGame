@@ -118,7 +118,7 @@ class PeTTaChainerBackend:
     name = "pettachainer"
 
     def __init__(self, python_path: str | None = None, evidence_k: float = 5, statements=metta, learned: bool = False, review_steps: int = 200,
-                 mined: tuple[int, int] | None = None):
+                 mined: tuple[int, int] | None = None, change_detection: float | None = None):
         self.statements, self.learned, self.review_steps, self.mined = statements, learned, review_steps, mined
         if python_path:
             sys.path.insert(0, str(Path(python_path).expanduser().resolve()))
@@ -132,6 +132,8 @@ class PeTTaChainerBackend:
         self._handler.set_evidence_confidence_k(evidence_k)
         if learned:
             self._handler.set_rule_refinement(True)
+        if change_detection:
+            self._handler.set_rule_change_detection(change_detection)
         if mined:
             self._handler.set_hypothesis_mining(*mined)
         self.rule_truths: dict[str, list[float]] = {}  # learned rule's review -> its CTV

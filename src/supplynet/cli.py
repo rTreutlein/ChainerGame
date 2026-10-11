@@ -28,6 +28,8 @@ def main(argv=None):
     )
     run.add_argument("--mine-rules", nargs=2, type=int, metavar=("MAX_NEW", "MAX_LIVE"),
                      help="pettachainer with --learned-rules: state no learned rule; the knowledge base mines its own hypotheses")
+    run.add_argument("--change-detection", type=float, metavar="BAYES_FACTOR",
+                     help="pettachainer with --learned-rules: refined rules detect a change of their rate (set-rule-change-detection)")
     run.add_argument("--review-steps", type=int, default=200, help="pettachainer with --learned-rules: budget of each learned rule's review")
     run.add_argument("--seed", type=int, default=7)
     run.add_argument("--regions", type=int, help="stages 1-3: regions (default 3); scale: regions per zone")
@@ -86,7 +88,8 @@ def main(argv=None):
         "learned-reference": LearnedReferenceBackend,
         "prior": PriorBackend,
         "pettachainer": lambda: PeTTaChainerBackend(args.pettachainer_path, args.evidence_k, learned=learned, review_steps=args.review_steps,
-                                                    mined=tuple(args.mine_rules) if args.mine_rules else None),
+                                                    mined=tuple(args.mine_rules) if args.mine_rules else None,
+                                                    change_detection=args.change_detection),
         "nars": lambda: NarsBackend(args.nars_path, args.nars_cycles_per_step, args.nars_reading, args.nars_cache, learned=learned),
         "problog": lambda: ProblogBackend(engine=args.problog_engine, timeout=args.problog_timeout, learned=learned),
     }[args.backend]()

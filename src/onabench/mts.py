@@ -171,13 +171,16 @@ class PLNAgent:
     name = "pln"
     OPS = ("left", "right")
 
-    def __init__(self, seed, steps, pettachainer_path=None, relational=True, space="sample-pairs", mined=None):
+    def __init__(self, seed, steps, pettachainer_path=None, relational=True, space="sample-pairs", mined=None,
+                 change_detection=None):
         if pettachainer_path:
             sys.path.insert(0, pettachainer_path)
         from pettachainer import PeTTaChainer
         self.h = PeTTaChainer()
         self.h.set_evidence_confidence_k(1)
         self.h.set_rule_refinement(True)
+        if change_detection:
+            self.h.set_rule_change_detection(change_detection)
         for p in ("Sample", "LeftStim", "RightStim"):
             self.h.set_positive_only_predicate(p)
         self.mined = mined
@@ -320,13 +323,16 @@ def main():
     ap.add_argument("--space", choices=("all", "sample-pairs"), default="sample-pairs")
     ap.add_argument("--mined", nargs=2, type=int, metavar=("MAX_NEW", "MAX_LIVE"),
                     help="the knowledge base mines its own hypotheses (set-hypothesis-mining)")
+    ap.add_argument("--change-detection", type=float, metavar="BAYES_FACTOR",
+                    help="refined rules detect a change of their rate (PeTTaChainer set-rule-change-detection)")
     ap.add_argument("--ona-dir", default="/nexus/Dev/OpenCog/ONA")
     ap.add_argument("--pettachainer-path")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     out = os.path.abspath(a.out)
     agent = (ONAAgent(a.ona_dir, a.seed) if a.agent == "ona"
-             else PLNAgent(a.seed, a.steps, a.pettachainer_path, not a.no_relational, a.space, a.mined))
+             else PLNAgent(a.seed, a.steps, a.pettachainer_path, not a.no_relational, a.space, a.mined,
+                      a.change_detection))
     t0 = time.perf_counter()
     res = run(a.task, agent, a.seed)
     res["wall"] = time.perf_counter() - t0
@@ -335,6 +341,7 @@ def main():
         res["space"] = a.space
         res["hypotheses"] = len(agent.hyps)
         res["mined"] = a.mined
+        res["change_detection"] = a.change_detection
         res["dropped"] = agent.dropped
         res["timing"] = agent.timing
     with open(out, "w") as f:
