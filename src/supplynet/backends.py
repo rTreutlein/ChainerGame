@@ -125,6 +125,8 @@ class PeTTaChainerBackend:
             self._handler.set_rule_refinement(True)
         self.rule_truths: dict[str, list[float]] = {}  # learned rule's review -> its CTV
         self.review_seconds = 0.0
+        # builds before PeTTaChainer.timing() report no inference/overhead split
+        self._clock = self._handler.timing() if hasattr(self._handler, "timing") else None
 
     def begin(self, network: Network, rates: Rates, history: list[tuple[Period, Observation]]) -> None:
         for head in self.statements.complete_predicates(network):
@@ -172,7 +174,15 @@ class PeTTaChainerBackend:
         self.unread = bool(self.reviews)
 
     def summary(self) -> dict:
-        return {"review_seconds": round(self.review_seconds, 3), "rule_truths": self.rule_truths} if self.learned else {}
+        """Review figures of learned rules, and the seconds of every chainer
+        call of the run (setup included) split into inference (activation,
+        search, evaluation) and overhead (the rest of the calls)."""
+        learned = {"review_seconds": round(self.review_seconds, 3), "rule_truths": self.rule_truths} if self.learned else {}
+        if self._clock is None:
+            return learned
+        now = self._handler.timing()
+        return {**learned, **{f"chainer_{part}_seconds": round(now[part] - self._clock[part], 3)
+                              for part in ("wall", "inference", "overhead")}}
 
     @staticmethod
     def _strength(answers) -> float | None:

@@ -146,10 +146,18 @@ class PLNAgent:
     hypothesis_rules.md, "Instance tallies"), so a read needs no budget. The
     desire of op is then the expectation c(f - 0.5) + 0.5 of
     the best-confidence answer to (Reward op t), the merged application of
-    the hypotheses. The choice copies ONA's Decision_Suggest: with probability
+    the hypotheses, read as terms (query-many-refs) without printing its
+    proof. Each operation has its own query: asking both in one query-many
+    shares their budget and changed decisions in 2 of 10 seeds (reversal
+    seed 5 0.906 -> 0.781). The choice copies ONA's Decision_Suggest: with probability
     0.2 babble a random operation unless the best desire exceeds 0.55;
     otherwise execute the best operation when its desire is at least 0.501,
     else nothing.
+
+    Each trial's timing also splits the chainer's time into inference
+    (activation, search and evaluation) and overhead (the rest of its calls:
+    the Python layer, reading calls, query setup and teardown, results,
+    storing facts), from PeTTaChainer.timing().
     """
     name = "pln"
     OPS = ("left", "right")
@@ -189,6 +197,7 @@ class PLNAgent:
     def trial(self, sample, left, right):
         self.t += 1
         t = self.t
+        clock = self.h.timing()
         t0 = time.perf_counter()
         self.context = (sample, left, right)
         matching = [(a, op) for a in self._antecedents(sample, left, right) for op in self.OPS if (a, op) in self.hyps]
@@ -201,11 +210,12 @@ class PLNAgent:
         t1 = time.perf_counter()
         if review:
             print(f"  trial {t} reviewing {len(review)}", file=sys.stderr, flush=True)
-            self.h.query_many(review, steps=steps, timeout_sec=None)
+            self.h.query_many_refs(review, steps=steps)
         t1r = time.perf_counter()
         desire = {}
         for op in self.OPS:
-            tvs = parse_tvs(self.h.query(f"(: $p (Reward {op} t{t}) $tv)", steps=self.steps, timeout_sec=None))
+            (rows,) = self.h.query_many_refs([f"(: $p (Reward {op} t{t}) $tv)"], steps=self.steps)
+            tvs = [(float(a.tv[1]), float(a.tv[2])) for a in rows if a.tv[0] == "STV"]
             f, c = max(tvs, key=lambda x: x[1]) if tvs else (0.5, 0.0)
             desire[op] = c * (f - 0.5) + 0.5
         t2 = time.perf_counter()
@@ -219,6 +229,7 @@ class PLNAgent:
             op = None
         self.timing.append({"t": t, "add": t1 - t0, "review": t1r - t1, "decide": t2 - t1r,
                             "desire": {k: round(v, 4) for k, v in desire.items()}})
+        self._split(clock)
         print(f"  trial {t} {sample} {left} {right} review {t1r - t1:.2f}s decide {t2 - t1r:.2f}s", file=sys.stderr, flush=True)
         return None if op is None else "^" + op
 
@@ -229,8 +240,17 @@ class PLNAgent:
             if (a, op[1:]) not in self.hyps:
                 self.hyps.add((a, op[1:]))
                 new.append(f"(: h{len(self.hyps)} (Implication {a} (Reward {op[1:]} $t)) (STV 0.5 0.01))")
+        clock = self.h.timing()
         self.h.add_atoms_no_check(new + [f"(: o{self.t} (Reward {op[1:]} t{self.t}) (STV {1 if success else 0} 1))"])
         self.timing[-1]["feedback"] = time.perf_counter() - t0
+        self._split(clock)
+
+    def _split(self, clock):
+        """Add the chainer's inference and overhead seconds since `clock` to
+        the current trial."""
+        now = self.h.timing()
+        for part in ("inference", "overhead"):
+            self.timing[-1][part] = self.timing[-1].get(part, 0.0) + now[part] - clock[part]
 
     def wait(self, cycles):
         pass
