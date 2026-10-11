@@ -136,6 +136,8 @@ class PeTTaChainerBackend:
         self.hypotheses: dict[str, str] = {}  # mined: live hypothesis name -> its implication
         self.dropped = 0
         self.review_seconds = 0.0
+        # builds before PeTTaChainer.timing() report no inference/overhead split
+        self._clock = self._handler.timing() if hasattr(self._handler, "timing") else None
 
     def begin(self, network: Network, rates: Rates, history: list[tuple[Period, Observation]]) -> None:
         for head in self.statements.complete_predicates(network):
@@ -201,10 +203,19 @@ class PeTTaChainerBackend:
         self.unread = bool(self.reviews)
 
     def summary(self) -> dict:
+        """Review figures of learned or mined rules, and the seconds of every
+        chainer call of the run (setup included) split into inference
+        (activation, search, evaluation) and overhead (the rest of the calls)."""
         if self.mined:
-            return {"review_seconds": round(self.review_seconds, 3), "mined": list(self.mined), "dropped": self.dropped,
-                    "hypotheses": sorted(self.hypotheses.values())}
-        return {"review_seconds": round(self.review_seconds, 3), "rule_truths": self.rule_truths} if self.learned else {}
+            rules = {"review_seconds": round(self.review_seconds, 3), "mined": list(self.mined), "dropped": self.dropped,
+                     "hypotheses": sorted(self.hypotheses.values())}
+        else:
+            rules = {"review_seconds": round(self.review_seconds, 3), "rule_truths": self.rule_truths} if self.learned else {}
+        if self._clock is None:
+            return rules
+        now = self._handler.timing()
+        return {**rules, **{f"chainer_{part}_seconds": round(now[part] - self._clock[part], 3)
+                            for part in ("wall", "inference", "overhead")}}
 
     @staticmethod
     def _strength(answers) -> float | None:

@@ -5,8 +5,9 @@
 Per task and agent: the scored phases (mean and range over seeds), every
 phase's mean block score, trials to criterion (first block of a feedback
 phase from which every later block of it scores 1), and time per trial
-(PLN: adding facts, review, decision and feedback; ONA: the harness's wall
-per trial, which includes its cycles between trials).
+(PLN: adding facts, review, decision and feedback, and the chainer's time
+split into inference and overhead; ONA: the harness's wall per trial, which
+includes its cycles between trials).
 """
 import glob
 import json
@@ -56,6 +57,11 @@ def main(raw):
             if rs[0].get("mined"):
                 print("mined: hypotheses reviewed per trial mean {:.1f}, dropped per run mean {:.1f}".format(
                     statistics.mean(x.get("reviewed", 0) for x in tim), statistics.mean(r["dropped"] for r in rs)))
+            if all("inference" in x for x in tim):
+                inference = statistics.mean(x["inference"] for x in tim)
+                overhead = statistics.mean(x["overhead"] for x in tim)
+                print(f"chainer per trial: inference {1000 * inference:.1f} ms, overhead {1000 * overhead:.1f} ms "
+                      f"({100 * overhead / (inference + overhead):.0f}% of the chainer's time)")
         print()
 
 
