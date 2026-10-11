@@ -438,13 +438,13 @@ class BenchmarkTests(unittest.TestCase):
                 self.forwarded = (list(facts), steps)
                 return []
 
-            def query_many(self, queries, steps, timeout_sec):
-                self.queries.append((list(queries), steps, timeout_sec))
+            def query_many_refs(self, queries, steps):
+                self.queries.append((list(queries), steps))
                 return [
                     [],
                     [
-                        "(: weak (PatchPaysOff old old-alarm) (STV 0.2 1))",
-                        "(: strong (PatchPaysOff old old-alarm) (STV 0.8 1))",
+                        SimpleNamespace(proof="weak", statement=["PatchPaysOff", "old", "old-alarm"], tv=["STV", 0.2, 1]),
+                        SimpleNamespace(proof="strong", statement=["PatchPaysOff", "old", "old-alarm"], tv=["STV", 0.8, 1]),
                     ],
                 ]
 
@@ -487,7 +487,7 @@ class BenchmarkTests(unittest.TestCase):
                 ([
                     "(: $prf (SealLeak new new-alarm) $tv)",
                     "(: $prf (SealLeak old old-alarm) $tv)",
-                ], 17, 0),
+                ], 17),
             ],
         )
         self.assertEqual(Handler.instances[-1].atoms, ["(: fact (A) (STV 1 1))"])
@@ -514,12 +514,13 @@ class BenchmarkTests(unittest.TestCase):
             def forward_chain(self, facts, steps):
                 return []
 
-            def query_many(self, queries, steps, timeout_sec):
+            def query_many_refs(self, queries, steps):
                 return [
-                    [
-                        f"(: proof (PatchPaysOff old "
-                        f"{'second' if 'second' in query else 'first'}) (STV .4 1e0))"
-                    ]
+                    [SimpleNamespace(
+                        proof="proof",
+                        statement=["PatchPaysOff", "old", "second" if "second" in query else "first"],
+                        tv=["STV", .4, 1.0],
+                    )]
                     for query in queries
                 ]
 
@@ -557,9 +558,9 @@ class BenchmarkTests(unittest.TestCase):
             def forward_chain(self, facts, steps):
                 return []
 
-            def query_many(self, queries, steps, timeout_sec):
+            def query_many_refs(self, queries, steps):
                 self.queries.append(list(queries))
-                return [["(: induced relation (STV .42 .7))"] for _ in queries]
+                return [[SimpleNamespace(proof="induced", statement="relation", tv=["STV", .42, .7])] for _ in queries]
 
             def set_evidence_confidence_k(self, k):
                 self.evidence_confidence_k = k
@@ -613,11 +614,11 @@ class BenchmarkTests(unittest.TestCase):
             def forward_chain(self, facts, steps):
                 return []
 
-            def query_many(self, queries, steps, timeout_sec):
-                self.batches.append((list(queries), steps, timeout_sec))
+            def query_many_refs(self, queries, steps):
+                self.batches.append((list(queries), steps))
                 return [
-                    ["(: first-proof (SealLeak old first) (STV .25 1))"],
-                    ["(: second-proof (SealLeak new second) (STV .75 1))"],
+                    [SimpleNamespace(proof="first-proof", statement=["SealLeak", "old", "first"], tv=["STV", .25, 1])],
+                    [SimpleNamespace(proof="second-proof", statement=["SealLeak", "new", "second"], tv=["STV", .75, 1])],
                 ]
 
             def set_evidence_confidence_k(self, k):
@@ -641,7 +642,7 @@ class BenchmarkTests(unittest.TestCase):
                 ([
                     "(: $prf (SealLeak old first) $tv)",
                     "(: $prf (SealLeak new second) $tv)",
-                ], 23, 0)
+                ], 23)
             ],
         )
 
@@ -691,12 +692,13 @@ class BenchmarkTests(unittest.TestCase):
             def forward_chain(self, facts, steps):
                 return []
 
-            def query_many(self, queries, steps, timeout_sec):
+            def query_many_refs(self, queries, steps):
                 self.queries.append(list(queries))
-                return [[
-                    "(: proof (LocalProblem shift-01 M09 old "
-                    "thermal-loop-pump shift-01-M09) (STV .7 1))"
-                ]]
+                return [[SimpleNamespace(
+                    proof="proof",
+                    statement=["LocalProblem", "shift-01", "M09", "old", "thermal-loop-pump", "shift-01-M09"],
+                    tv=["STV", .7, 1],
+                )]]
 
             def set_evidence_confidence_k(self, k):
                 self.evidence_confidence_k = k
@@ -817,7 +819,7 @@ class BenchmarkTests(unittest.TestCase):
             def forward_chain(self, facts, steps):
                 self.forwarded.extend(facts)
 
-            def query_many(self, queries, steps, timeout_sec):
+            def query_many_refs(self, queries, steps):
                 return [[] for _ in queries]
 
             def set_evidence_confidence_k(self, k):
@@ -1054,9 +1056,9 @@ class V1BenchmarkTests(unittest.TestCase):
             def forward_chain(self, facts, steps):
                 self.forwarded.append((list(facts), steps))
                 return []
-            def query_many(self, queries, steps, timeout_sec):
+            def query_many_refs(self, queries, steps):
                 return [
-                    ["(: proof (PatchPaysOff x y) (STV .2 1))"]
+                    [SimpleNamespace(proof="proof", statement=["PatchPaysOff", "x", "y"], tv=["STV", .2, 1])]
                     for _ in queries
                 ]
 
@@ -1195,9 +1197,10 @@ if __name__ == "__main__":
 
 class StrongestBeliefTests(unittest.TestCase):
     def test_reads_the_answers_own_truth_value_not_one_inside_its_proof(self):
-        answer = (
-            "(: ((inverted alarm with cpu (prior (STV 0.61 0.44))) a1) "
-            "(SealLeak old pump shift-01-M01) (STV 0.125 0.66))"
+        answer = SimpleNamespace(
+            proof=[["inverted", "alarm", "with", "cpu", ["prior", ["STV", 0.61, 0.44]]], "a1"],
+            statement=["SealLeak", "old", "pump", "shift-01-M01"],
+            tv=["STV", 0.125, 0.66],
         )
         belief = PeTTaChainerBackend._strongest_belief([answer])
         self.assertAlmostEqual(belief.strength, 0.125)
