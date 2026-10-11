@@ -144,6 +144,9 @@ class PLNAgent:
     facts it is given (at most ``max_new`` per fact, ``max_live`` per
     consequent pattern), and the review is its ``review-hypotheses`` of the
     trial's ``(Reward $op t)``, which also drops the ones that do not predict.
+    Every fact refers to its trial, and within a trial the stimuli come before
+    the reward (``set_predicate_time``), so the miner relates only a trial's
+    own facts, the stimuli as the causes.
 
     Decision: first the truths of the hypotheses that match the trial are
     read (their RuleTruth goals queried in one query-many), with budget only
@@ -181,6 +184,9 @@ class PLNAgent:
         self.dropped = 0
         if mined:
             self.h.set_hypothesis_mining(*mined)
+            for p in ("Sample", "LeftStim", "RightStim"):
+                self.h.set_predicate_time(p, 2, 0)
+            self.h.set_predicate_time("Reward", 2, 1)
         self.rng = random.Random(seed * 7919 + 1)
         self.steps = steps
         self.relational = relational

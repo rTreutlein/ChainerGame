@@ -94,11 +94,15 @@ def complete_predicates(network: Network) -> list[str]:
     return ["Producing", "Fuelled", "FuelArrived"] if network.cell else []
 
 
-def positive_only_predicates(network: Network) -> list[str]:
-    """The predicates whose statements are stored only when true: a period's
-    link to the previous one. A knowledge base mining its own hypotheses
-    concludes none of them (PeTTaChainer set-positive-only-predicate)."""
-    return ["NextPeriod"]
+def predicate_times(network: Network) -> dict[str, tuple[int, int]]:
+    """Where the predicates with learned rules sit in time, for a knowledge
+    base mining its own hypotheses (PeTTaChainer set-predicate-time): each
+    fact refers to the period in its last argument (a shipment's lateness to
+    its departure period), whenever it arrives, and within a period a storm
+    or a degradation comes before the blocks it causes, and a block before
+    the lateness. The period links are NextPeriod facts (set-time-link). The
+    production predicates, whose rules are given, are not mined."""
+    return {"Storm": (2, 0), "Degraded": (2, 0), "Blocked": (2, 1), "Late": (2, 2)}
 
 
 def observation_facts(observation: Observation) -> list[str]:

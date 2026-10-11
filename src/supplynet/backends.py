@@ -109,7 +109,9 @@ class PeTTaChainerBackend:
 
     With ``mined`` (``(max_new, max_live)``, with ``learned``) the learned
     rules are not stated at all: the knowledge base proposes its own
-    hypotheses from the facts (PeTTaChainer ``set-hypothesis-mining``), and
+    hypotheses from the facts (PeTTaChainer ``set-hypothesis-mining``),
+    ordered by the period each fact refers to and the layers of
+    ``predicate_times``, never by arrival, and
     each round's review or read is its ``review-hypotheses`` of all live
     ones, which also drops those that do not predict."""
 
@@ -145,8 +147,9 @@ class PeTTaChainerBackend:
         rules = self.statements.rules(network, rates, learned=True) if self.learned else self.statements.rules(network, rates)
         self.reviews = [goal for goal in map(self.statements.review, rules) if goal] if self.learned else []
         if self.mined:
-            for head in self.statements.positive_only_predicates(network):
-                self._handler.set_positive_only_predicate(head)
+            self._handler.set_time_link("NextPeriod")
+            for head, (position, layer) in self.statements.predicate_times(network).items():
+                self._handler.set_predicate_time(head, position, layer)
             rules = [rule for rule in rules if not self.statements.review(rule)]
             self.reviews = ["$goal"]
         if rules:
