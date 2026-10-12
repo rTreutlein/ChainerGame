@@ -1,0 +1,21 @@
+# ONA on the port with its generator seeded (ONA_SEED, the seeded build of run_c.sh), as the seeded C runs.
+ona-seeded_pong_s1 pong --agent ona --seed 1 --ona-dir /nexus/Dev/OpenCog/ChainerGame-pong/.scratch/ona-seeded
+ona-seeded_pong_s2 pong --agent ona --seed 2 --ona-dir /nexus/Dev/OpenCog/ChainerGame-pong/.scratch/ona-seeded
+ona-seeded_pong_s3 pong --agent ona --seed 3 --ona-dir /nexus/Dev/OpenCog/ChainerGame-pong/.scratch/ona-seeded
+ona-seeded_pong_s4 pong --agent ona --seed 4 --ona-dir /nexus/Dev/OpenCog/ChainerGame-pong/.scratch/ona-seeded
+ona-seeded_pong_s5 pong --agent ona --seed 5 --ona-dir /nexus/Dev/OpenCog/ChainerGame-pong/.scratch/ona-seeded
+ona-seeded_pong_s6 pong --agent ona --seed 6 --ona-dir /nexus/Dev/OpenCog/ChainerGame-pong/.scratch/ona-seeded
+ona-seeded_pong_s7 pong --agent ona --seed 7 --ona-dir /nexus/Dev/OpenCog/ChainerGame-pong/.scratch/ona-seeded
+ona-seeded_pong_s8 pong --agent ona --seed 8 --ona-dir /nexus/Dev/OpenCog/ChainerGame-pong/.scratch/ona-seeded
+ona-seeded_pong_s9 pong --agent ona --seed 9 --ona-dir /nexus/Dev/OpenCog/ChainerGame-pong/.scratch/ona-seeded
+ona-seeded_pong_s10 pong --agent ona --seed 10 --ona-dir /nexus/Dev/OpenCog/ChainerGame-pong/.scratch/ona-seeded
+ona-seeded_pong2_s1 pong2 --agent ona --seed 1 --ona-dir /nexus/Dev/OpenCog/ChainerGame-pong/.scratch/ona-seeded
+ona-seeded_pong2_s2 pong2 --agent ona --seed 2 --ona-dir /nexus/Dev/OpenCog/ChainerGame-pong/.scratch/ona-seeded
+ona-seeded_pong2_s3 pong2 --agent ona --seed 3 --ona-dir /nexus/Dev/OpenCog/ChainerGame-pong/.scratch/ona-seeded
+ona-seeded_pong2_s4 pong2 --agent ona --seed 4 --ona-dir /nexus/Dev/OpenCog/ChainerGame-pong/.scratch/ona-seeded
+ona-seeded_pong2_s5 pong2 --agent ona --seed 5 --ona-dir /nexus/Dev/OpenCog/ChainerGame-pong/.scratch/ona-seeded
+ona-seeded_pong2_s6 pong2 --agent ona --seed 6 --ona-dir /nexus/Dev/OpenCog/ChainerGame-pong/.scratch/ona-seeded
+ona-seeded_pong2_s7 pong2 --agent ona --seed 7 --ona-dir /nexus/Dev/OpenCog/ChainerGame-pong/.scratch/ona-seeded
+ona-seeded_pong2_s8 pong2 --agent ona --seed 8 --ona-dir /nexus/Dev/OpenCog/ChainerGame-pong/.scratch/ona-seeded
+ona-seeded_pong2_s9 pong2 --agent ona --seed 9 --ona-dir /nexus/Dev/OpenCog/ChainerGame-pong/.scratch/ona-seeded
+ona-seeded_pong2_s10 pong2 --agent ona --seed 10 --ona-dir /nexus/Dev/OpenCog/ChainerGame-pong/.scratch/ona-seeded
