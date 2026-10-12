@@ -1,8 +1,11 @@
-"""Tables of the Pong runs: hit ratio, time per decision and learning curves
-for ONA's C game (bench/results/pong/ona_c/*.curve, cumulative counts every
-100 steps), ONA on the port and PeTTaChainer (raw/*.json from onabench.pong).
+"""Tables of the Pong runs: hit ratio, time per decision, its growth over the
+run, and learning curves for ONA's C game (RESULTS/ona_c/*.curve, cumulative
+counts every 100 steps), ONA on the port and PeTTaChainer (RESULTS/raw/*.json
+from onabench.pong). Runs of the credit-window agent (supply-network 4b0cf2a
+and before, whose results carry ``credit``) are grouped apart from the
+one-step agent's.
 
-    python -m onabench.pong_report [RESULTS_DIR]
+    python -m onabench.pong_report [RESULTS_DIR ...]
 """
 import glob
 import json
@@ -27,32 +30,55 @@ def window_ratios(curve):
     return out
 
 
-def load(results):
+def window_ms(timing):
+    """Mean ms per decision in each window of decisions."""
+    return [1000 * statistics.fmean(r["decide"] + r.get("feedback", 0.0) for r in timing[a:b]) if timing[a:b]
+            else float("nan") for a, b in WINDOWS]
+
+
+def group_of(r):
+    if r["agent"] == "ona":
+        return "ONA on the port (NAR.py)" + (", generator seeded" if r.get("ona_seed") is not None else "")
+    if "credit" in r:
+        name = f"PLN credit window ({r['credit']} steps), explicit misses"
+    else:
+        name = "PLN one-step, " + ("explicit misses" if r["outcomes"] == "misses" else "anticipation only")
+        if r.get("gamma", 0.9) != 0.9:
+            name += f", gamma {r['gamma']:g}"
+    return name + (f", {r['deadline_ms']:g} ms deadline" if r["deadline_ms"] else ", unconstrained")
+
+
+def load(dirs):
     runs = []
-    for f in sorted(glob.glob(os.path.join(results, "ona_c", "*.curve"))):
-        variant, seed = re.match(r"(pong2?)_(\w+)\.curve", os.path.basename(f)).groups()
-        curve = [tuple(map(int, line.split())) for line in open(f)]
-        if seed == "default":
-            continue
-        s, h, m = curve[-1]
-        runs.append({"group": f"ONA C (./NAR {variant} 10000)", "variant": variant, "seed": seed,
-                     "ratio": h / (h + m), "curve": curve})
-    for f in sorted(glob.glob(os.path.join(results, "raw", "*.json"))):
-        r = json.load(open(f))
-        if r["agent"] == "ona":
-            group = "ONA on the port (NAR.py)" + (", generator seeded" if r["ona_seed"] is not None else "")
-        else:
-            group = "PLN" + (" mined" if r["mined"] else "") + (", ONA's 0.501 threshold" if r["policy"] == "ona" else "") + (
-                f", {r['deadline_ms']:g} ms deadline" if r["deadline_ms"] else ", unconstrained")
-        runs.append({"group": group, "variant": r["variant"], "seed": r["seed"], "ratio": r["ratio"],
-                     "curve": r["curve"], "timing": r.get("timing_summary", {}), "late": r.get("late_steps", 0),
-                     "decisions": r.get("decisions")})
+    for results in dirs:
+        for f in sorted(glob.glob(os.path.join(results, "ona_c", "*.curve"))):
+            variant, seed = re.match(r"(pong2?)_(\w+)\.curve", os.path.basename(f)).groups()
+            curve = [tuple(map(int, line.split())) for line in open(f)]
+            if seed == "default":
+                continue
+            s, h, m = curve[-1]
+            runs.append({"group": f"ONA C (./NAR {variant} 10000)", "variant": variant, "seed": seed,
+                         "ratio": h / (h + m), "curve": curve})
+        for f in sorted(glob.glob(os.path.join(results, "raw", "*.json"))):
+            r = json.load(open(f))
+            runs.append({"group": group_of(r), "variant": r["variant"], "seed": r["seed"], "ratio": r["ratio"],
+                         "curve": r["curve"], "timing": r.get("timing_summary", {}), "late": r.get("late_steps", 0),
+                         "decisions": r.get("decisions"),
+                         "window_ms": window_ms(r["timing"]) if r.get("timing") and isinstance(r["timing"][0], dict) else None})
     return runs
 
 
+def mean_cols(rows, digits=3):
+    cols = []
+    for i in range(len(WINDOWS)):
+        vals = [w[i] for w in rows if w[i] == w[i]]
+        cols.append(f"{statistics.fmean(vals):.{digits}f}" if vals else "")
+    return cols
+
+
 def main():
-    results = sys.argv[1] if len(sys.argv) > 1 else "/nexus/Dev/OpenCog/bench/results/pong"
-    runs = load(results)
+    dirs = sys.argv[1:] or ["/nexus/Dev/OpenCog/bench/results/pong-onestep"]
+    runs = load(dirs)
     groups = sorted({(r["variant"], r["group"]) for r in runs})
     print("## Hit ratio over 10001 steps\n")
     print("| game | agent | seeds | mean | sd | min | max | ms per decision (mean, p95) | inference / overhead ms | late steps | decisions |")
@@ -75,11 +101,14 @@ def main():
     print("|---|---|" + "---|" * len(WINDOWS))
     for variant, group in groups:
         ws = [window_ratios(r["curve"]) for r in runs if (r["variant"], r["group"]) == (variant, group)]
-        cols = []
-        for i in range(len(WINDOWS)):
-            vals = [w[i] for w in ws if w[i] == w[i]]
-            cols.append(f"{statistics.fmean(vals):.3f}" if vals else "")
-        print(f"| {variant} | {group} | " + " | ".join(cols) + " |")
+        print(f"| {variant} | {group} | " + " | ".join(mean_cols(ws)) + " |")
+    print("\n## Growth: ms per decision in each window of decisions (mean over seeds)\n")
+    print("| game | agent | " + " | ".join(f"{a}-{min(b, 10000)}" for a, b in WINDOWS) + " |")
+    print("|---|---|" + "---|" * len(WINDOWS))
+    for variant, group in groups:
+        ws = [r["window_ms"] for r in runs if (r["variant"], r["group"]) == (variant, group) and r.get("window_ms")]
+        if ws:
+            print(f"| {variant} | {group} | " + " | ".join(mean_cols(ws, 1)) + " |")
     print("\n## Per seed\n")
     for variant, group in groups:
         rs = [r for r in runs if (r["variant"], r["group"]) == (variant, group)]

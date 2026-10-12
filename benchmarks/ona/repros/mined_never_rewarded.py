@@ -10,6 +10,13 @@ rewards, which the agent's own choices bias), above the learned rate of
 "right" whenever that is below 0.5. ONA learns the failure through
 anticipation (negative evidence when a predicted consequence does not come).
 
+Prototype on PeTTaChainer WIP branch miner-failures (frozen, not landed;
+design in docs/pong_one_step.md): a false fact also proposes the candidates
+concluding it whose consequent pattern no live hypothesis concluded before
+it. "left" then gets (Ball right $t) -> (Reward left $t), which reads 0.0008
+after its six failures, and the query answers it instead of the population
+prior (0.34 on master 2307ca50).
+
     python mined_never_rewarded.py
 """
 from pettachainer import PeTTaChainer
