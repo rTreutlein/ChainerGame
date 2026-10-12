@@ -54,8 +54,10 @@ class OutcomeEvidenceTest(unittest.TestCase):
             "(: one-of-left (Implication (Reward left $t) (Reward right $t)) (CTV (STV 0 1) (STV 1 1)))",
             "(: one-of-right (Implication (Reward right $t) (Reward left $t)) (CTV (STV 0 1) (STV 1 1)))"])
         a.trial("A1", "B1", "B2")
+        fake.queries.clear()
         a.feedback("^right", False)
         self.assertFalse([s for s in fake.added if "Reward left" in s and "Implication" not in s])
+        self.assertEqual(fake.queries, ["(: $p (Reward left t1) $tv)"])
 
     def test_facts_store_the_unchosen_outcome_and_its_hypotheses(self):
         a, fake = agent(outcome_evidence="facts")
@@ -132,6 +134,18 @@ class LiveCounterfactualTest(unittest.TestCase):
             h.add_atoms_no_check(["(: s9 (Sample A3 t9) (STV 1 1))", "(: l9 (LeftStim B3 t9) (STV 1 1))",
                                   "(: r9 (RightStim B4 t9) (STV 1 1))"])
         self.assertEqual(self.truth(rule, "(Reward left t9)"), self.truth(facts, "(Reward left t9)"))
+
+    def test_a_derived_outcome_counts_once_a_query_derives_it(self):
+        rule_truth = "(RuleTruth (Implication (And (Sample A1 $t) (LeftStim B1 $t)) (Reward left $t)))"
+        h = self.chainer("rule")
+        self.assertEqual(self.truth(h, rule_truth), [(0.999, 0.857)])
+        h.add_atoms_no_check([f"(: {p}{t} ({q} t{t}) (STV {v} 1))" for t in (7, 8, 9)
+                              for p, q, v in (("s", "Sample A1", 1), ("l", "LeftStim B1", 1), ("o", "Reward right", 0))])
+        (rows,) = h.query_many_refs([f"(: $p {rule_truth} $tv)"], steps=0)
+        self.assertEqual(round(float(rows[0].tv[2]), 3), 0.857)
+        h.query_many_refs([f"(: $p (Reward left t{t}) $tv)" for t in (7, 8, 9)], steps=0)
+        (rows,) = h.query_many_refs([f"(: $p {rule_truth} $tv)"], steps=0)
+        self.assertEqual(round(float(rows[0].tv[2]), 3), 0.9)
 
 
 if __name__ == "__main__":
