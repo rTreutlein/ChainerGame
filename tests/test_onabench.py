@@ -57,7 +57,7 @@ class OutcomeEvidenceTest(unittest.TestCase):
         fake.queries.clear()
         a.feedback("^right", False)
         self.assertFalse([s for s in fake.added if "Reward left" in s and "Implication" not in s])
-        self.assertEqual(fake.queries, ["(: $p (Reward left t1) $tv)"])
+        self.assertEqual(fake.queries, [])
 
     def test_facts_store_the_unchosen_outcome_and_its_hypotheses(self):
         a, fake = agent(outcome_evidence="facts")
@@ -98,8 +98,8 @@ class DesireTest(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get("SUPPLYNET_LIVE_PETTACHAINER") == "1", "set SUPPLYNET_LIVE_PETTACHAINER=1")
 class LiveCounterfactualTest(unittest.TestCase):
-    """Outcomes the task rule derives count as the hypotheses' samples and,
-    once a query has derived them, as members of the population prior."""
+    """Outcomes the task rule derives count as the hypotheses' samples and
+    as members of the population prior, as stored outcomes do."""
 
     def chainer(self, mode):
         path = os.environ.get("PETTACHAINER_PYTHONPATH")
@@ -135,17 +135,23 @@ class LiveCounterfactualTest(unittest.TestCase):
                                   "(: r9 (RightStim B4 t9) (STV 1 1))"])
         self.assertEqual(self.truth(rule, "(Reward left t9)"), self.truth(facts, "(Reward left t9)"))
 
-    def test_a_derived_outcome_counts_once_a_query_derives_it(self):
+    def test_a_derived_outcome_counts_when_its_facts_arrive(self):
         rule_truth = "(RuleTruth (Implication (And (Sample A1 $t) (LeftStim B1 $t)) (Reward left $t)))"
         h = self.chainer("rule")
         self.assertEqual(self.truth(h, rule_truth), [(0.999, 0.857)])
+        self.assertEqual(self.prior(h, "(Reward left t50)"), 0.857)
         h.add_atoms_no_check([f"(: {p}{t} ({q} t{t}) (STV {v} 1))" for t in (7, 8, 9)
                               for p, q, v in (("s", "Sample A1", 1), ("l", "LeftStim B1", 1), ("o", "Reward right", 0))])
         (rows,) = h.query_many_refs([f"(: $p {rule_truth} $tv)"], steps=0)
-        self.assertEqual(round(float(rows[0].tv[2]), 3), 0.857)
-        h.query_many_refs([f"(: $p (Reward left t{t}) $tv)" for t in (7, 8, 9)], steps=0)
-        (rows,) = h.query_many_refs([f"(: $p {rule_truth} $tv)"], steps=0)
         self.assertEqual(round(float(rows[0].tv[2]), 3), 0.9)
+        self.assertEqual(self.prior(h, "(Reward left t51)"), 0.9)
+
+    def prior(self, h, statement):
+        """The confidence of the population prior a budget-0 query answers."""
+        (rows,) = h.query_many_refs([f"(: $p {statement} $tv)"], steps=0)
+        (row,) = rows
+        self.assertEqual(row.proof[0], "population-prior")
+        return round(float(row.tv[2]), 3)
 
 
 if __name__ == "__main__":

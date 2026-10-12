@@ -174,14 +174,12 @@ class PLNAgent:
     - rule: the knowledge base states the task structure, one rule per
       direction, (Implication (Reward right $t) (Reward left $t))
       (CTV (STV 0 1) (STV 1 1)) and the converse: the unchosen outcome is
-      derived. After each outcome the agent asks the knowledge base for the
-      other operation's outcome (budget 0): a derived outcome counts as a
-      hypothesis sample, and in the population prior, only once a query has
-      derived it, unlike a stored one, which counts when it is added. Without
-      that query the samples lag, and with change detection a tally cut at a
-      change misses the recent ones (reversal 0.856 against 1.0, 10 seeds).
-      The rule also couples the current trial's two queries: each operation's
-      answer merges its own hypotheses with the complement of the other's;
+      derived. The outcome it determines counts as a hypothesis sample, and
+      in the population prior, at the next query, as a stored one does
+      (PeTTaChainer docs/metta/runtime_design_assumptions.md, "Determined
+      rows"). The rule also couples the current trial's two queries: each
+      operation's answer merges its own hypotheses with the complement of the
+      other's;
     - facts: the harness stores the unchosen outcome as a fact
       (Reward other t), (STV 1-s 1), and the unchosen operation gets its
       hypotheses for the context as the chosen one does.
@@ -308,8 +306,6 @@ class PLNAgent:
                     new.append(f"(: h{len(self.hyps)} (Implication {a} (Reward {o} $t)) (STV 0.5 0.01))")
         clock = self.h.timing()
         self.h.add_atoms_no_check(new + [f"(: {n}{self.t} (Reward {o} t{self.t}) (STV {s} 1))" for n, (o, s) in zip("oc", outcomes)])
-        if self.outcome_evidence == "rule":
-            self.h.query_many_refs([f"(: $p (Reward {other} t{self.t}) $tv)"], steps=0)
         self.timing[-1]["feedback"] = time.perf_counter() - t0
         self._split(clock)
 
