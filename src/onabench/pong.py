@@ -257,7 +257,7 @@ class PLNAgent:
     """
     name = "pln"
 
-    def __init__(self, variant, seed, steps, pettachainer_path=None, mined=None, change_detection=None,
+    def __init__(self, variant, seed, steps, pettachainer_path=None, mined=None, change_hazard=None,
                  policy="argmax"):
         if pettachainer_path:
             sys.path.insert(0, pettachainer_path)
@@ -265,8 +265,8 @@ class PLNAgent:
         self.h = PeTTaChainer()
         self.h.set_evidence_confidence_k(1)
         self.h.set_rule_refinement(True)
-        if change_detection:
-            self.h.set_rule_change_detection(change_detection)
+        if change_hazard is not None:
+            self.h.set_rule_change_hazard(change_hazard)
         self.h.set_positive_only_predicate("Ball")
         self.mined = mined
         if mined:
@@ -469,7 +469,9 @@ def main():
     ap.add_argument("--credit", type=int, default=6, help="PLN: steps after an operation whose score is its outcome")
     ap.add_argument("--mined", nargs=2, type=int, metavar=("MAX_NEW", "MAX_LIVE"),
                     help="PLN: the knowledge base mines its own hypotheses (set-hypothesis-mining)")
-    ap.add_argument("--change-detection", type=float, metavar="BAYES_FACTOR")
+    ap.add_argument("--change-hazard", type=float, metavar="HAZARD",
+                    help="PLN: prior probability that a sample starts a new regime of a refined rule's rate "
+                         "(PeTTaChainer set-rule-change-hazard; default PeTTaChainer's, 0 keeps one regime)")
     ap.add_argument("--policy", choices=("argmax", "ona"), default="argmax",
                     help="PLN: take the best operation (argmax) or only one whose desire is at least 0.501 (ona)")
     ap.add_argument("--deadline-ms", type=float, help="real-time mode: the game advances every DEADLINE ms")
@@ -481,7 +483,7 @@ def main():
     a = ap.parse_args()
     out = os.path.abspath(a.out) if a.out else None
     agent = (ONAAgent(a.variant, a.ona_dir, a.ona_seed) if a.agent == "ona"
-             else PLNAgent(a.variant, a.seed, a.steps, a.pettachainer_path, a.mined, a.change_detection,
+             else PLNAgent(a.variant, a.seed, a.steps, a.pettachainer_path, a.mined, a.change_hazard,
                       a.policy))
     env = Pong(a.variant, a.seed)
     deadline = a.deadline_ms / 1000 if a.deadline_ms else None
@@ -490,7 +492,7 @@ def main():
     res.update({"variant": a.variant, "agent": a.agent, "seed": a.seed, "iterations": a.iterations,
                 "deadline_ms": a.deadline_ms, "wall": time.perf_counter() - t0})
     if a.agent == "pln":
-        res.update({"budget": a.steps, "credit": a.credit, "policy": a.policy, "mined": a.mined, "change_detection": a.change_detection,
+        res.update({"budget": a.steps, "credit": a.credit, "policy": a.policy, "mined": a.mined, "change_hazard": a.change_hazard,
                     "hypotheses": len(agent.hyps), "dropped": agent.dropped,
                     "timing_summary": summarize_timing(agent.timing), "timing": agent.timing})
     else:
