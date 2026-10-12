@@ -1,7 +1,7 @@
 # SupplyNet: a supply network with feedback
 
-Status: stages 1 to 3 and stage "scale" built (`src/supplynet`, see the
-Stage 1, 2, 3 and scale results), October 2026.
+Status: stages 1 to 4 and stage "scale" built (`src/supplynet`, see the
+Stage 1, 2, 3, 4 and scale results), October 2026.
 
 ## Why another benchmark
 
@@ -671,6 +671,327 @@ unchanged (error 0.052), and the loop is now answered not running without
 stock, as the least fixed point says. The declarations change nothing where
 no loop exists: timed seed 1 (error 0.0217, Brier 0.1332) and stage 2 seed 1
 (error 0.0082, Brier 0.1486) are identical to master, within 1% of its time.
+
+
+## Stage 4 as built
+
+`supplynet run --stage 4` (`src/supplynet/decisions.py`, the decision step in
+`game.run_game`). Stage 4 is stage 3's timed cell, with its storms, routes,
+observations and production rules, plus a decision each round. Stages 1 to 3
+give the same reference and prior results as before (to 1e-12; the exact
+posterior's forward-backward now contracts one variable at a time, below).
+
+- **World.** Stage 3's network for the seed, with two changes drawn after it:
+  the fuel route `rf` is exposed, and a sheltered alternate route `ra` in the
+  same region carries the mine's fuel when the operator reroutes it. `--plants
+  N` sets the number of plants (default 2, stage 3's).
+- **Actions** (`world.Action`), decided each round for the current period,
+  after its observation and the reasoner's beliefs:
+
+  | action | effect |
+  |---|---|
+  | stockpile | the fuel warehouse holds stock this period (its only source; the history's stock is the former operator's, drawn with 0.4 as in stage 3) |
+  | reroute | the mine's fuel leaves this period over `ra` instead of `rf` (it arrives next period, blocked by `ra`'s block now) |
+  | repair site | the site produces nothing this period (downtime) and is healthy at its end: its degradation next period starts with the site's hazard instead of persisting |
+
+  Each action takes one unit of a shared capacity (`--capacity`, default 2:
+  two crews or trucks per period), so the default game has 6 single actions
+  and 22 feasible joint actions (1 + 6 + 15).
+- **Utility** (`decisions.utility`, values in `decisions.Values`): the period's
+  production (mine 2, power plant 1, each plant 4), the fuel sent on for the
+  next period when the mine runs and the route taken is open now (8), and
+  each repaired site's degradation cleared (mine 10, power plant 20, plant 8),
+  less the costs (stockpile 2, reroute 1, repair 1). The cleared degradation
+  is a terminal value standing for the production a repair saves later; stage
+  5 replaces it with the next period itself.
+- **Why the actions interact.** Through the cycle: a repaired power plant
+  stops everything, so a stockpile or a reroute beside it is wasted; a
+  repaired mine sends no fuel, so a reroute beside it is wasted; a stockpile
+  that restarts the mine makes a reroute worth something, which alone is worth
+  nothing; and repairs taken together lose less production than one at a
+  time. Over seeds 1–6 the exact posterior with the singles ranked by their
+  own gains (`greedy`) loses 1.5 per round to the joint choice, 13% of what
+  doing nothing loses (11.4). The values were set for that: with stage 3's
+  production values alone the interaction cost 0.1 per round.
+- **Oracle and reference policy.** The world stays exact: production is the
+  least fixed point of the rules under the action, and the next period's
+  degradations follow the repairs. `world.Knowledge` takes each period's
+  action (`act`) and filters exactly over it: a repair changes that site's
+  transition out of the period, the route taken decides which block the
+  arriving fuel met, the stock is the action's. The reference policy is the
+  feasible joint action of highest expected utility under the exact posterior
+  (`decisions.expected_utilities`, `best`), enumerated (22 options by
+  default; ties go to fewer units). A test checks every option's expected
+  utility and the posterior after an action against enumeration over every
+  storm, block and degradation.
+- **Scoring.** Per round: regret, the exact expected utility of the reference
+  policy's choice less that of the reasoner's (0 or more), agreement with
+  the reference choice, the realized utility, and the decision's seconds.
+  Beliefs are scored as in stage 3 (storm now and before, blocks, degraded),
+  without production, which now depends on the action; they are asked before
+  the decision.
+- **Exact filter, faster.** With the alternate route and up to 5 plants the
+  cell region has up to 2^10 states, too many for the pairwise sums stage 3
+  used. A state is now a bit mask, the transition is a product over
+  variables (a block does not depend on its previous value), and the report
+  factor reads the previous state through one bit (the block the arriving
+  fuel met), so a forward or backward step is one 2-by-2 contraction per
+  variable.
+
+**Reasoners.**
+
+- `reference`: the exact posterior and the reference policy (regret 0).
+- `greedy`: the exact posterior, but the single actions are ranked by their
+  own gain over doing nothing and taken while they gain and capacity lasts.
+  Its regret is what ignoring the interaction costs.
+- `prior`: every hidden variable at its history frequency, independent; the
+  best joint action under that (`decisions.factored_utilities`).
+- `problog`: exact, like its other stages. One more compilation per round
+  values every joint action: each single action is a probabilistic fact of
+  0.5 that the period's action statements follow, a joint action is the
+  conjunction of its singles taken and the others not, and P(outcome | joint)
+  = P(joint ∧ outcome) / P(joint). The action facts are roots no evidence
+  depends on, so this is exact given the evidence.
+- `pettachainer` (and `mm2`, below): decisions in the knowledge base that
+  holds the beliefs, as in StationOps (`single_kb_actions.md`).
+- NARS takes no part. Its backend translates beliefs; ONA's operations take
+  one action towards a goal and have no expected utility over a joint action
+  under shared capacity to compare with the reference policy.
+
+**PeTTaChainer's decisions.** The knowledge base gains, once, outcome rules
+named `(no_inverse ...)` (`metta.decision_rules`), each outcome carrying its
+amount from a stored value fact:
+
+    (Implication (And (OutputValue $site $v) (Producing $site $t)) (Outcome $t (Output $site) $v))
+    (Implication (And (FuelValue $v) (FuelVia $r $t) (Producing mine $t) (Not (Blocked $r $t))) (Outcome $t FuelSent $v))
+    (Implication (And (RepairValue $site $v) (Repairing $site $t) (Degraded $site $t)) (Outcome $t (Cleared $site) $v))
+
+A joint action's value is one `Assuming` query that assumes its facts and
+asks for its outcomes (`metta.decision_query`):
+
+    (: $prf (Assuming (And (FuelVia ra t7) (StockedFuel t7) (Repairing mine t7) (InService power-plant t7) …)
+                      (Outcome t7 $o $v)) $tv)
+
+Its expected utility is the sum of the outcomes' amounts weighted by their
+strength, less the action's cost (certain, so the client subtracts it). The
+taken action joins the knowledge base as facts (`metta.action_facts`).
+
+**Proposals.** `--proposer extend` (default) asks doing nothing and every
+single action (1 + n queries for n single actions), then extends the `--beam`
+best options of the last layer (2) by one more single action each, until the
+capacity is used: beam·(n − 1) more queries per extra unit at most (minus
+duplicates). At the default size that is 16 queries for 22 options; with 9
+single actions and capacity 3, 38 queries for 130 options. `--proposer
+exhaustive` asks every feasible option. The roots of one layer are one
+`query_many_refs` call with `--budget` steps per root, so they share the
+search of what their assumptions leave unchanged.
+
+**Chainer gaps and the harness's workarounds** (PeTTaChainer master
+2307ca50; repros in `benchmarks/supplynet_stage4/repro/`):
+
+1. **An `Assuming` context reads no complete statement as false.**
+   `complete-statement?` (`runtime/backward/skeleton.metta`) accepts the
+   main context only, so in a decision context a stock or a repair that is
+   not assumed has no value, and every rule reading it has no answer:
+   `(Assuming (Decide t) (P t))` with `S`, `P` complete and `(Or (S $t) (F
+   $t)) → (P $t)` answers nothing (the main context answers `(P t)` from F
+   alone; `repro/assuming_complete.metta`). A one-line change (accepting `context-world?` contexts, which see
+   the world) fixed it and its MeTTa test passed with `verify.sh`; it was not
+   kept, since PeTTaChainer is frozen (`repro/assuming_complete.patch`).
+   *Workaround* (labelled in `metta._cycle_rules`): the chainer's rules read
+   only positive action facts, one per branch. A site runs while `(InService
+   site t)`; the power plant is fuelled by `StockedFuel → Fuelled` and
+   `(And (Unstocked $t) (FuelArrived $t)) → Fuelled`, exactly one of the two
+   facts stated or assumed per period, so the two rules never give a view
+   together. ProbLog and the reference keep the semantic rules (`Or`, `Not
+   Repairing`).
+2. **`Not` of an unstated complete statement has no answer outside a rule
+   concluding a complete predicate** (`repro/not_complete.py`; by design per
+   `complete_predicates.md`, but the root case `(Not (R t1))` has no answer
+   either). The degradation's persistence reads `(Not (Repairing site $p))`;
+   the harness states every past repair true or false.
+3. **Later decision contexts lose answers.** With the production rules
+   invertible, seed 1's round-1 decision contexts (all 22) value every option
+   exactly at 200 steps, and in round 2 every stockpile context answers no
+   production outcome at all: the stockpile's value is −2.0 (its cost)
+   against an exact 10.6, at 200 and at 1,000 steps alike
+   (`repro/round2_contexts.py STEPS`, run from the ChainerGame root). While gap 1 was patched locally, the effect showed on a
+   single dumped knowledge base too: the same context answered at 50 steps
+   the first time, and not the second and third time at 200 (it did at
+   1,000; with 15 history periods instead of 30 it did at 200). Neither
+   collector (`deps-gc!`, `stored-refs-gc-step!`) was the cause.
+   *Workaround* (labelled in `metta._cycle_rules`): the chainer's production
+   rules are `(no_inverse ...)`. Their antecedent completions make the
+   degradations and the repairs affected in every context, so each context
+   derived the degradation chains again; without them a context reads those
+   in the main context, later rounds' contexts answer (86 of the 88 option
+   values of seed 1's first four rounds exact at 200 steps, one context per
+   option), and beliefs
+   are no worse: with a fixed do-nothing policy (seed 1, 30 rounds, budget
+   200) the error to the exact posterior is 0.0027 without the completions
+   and 0.0062 with them (degraded 0.014 and 0.032), at a third of the time
+   (14.5 s against 46.3 s). In stage 3 the completions gave production
+   reports no way into the degradations either (Stage 3 results).
+4. **An in-KB `FoldAllTruth` over the outcomes misses members, and more
+   budget can cover fewer.** The first design folded the outcomes in the KB,
+   `(DecisionValue t $g)`, as StationOps does. On the round-1 knowledge base
+   (`repro/fold_repro.py STEPS`, a fresh knowledge base per budget) the fold
+   for stockpile and repair of the mine covers nothing at 200 steps
+   (`partial-fold 0 1`, confidence 0), 1 of 5 members at 400 (value 7.5,
+   confidence 0.2), nothing again at 1,000 and 1 of 2 at 2,000 (7.5, 0.5), while the outcome query at the
+   same budgets answers every outcome, summing to the exact 12.82.
+   `partial_folds.md` expects coverage to grow with the budget. *Workaround*:
+   the client sums the outcomes (above).
+
+
+## Stage 4 results
+
+Seeds 1–4, 3 regions, 2 plants, capacity 2 (22 options), 30 labelled history
+periods, 30 rounds, inspection rate 0.25; PeTTaChainer master 2307ca50
+(shared venv), evidence k 5, with the harness's workarounds 1–3; ProbLog
+ddnnf, 60 s per compilation. Regret is per round, in the utility's units
+(doing nothing loses 11.4 per round over seeds 1–6). Raw JSON:
+`bench/results/supplynet-stage4/`; `benchmarks/supplynet_stage4/sweep.sh`
+reruns it and `report.py` prints these tables.
+
+| reasoner | regret | agreement | realized utility | Brier | error to exact | s/round beliefs | s/round decision | queries/round |
+|---|---|---|---|---|---|---|---|---|
+| reference | 0 | 1.00 | 12.30 | 0.147 | 0 | 0 | 0.01 | – |
+| ProbLog | 0 | 1.00 | 12.30 | 0.147 | 0 | 0.30 | 22.7 | – |
+| beam (exact values, extend proposer) | 0 | 1.00 | 12.30 | 0.147 | 0 | 0 | 0.01 | – |
+| greedy (exact values, singles alone) | 1.22 | 0.67 | 10.42 | 0.146 | 0 | 0 | 0.01 | – |
+| history base rates | 7.61 | 0.06 | 4.11 | 0.211 | 0.188 | 0 | 0.01 | – |
+| PeTTaChainer, budget 50 | 2.33 | 0.33 | 11.14 | 0.153 | 0.018 | 0.35 | 4.5 | 16 |
+| PeTTaChainer, budget 100 | 1.74 | 0.45 | 11.19 | 0.154 | 0.019 | 0.39 | 7.6 | 16 |
+| PeTTaChainer, budget 200 | 1.29 | 0.59 | 11.51 | 0.152 | 0.019 | 0.42 | 11.5 | 16 |
+| PeTTaChainer, budget 400 | 0.98 | 0.66 | 11.69 | 0.153 | 0.018 | 0.45 | 12.3 | 16 |
+| PeTTaChainer, budget 200, every option | 1.52 | 0.55 | 11.43 | 0.152 | 0.018 | 0.44 | 17.0 | 22 |
+
+Per seed:
+
+| reasoner | regret s1 | s2 | s3 | s4 | error to exact s1 | s2 | s3 | s4 |
+|---|---|---|---|---|---|---|---|---|
+| reference | 0.00 | 0.00 | 0.00 | 0.00 | 0.000 | 0.000 | 0.000 | 0.000 |
+| problog | 0.00 | 0.00 | 0.00 | 0.00 | 0.000 | 0.000 | 0.000 | 0.000 |
+| beam | 0.00 | 0.00 | 0.00 | 0.00 | 0.000 | 0.000 | 0.000 | 0.000 |
+| greedy | 0.80 | 0.61 | 1.87 | 1.60 | 0.000 | 0.000 | 0.000 | 0.000 |
+| prior | 8.17 | 6.27 | 7.65 | 8.35 | 0.189 | 0.180 | 0.194 | 0.188 |
+| pettachainer-extend-b50 | 1.93 | 1.76 | 1.98 | 3.66 | 0.019 | 0.018 | 0.017 | 0.020 |
+| pettachainer-extend-b100 | 2.07 | 1.42 | 1.25 | 2.21 | 0.022 | 0.018 | 0.019 | 0.019 |
+| pettachainer-extend-b200 | 2.01 | 1.03 | 1.17 | 0.94 | 0.021 | 0.017 | 0.017 | 0.019 |
+| pettachainer-extend-b400 | 1.57 | 0.66 | 0.86 | 0.84 | 0.022 | 0.017 | 0.015 | 0.019 |
+| pettachainer-exhaustive-b200 | 2.24 | 1.22 | 1.32 | 1.31 | 0.021 | 0.017 | 0.018 | 0.018 |
+
+Brier differs between reasoners partly because their actions make different
+worlds; the error to the exact posterior compares beliefs.
+
+- **Regret falls with budget, beliefs do not change.** The chainer's error to
+  the exact posterior stays 0.018–0.019 at every budget, while its regret
+  halves from 50 to 400 steps (2.33 → 0.98), below greedy-independent's
+  1.22 on average at 400 (each seed is its own world: lower on 2 of 4). What more budget buys is the decision
+  contexts' outcomes: at 50 steps a context misses some of them. The budget
+  is per decision context (16 per round), so 400 steps is 6,400 per round
+  for decisions, against 400 for the round's beliefs.
+- **The proposer costs nothing here.** With exact values the extend
+  proposer (`beam`) chooses the reference's action in every round of every
+  seed and size measured (regret 0, up to 130 options), and the chainer asking every option does no
+  better than asking 16 (1.52 against 1.29 at 200 steps).
+- **The interaction is visible.** Ignoring it (greedy) loses 1.22 per round
+  with exact beliefs: a stockpile picked alone when the reroute with it would
+  have saved the fuel, a reroute or a stockpile beside a repair of the mine
+  or the power plant that makes it worthless, repairs taken one at a time.
+- **Where the chainer's regret comes from: degradations.** Seed 1, budget
+  200 (a run before the layers were batched, 30 rounds, regret 1.78): 15 of
+  30 rounds lose, and in every one the reference repairs a site the chainer
+  leaves alone. In 13 of them the chainer's degradation beliefs are 0.11–0.29
+  from the exact posterior: the exact posterior reads a plant that
+  did not produce while the power plant ran and its input arrived as almost
+  certainly degraded, and the chainer does not (stage 3's gap: production
+  reports do not reach degradation, see Stage 3 results). With the cell
+  idle (a fixed do-nothing policy), so that production says nothing, the
+  same chainer's degradation error is 0.014.
+
+**Decision cost against the number of options** (seed 1, 10 rounds, budget
+200; n single actions = 4 + plants):
+
+| plants | singles | capacity | options | proposer | queries/round | answered/round | s/round decision | regret |
+|---|---|---|---|---|---|---|---|---|
+| 2 | 6 | 2 | 22 | reference | – | – | 0.01 | 0.000 |
+| 2 | 6 | 3 | 42 | reference | – | – | 0.01 | 0.000 |
+| 3 | 7 | 2 | 29 | reference | – | – | 0.01 | 0.000 |
+| 3 | 7 | 3 | 64 | reference | – | – | 0.01 | 0.000 |
+| 4 | 8 | 2 | 37 | reference | – | – | 0.04 | 0.000 |
+| 4 | 8 | 3 | 93 | reference | – | – | 0.08 | 0.000 |
+| 5 | 9 | 2 | 46 | reference | – | – | 0.05 | 0.000 |
+| 5 | 9 | 3 | 130 | reference | – | – | 0.12 | 0.000 |
+| 2 | 6 | 2 | 22 | beam | – | – | 0.00 | 0.000 |
+| 2 | 6 | 3 | 42 | beam | – | – | 0.01 | 0.000 |
+| 3 | 7 | 2 | 29 | beam | – | – | 0.01 | 0.000 |
+| 3 | 7 | 3 | 64 | beam | – | – | 0.01 | 0.000 |
+| 4 | 8 | 2 | 37 | beam | – | – | 0.03 | 0.000 |
+| 4 | 8 | 3 | 93 | beam | – | – | 0.07 | 0.000 |
+| 5 | 9 | 2 | 46 | beam | – | – | 0.05 | 0.000 |
+| 5 | 9 | 3 | 130 | beam | – | – | 0.09 | 0.000 |
+| 2 | 6 | 2 | 22 | problog | – | – | 10.79 | 0.000 |
+| 2 | 6 | 3 | 42 | problog | – | – | 23.78 | 0.160 |
+| 3 | 7 | 2 | 29 | problog | – | – | 29.39 | 3.627 |
+| 3 | 7 | 3 | 64 | problog | – | – | 40.76 | 3.725 |
+| 4 | 8 | 2 | 37 | problog | – | – | 49.40 | 7.920 |
+| 4 | 8 | 3 | 93 | problog | – | – | 54.87 | 7.276 |
+| 5 | 9 | 2 | 46 | problog | – | – | 46.05 | 9.711 |
+| 5 | 9 | 3 | 130 | problog | – | – | 58.70 | 13.957 |
+| 2 | 6 | 2 | 22 | extend | 16.0 | 16.0 | 9.63 | 0.097 |
+| 2 | 6 | 3 | 42 | extend | 23.0 | 23.0 | 12.27 | 1.529 |
+| 3 | 7 | 2 | 29 | extend | 19.0 | 19.0 | 8.26 | 1.370 |
+| 3 | 7 | 3 | 64 | extend | 28.0 | 28.0 | 13.46 | 1.835 |
+| 4 | 8 | 2 | 37 | extend | 22.0 | 21.6 | 11.67 | 0.773 |
+| 4 | 8 | 3 | 93 | extend | 33.0 | 32.6 | 21.72 | 1.419 |
+| 5 | 9 | 2 | 46 | extend | 25.0 | 25.0 | 15.61 | 0.066 |
+| 5 | 9 | 3 | 130 | extend | 38.0 | 38.0 | 23.53 | 0.032 |
+| 2 | 6 | 2 | 22 | exhaustive | 22.0 | 22.0 | 15.14 | 1.618 |
+| 2 | 6 | 3 | 42 | exhaustive | 42.0 | 42.0 | 28.26 | 1.729 |
+| 3 | 7 | 2 | 29 | exhaustive | 29.0 | 29.0 | 14.70 | 1.370 |
+| 3 | 7 | 3 | 64 | exhaustive | 64.0 | 64.0 | 33.86 | 1.835 |
+| 4 | 8 | 2 | 37 | exhaustive | 37.0 | 36.6 | 26.23 | 0.773 |
+| 4 | 8 | 3 | 93 | exhaustive | 93.0 | 92.6 | 102.17 | 1.419 |
+| 5 | 9 | 2 | 46 | exhaustive | 46.0 | 45.8 | 31.55 | 0.066 |
+| 5 | 9 | 3 | 130 | exhaustive | 130.0 | 129.8 | 134.04 | 0.032 |
+
+- **The chainer's cost per round is linear in the contexts it asks**, at
+  about 0.4–1.1 s each (budget 200, batched by layer); exhaustively that is
+  every option, 22 to 130, and 102 s per round at 93 options, 134 s at 130. The extend
+  proposer asks 1 + n contexts, then 2(n − 1) − 1 more for a second unit and
+  2(n − 2) − 1 for a third (16 to 38 here), so its cost grows linearly in n
+  and the capacity instead of combinatorially, and its regret was never
+  higher than asking every option's. This is the weakness the design
+  expected; bounded proposals contain it at these sizes. A complement whose
+  parts both rank outside the beam alone would be missed; here the reroute,
+  worthless alone, is found by extending the stockpile, which ranks first.
+- **ProbLog's exact decisions stop being affordable first.** One circuit
+  values every option, but compiling it grows with the joint actions as
+  conjunctions of n action facts: its slowest round already takes 46–60 s at
+  the default size; at capacity 3 with 6 singles 1 of 10 rounds passes the
+  60 s timeout, with 7 singles 3 to 6 of 10, with 8 or 9 singles 7 to 9 of
+  10, and a timed-out round does nothing (regret 0.16, 3.6–3.7, 7.3–14.0). Raising the timeout trades time for exactness; the reference's
+  enumeration over the exact filter stays under 0.15 s per round.
+
+**MM2** (`--backend mm2`, `mm2_chainer.petta.PeTTaChainer` from
+`NL2PLN_Project/mm2-chainer` a227553): no stage 4 numbers. It answers stage 1
+(5 history periods: error 0.009), but on stage 2 a round's belief queries take
+0.15 s, then 0.78 s, then more than 290 s in round 3, once three unresolved
+periods are linked by persistence; on stage 4 (2 history periods) a round's
+beliefs take 7.4 s. Its decisions cannot run: it has no `Assuming` queries
+(every decision context answers nothing; mm2-chainer
+`docs/pettachainer-parity.md` lists them as missing) and no
+`set_complete_predicate` (the harness records it in `unsupported` and goes
+on).
+
+**Limits.** Rates are given (no learned rules in stage 4). The horizon is one
+period with a terminal value for a cleared degradation; stage 5 replaces it
+with the next period. NARS takes no part. The chainer's numbers include the
+harness's three workarounds (positive action facts, non-invertible
+production rules, the client's sum of outcomes); without them the chainer
+decides on nothing (gap 1) or on contexts that lose their answers (gaps 3, 4).
 
 
 ## Learned rules

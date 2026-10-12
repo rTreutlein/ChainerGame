@@ -1,0 +1,62 @@
+From 297249cf118135f81dcd59289c648f373c3e3396 Mon Sep 17 00:00:00 2001
+From: Roman Treutlein <roman@trueagi.io>
+Date: Mon, 12 Oct 2026 16:55:14 +0200
+Subject: [PATCH] Read complete predicates closed in Assuming contexts
+
+An Assuming query's context holds the world's facts and rules with its
+assumptions, so an unstated statement of a complete predicate there is
+false as in the main context. complete-statement? accepted the main context
+only, so a decision that did not assume an action (SupplyNet stage 4: a
+stock or a repair not taken) left every rule reading it without an answer.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MB4df8DFL2Qs4PDiBZVXLj
+---
+ pettachainer/metta/runtime/backward/skeleton.metta |  6 ++++--
+ tests/metta/test_complete_predicates.metta         | 14 ++++++++++++++
+ 2 files changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/pettachainer/metta/runtime/backward/skeleton.metta b/pettachainer/metta/runtime/backward/skeleton.metta
+index 201196ab..aad97f95 100644
+--- a/pettachainer/metta/runtime/backward/skeleton.metta
++++ b/pettachainer/metta/runtime/backward/skeleton.metta
+@@ -1295,10 +1295,12 @@
+    (if (space-row-present? &complete_predicates ($kb $head)) true
+       (let $_row (add-atom &complete_predicates ($kb $head)) true)))
+ 
+-;; A ground statement of a complete predicate in the main context.
++;; A ground statement of a complete predicate in the main context or in an
++;; Assuming query's context, which holds the world's facts and rules with its
++;; assumptions; an implication query's hypothetical contexts are not complete.
+ (: complete-statement? (-[det]-> Atom Atom Bool))
+ (= (complete-statement? $type ($kbid $ctx $_vars))
+-   (if (== $ctx MAIN)
++   (if (if (== $ctx MAIN) true (context-world? $ctx))
+       (if (== (extract-vars $type) ())
+          (let* (($kb (brand KB $kbid)) ($head (if (is-expr $type) (car-atom $type) $type)))
+             (space-row-present? &complete_predicates ($kb $head)))
+diff --git a/tests/metta/test_complete_predicates.metta b/tests/metta/test_complete_predicates.metta
+index 4ec058d4..ae8327b3 100644
+--- a/tests/metta/test_complete_predicates.metta
++++ b/tests/metta/test_complete_predicates.metta
+@@ -106,3 +106,17 @@
+ !(test (query 2 deepKb (: $p (G t) $tv)) ())
+ !(test (query 3 deepKb (: $p (G t) $tv))
+    (: (by rg (by rk (by r1 (by r2 (by r3 b))))) (G t) (STV 1 0.9994003594095785)))
++
++;; An Assuming query's context holds the world's facts and rules with its
++;; assumptions, so its complete statements read closed as the main context's
++;; do: a decision that does not assume the stock has none, and P runs on F
++;; alone; assuming the stock runs it.
++!(set-complete-predicate actKb S)
++!(set-complete-predicate actKb P)
++!(compileadd actKb (: rp (Implication (Or (S $t) (F $t)) (P $t)) (CTV (STV 1 1) (STV 0 1))))
++!(compileadd actKb (: f (F t) (STV 0.3 0.9)))
++
++!(test (query 100 actKb (: $p (Assuming (Decide t) (P t)) $tv))
++   (: (assuming (by rp (conjunction unfounded f))) (Assuming (Decide t) (P t)) (STV 0.3 0.8999999995871378)))
++!(test (query 100 actKb (: $p (Assuming (S t) (P t)) $tv))
++   (: (assuming (by rp (conjunction (ctx proof 1) f))) (Assuming (S t) (P t)) (STV 1.0 0.9998000399670116)))
+-- 
+2.43.0
+
