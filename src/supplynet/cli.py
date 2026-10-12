@@ -3,7 +3,7 @@ import json
 import os
 
 from . import scale
-from .backends import GreedyBackend, LearnedReferenceBackend, PeTTaChainerBackend, PriorBackend, ReferenceBackend
+from .backends import BeamBackend, GreedyBackend, LearnedReferenceBackend, PeTTaChainerBackend, PriorBackend, ReferenceBackend
 from .decisions import Values
 from .game import GameConfig, run_game
 from .nars import NarsBackend
@@ -18,9 +18,9 @@ def main(argv=None):
     run.add_argument("--cycle", choices=("timed", "untimed"), default="timed", help="stage 3: the fuel loop through time or within a period")
     run.add_argument(
         "--backend",
-        choices=("reference", "learned-reference", "local", "prior", "greedy", "pettachainer", "mm2", "nars", "problog"),
+        choices=("reference", "learned-reference", "local", "prior", "greedy", "beam", "pettachainer", "mm2", "nars", "problog"),
         default="reference",
-        help="local: stage scale only; nars, learned-reference: stages 1-3; greedy: stage 4 (exact beliefs, single actions ranked alone); "
+        help="local: stage scale only; nars, learned-reference: stages 1-3; greedy, beam: stage 4 (exact beliefs; single actions ranked alone, or the extend proposer); "
              "mm2: the PeTTaChainer harness on mm2_chainer.petta",
     )
     decide = run.add_argument_group("stage 4")
@@ -73,8 +73,8 @@ def main(argv=None):
         parser.error("--backend nars, --backend learned-reference and --learned-rules run stages 1-3")
     if args.stage == "4" and (args.backend in ("nars", "learned-reference", "local") or args.learned_rules):
         parser.error("stage 4 runs reference, prior, greedy, pettachainer, mm2 and problog with given rates (docs/supply_network.md)")
-    if args.backend == "greedy" and args.stage != "4":
-        parser.error("--backend greedy needs --stage 4")
+    if args.backend in ("greedy", "beam") and args.stage != "4":
+        parser.error("--backend greedy and --backend beam need --stage 4")
     on_round = (lambda record: print(json.dumps(record), flush=True)) if args.stream else None
     if args.stage == "scale":
         backend = {
@@ -105,6 +105,7 @@ def main(argv=None):
         "learned-reference": LearnedReferenceBackend,
         "prior": PriorBackend,
         "greedy": GreedyBackend,
+        "beam": lambda: BeamBackend(args.beam),
         "pettachainer": lambda: chainer("pettachainer", args.pettachainer_path),
         "mm2": lambda: chainer("mm2_chainer.petta", args.mm2_path),
         "nars": lambda: NarsBackend(args.nars_path, args.nars_cycles_per_step, args.nars_reading, args.nars_cache, learned=learned),

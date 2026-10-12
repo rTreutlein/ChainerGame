@@ -13,7 +13,7 @@ mkdir -p "$OUT"
 jobs_file=$(mktemp)
 add() { echo "$1|$2|$3" >> "$jobs_file"; }  # name | python | cli arguments
 for seed in 1 2 3 4; do
-  for backend in reference greedy prior; do add "$backend-s$seed" python3 "--backend $backend --seed $seed"; done
+  for backend in reference greedy beam prior; do add "$backend-s$seed" python3 "--backend $backend --seed $seed"; done
   add "problog-s$seed" "$PROBLOG_PY" "--backend problog --seed $seed"
   for budget in ${BUDGETS:-50 100 200 400}; do
     add "pettachainer-extend-b$budget-s$seed" "$CHAINER_PY" "--backend pettachainer --proposer extend --budget $budget --seed $seed"
@@ -26,7 +26,9 @@ for plants in 2 3 4 5; do
     for proposer in extend exhaustive; do
       add "growth-$proposer-p$plants-c$capacity" "$CHAINER_PY" "--backend pettachainer --proposer $proposer --budget 200 --seed 1 --plants $plants --capacity $capacity --rounds 10"
     done
-    add "growth-reference-p$plants-c$capacity" python3 "--backend reference --seed 1 --plants $plants --capacity $capacity --rounds 10"
+    for backend in reference beam; do
+      add "growth-$backend-p$plants-c$capacity" python3 "--backend $backend --seed 1 --plants $plants --capacity $capacity --rounds 10"
+    done
     add "growth-problog-p$plants-c$capacity" "$PROBLOG_PY" "--backend problog --seed 1 --plants $plants --capacity $capacity --rounds 10"
   done
 done

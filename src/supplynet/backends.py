@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from . import metta
-from .decisions import Problem, best, combine, expected_utilities, factored_utilities, greedy, singles
+from .decisions import Problem, best, expected_utilities, factored_utilities, greedy, propose
 from .world import Action, Key, Knowledge, Network, NodeRates, Observation, Period, Rates, decides, learned_rates
 
 
@@ -66,6 +66,20 @@ class GreedyBackend(ReferenceBackend):
 
     def decide(self, problem: Problem, budget: int) -> Action:
         return greedy(expected_utilities(self.knowledge, problem), problem.values.capacity)
+
+
+class BeamBackend(ReferenceBackend):
+    """The exact posterior, asking only the options the chainer's "extend"
+    proposer asks (``decisions.propose``): what bounding the proposals costs
+    with exact values."""
+
+    def __init__(self, beam: int = 2):
+        super().__init__(name="beam")
+        self.beam = beam
+
+    def decide(self, problem: Problem, budget: int) -> Action:
+        utilities = expected_utilities(self.knowledge, problem)
+        return best(propose(problem, lambda actions: {action: utilities[action] for action in actions}, self.beam))
 
 
 class LearnedReferenceBackend(ReferenceBackend):
@@ -273,25 +287,16 @@ class PeTTaChainerBackend:
         if not self.valued:
             self._handler.add_atoms_no_check(metta.decision_rules(self.network, problem.values))
             self.valued = True
-        evaluated: dict[Action, float | None] = {}
 
-        def evaluate(actions) -> list[Action]:
-            actions = [action for action in dict.fromkeys(actions) if action not in evaluated]
+        def evaluate(actions: list[Action]) -> dict[Action, float | None]:
             goals = [metta.decision_query(self.network, problem.period, action) for action in actions]
+            values = {}
             for action, answers in zip(actions, self._handler.query_many_refs(goals, steps=budget * len(goals)), strict=True):
                 outcomes = {str(answer.statement[2][2]): answer.statement[2][3] * answer.tv[1] for answer in answers}
-                evaluated[action] = sum(outcomes.values()) - problem.values.cost_of(action) if outcomes else None
-            return actions
+                values[action] = sum(outcomes.values()) - problem.values.cost_of(action) if outcomes else None
+            return values
 
-        if self.proposer == "exhaustive":
-            evaluate(problem.options)
-        else:
-            feasible = set(problem.options)
-            layer = evaluate(action for action in problem.options if action.units <= 1)
-            single = [action for action in layer if action.units == 1]
-            for _ in range(problem.values.capacity - 1):
-                top = sorted((a for a in layer if a.units and evaluated[a] is not None), key=evaluated.get, reverse=True)[: self.beam]
-                layer = evaluate(joint for a in top for s in single if s not in singles(a) for joint in [combine([a, s])] if joint in feasible)
+        evaluated = propose(problem, evaluate, None if self.proposer == "exhaustive" else self.beam)
         answered = {action: value for action, value in evaluated.items() if value is not None}
         self.decision = {"decision_queries": len(evaluated), "decision_answered": len(answered)}
         return best(answered) if answered else Action()

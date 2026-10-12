@@ -121,6 +121,26 @@ def best(utilities: dict[Action, float]) -> Action:
     return max(utilities, key=utilities.get)
 
 
+def propose(problem: Problem, evaluate, beam: int | None) -> dict[Action, float | None]:
+    """The values of the options a decision asks for, ``evaluate(actions)``
+    giving a list's values (None for one it cannot value). With no ``beam``
+    every option; with one, doing nothing and every single action, then the
+    ``beam`` best of the last layer each extended by one more single action,
+    until the capacity is used: 1 + n queries for n single actions, and at
+    most beam·(n − 1) per extra unit."""
+    if beam is None:
+        return evaluate(list(problem.options))
+    feasible = set(problem.options)
+    values = evaluate([action for action in problem.options if action.units <= 1])
+    layer = single = [action for action in values if action.units == 1]
+    for _ in range(problem.values.capacity - 1):
+        top = sorted((action for action in layer if values[action] is not None), key=values.get, reverse=True)[:beam]
+        joints = dict.fromkeys(combine([action, extra]) for action in top for extra in single if extra not in singles(action))
+        layer = [joint for joint in joints if joint in feasible and joint not in values]
+        values |= evaluate(layer)
+    return values
+
+
 def greedy(utilities: dict[Action, float], capacity: int) -> Action:
     """The single actions ranked by their own gain over doing nothing, taken
     while they gain and capacity lasts: blind to how they interact."""
