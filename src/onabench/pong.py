@@ -171,7 +171,9 @@ class ONAAgent:
     at the step's end, as the C game's flags do."""
     name = "ona"
 
-    def __init__(self, variant, ona_dir):
+    def __init__(self, variant, ona_dir, ona_seed=None):
+        if ona_seed is not None:
+            os.environ["ONA_SEED"] = str(ona_seed)  # read by a build that seeds myrand (run_c.sh); ONA ignores it
         os.chdir(os.path.join(ona_dir, "misc", "Python"))
         sys.path.insert(0, os.getcwd())
         import NAR  # spawns ./../../NAR shell
@@ -215,7 +217,12 @@ class PLNAgent:
     outcome ``(Reward op d)``, (STV 1 1) for a hit and (STV 0 1) for a miss.
     The operations are left, right (Pong2 also stop) and nothing; nothing
     leaves the bat moving as it was. A decision whose operation reached no
-    scored ball has no outcome (open world).
+    scored ball has no outcome (open world). The chainer has no intervals
+    between events, so the harness assigns the delayed outcome: every
+    decision of the ``credit`` steps before a score gets it (6 by default,
+    about the steps the bat needs to cross to the ball; on seeds 1-3 at 2000
+    steps 1 step scored 0.57 on average, 3 0.77, 6 0.81, 10 0.77: one step
+    cannot tell tracking the ball from drifting with it).
 
     Hypotheses are ``(Implication (Ball x $t) (Reward op $t)) (STV 0.5
     0.01)``: refined rules the harness states at an operation's first outcome
@@ -224,14 +231,24 @@ class PLNAgent:
     (``set-hypothesis-mining``; Ball facts are layer 0 and Reward facts layer
     1 of their time point). Evidence k = 1; ``Ball`` is positive-only.
 
-    Decision: the hypotheses that apply are read (``RuleTruth`` in one
-    query, with budget only at a hypothesis's first read: the instance
-    tallies keep the truths current, so later reads are reads), then
-    ``(Reward op d)`` for each operation, desire c(f - 0.5) + 0.5 of the
-    best-confidence answer, and ONA's ``Decision_Suggest``: with probability
-    0.2 babble one of ONA's operations unless the best desire exceeds 0.55,
-    else take the best operation if its desire is at least 0.501, else
-    nothing. An operation no live hypothesis applies to has desire 0.5 and
+    Decision: the truths of the hypotheses that apply are read (their
+    ``RuleTruth`` goals in one query, with budget only at a hypothesis's first
+    read: the instance tallies keep the truths current, so later reads are
+    reads). With one hypothesis per observation and operation and a stored
+    fact as its antecedent, the answer to ``(Reward op d)`` is that truth
+    (equal within 2e-8 over 4269 decisions, seed 12), so the read is the
+    desire, c(f - 0.5) + 0.5. Mined hypotheses can overlap (a relational and
+    a specific one), so that agent reviews them (``review-hypotheses``) and
+    then queries ``(Reward op d)`` for the merge. The choice is ONA's
+    ``Decision_Suggest`` babbling (probability 0.2 of one of ONA's operations
+    unless the best desire exceeds 0.55) and then, with ``policy`` "argmax",
+    the best operation, "nothing" included; with "ona", the best only if its
+    desire is at least 0.501, else nothing. ONA's threshold presumes a
+    rewarded hypothesis reads above 0.5; here every scored ball is a full
+    sample and hits start near 0.17, so no operation would pass it and the
+    agent would only babble.
+
+    An operation no live hypothesis applies to has desire 0.5 and
     is not queried, as ONA's Decision_Suggest reads desire only through
     hypotheses that match: the query would answer the population prior of
     the stored rewards, which is biased by the agent's own choices (an
@@ -282,15 +299,15 @@ class PLNAgent:
                 verdicts = self.h.review_hypotheses(f"(Reward $op d{d})", steps=self.steps)
                 self.dropped += sum(v.endswith(" dropped)") for v in verdicts)
                 matching = sorted({op for v in verdicts if v.endswith(" kept)") for op in applies(v, x, self.ops)})
+                answers = self.h.query_many_refs([f"(: $p (Reward {op} d{d}) $tv)" for op in matching],
+                                                 steps=self.steps) if matching else []
             else:
                 matching = [op for op in self.ops if (x, op) in self.hyps]
-                if matching:
-                    steps = self.steps if any((x, op) not in self.reviewed for op in matching) else 0
-                    self.reviewed.update((x, op) for op in matching)
-                    self.h.query_many_refs([f"(: $p (RuleTruth (Implication (Ball {x} $t) (Reward {op} $t))) $tv)"
-                                            for op in matching], steps=steps)
-            answers = self.h.query_many_refs([f"(: $p (Reward {op} d{d}) $tv)" for op in matching],
-                                             steps=self.steps) if matching else []
+                steps = self.steps if any((x, op) not in self.reviewed for op in matching) else 0
+                self.reviewed.update((x, op) for op in matching)
+                answers = self.h.query_many_refs(
+                    [f"(: $p (RuleTruth (Implication (Ball {x} $t) (Reward {op} $t))) $tv)" for op in matching],
+                    steps=steps) if matching else []
             for op, rows in zip(matching, answers):
                 tvs = [(float(a.tv[1]), float(a.tv[2])) for a in rows if a.tv[0] == "STV"]
                 f, c = max(tvs, key=lambda tv: tv[1]) if tvs else (0.5, 0.0)
@@ -458,11 +475,12 @@ def main():
     ap.add_argument("--deadline-ms", type=float, help="real-time mode: the game advances every DEADLINE ms")
     ap.add_argument("--show", action="store_true", help="draw the game in the terminal")
     ap.add_argument("--ona-dir", default="/nexus/Dev/OpenCog/ONA")
+    ap.add_argument("--ona-seed", type=int, help="ONA_SEED for an ONA build that seeds its generator from it")
     ap.add_argument("--pettachainer-path")
     ap.add_argument("--out")
     a = ap.parse_args()
     out = os.path.abspath(a.out) if a.out else None
-    agent = (ONAAgent(a.variant, a.ona_dir) if a.agent == "ona"
+    agent = (ONAAgent(a.variant, a.ona_dir, a.ona_seed) if a.agent == "ona"
              else PLNAgent(a.variant, a.seed, a.steps, a.pettachainer_path, a.mined, a.change_detection,
                       a.policy))
     env = Pong(a.variant, a.seed)
