@@ -222,9 +222,9 @@ def world_rule(x, op, y):
 
 
 def goal_rule(y, goal):
-    """The goal rule: the ball at y when the step's outcome is ``goal``, at a
-    time point that has passed (see PLNAgent)."""
-    return f"(Implication (And (NextPeriod $t $u) (At {y} $t)) ({goal} $t))"
+    """The goal rule: the ball at y at a time point, and the step from it to
+    the next has the outcome ``goal``."""
+    return f"(Implication (And (NextPeriod $t $u) (At {y} $t)) ({goal} $u))"
 
 
 class PLNAgent:
@@ -234,28 +234,27 @@ class PLNAgent:
     d+1)``. At each the agent observes where the ball is, x right, left or
     equal (Pong's level bat, where ONA's game inputs nothing, is equal: the
     step happened and showed neither side), as ``(At x d)``, the condition
-    rules read, and as ``(Ball y d)`` for every y, the event rules predict
-    (true for x, false for the others; see Anticipation), records
-    the operation it took, ``(Did op d)`` (left, right, Pong2 also stop, or
-    nothing, which leaves the bat moving as it was), and, once the step has
-    played, its outcome: ``(Hit d)`` when the ball was hit, and with
-    ``misses`` also ``(Miss d)`` when it was missed.
+    rules read, and as ``(Ball x d)``, the event rules predict; the outcome
+    of the step that led to it, ``(Hit d)`` when the ball was hit and, with
+    ``misses``, ``(Miss d)`` when it was missed; and then the operation it
+    takes, ``(Did op d)`` (left, right, Pong2 also stop, or nothing, which
+    leaves the bat moving as it was). A decision states the time point's
+    observations, then the link into it.
 
-    Anticipation. Every event statement of a time point that has passed is
-    known: ``(Ball y d)`` for the positions not observed, and the outcomes
-    that did not happen, are stated false (STV 0 1). So a rule that
-    predicted an event that did not come gets a negative sample. Interim:
-    the harness states these facts; PeTTaChainer has no closed-world reading
-    of observed predicates at past time points (a complete predicate is
-    read closed only where no rule concludes it, and an instance fold does
-    not see closed reads: benchmarks/ona/repros/closed_world_past_events.py,
-    design in docs/pong_one_step.md). The observation is stated twice for
-    the same reason: as a condition, ``At`` is positive-only (only true
-    facts), so no completion or inversion is compiled onto it; read as
-    ``Ball``, which has false facts, the refined rules' completions onto it
-    built rows for every past time point, each reading the rule's truth,
-    and a decision took 0.44 s at the start and 5 s by the 300th (PeTTaChainer
-    2307ca50; 45 ms throughout with ``At``).
+    Anticipation. ``Ball``, ``Hit`` and ``Miss`` are observed predicates
+    (PeTTaChainer ``set_observed_predicate``): once the link into a time
+    point is stated, the knowledge base stores false each statement of them
+    at it that a rule predicts and that was not observed, the positions the
+    ball is not at and the outcomes that did not happen. So a rule whose
+    predicted event did not come gets a negative sample, and with ``misses``
+    off no miss is ever stated. The observation is stated twice: as a
+    condition, ``At`` is positive-only (only true facts), so no completion
+    or inversion is compiled onto it; read as ``Ball``, which has false
+    facts, the refined rules' completions onto it built rows for every past
+    time point, each reading the rule's truth, and a decision took 0.84 s
+    over the first 100 decisions and 3.8 s over the third 100 (PeTTaChainer
+    2307ca50; 33 to 37 ms with ``At``:
+    benchmarks/ona/repros/one_step_rule_growth.py).
 
     Rules, all refined, stated at the start with a weak prior (STV 0.5,
     the evidence of 0.01 observations, so the first samples decide):
@@ -263,19 +262,15 @@ class PLNAgent:
     - world model, one step, for every x, op and y:
       ``(And (NextPeriod $t $u) (At x $t) (Did op $t)) -> (Ball y $u)``;
     - goal rules, for every y: ``(And (NextPeriod $t $u) (At y $t)) ->
-      (Hit $t)`` and, with ``misses``, the failure rule ``... -> (Miss
-      $t)``.
+      (Hit $u)`` and, with ``misses``, the failure rule ``... -> (Miss
+      $u)``: the outcome of the step from a position.
 
-    ``At``, ``Did`` and ``NextPeriod`` are positive-only. Evidence k = 1. A time
-    point has passed once the link to the next one is stated, and each
-    decision states the last time point's outcome and the new position
-    before that link: every rule's instances are joined from the links, so
-    an instance exists only once all its statements are known facts. A goal
-    rule anchored on the link into its time point read ``(Hit d)`` before
-    the step played, and the rules started for it while it was unknown
-    stayed waiting on their truth once it was stated (250 such joins a
-    decision, 1.1 MB). A closed-world reading of past observations would
-    make the ordering unnecessary.
+    ``At``, ``Did`` and ``NextPeriod`` are positive-only. Evidence k = 1.
+    Every rule's instances are joined from the links, so an instance exists
+    only once all its statements are in. A goal rule whose outcome was read
+    before its step played kept, for each time point, the rules started for
+    the outcome while it was unknown waiting on their truth once it was
+    stated (250 such joins a decision, 1.1 MB).
 
     Decision: chaining the one-step rules. One query reads the truths of the
     world rules from the observed x (every operation, every y) and of the
@@ -326,9 +321,13 @@ class PLNAgent:
         self.h.set_positive_only_predicate("Did")
         self.h.set_positive_only_predicate("NextPeriod")
         self.h.set_positive_only_predicate("At")
+        self.h.set_time_link("NextPeriod")
         self.babble_ops = ("left", "right") if variant == "pong" else ("left", "right", "stop")
         self.ops = self.babble_ops + ("nothing",)
         self.goals = ("Hit", "Miss") if misses else ("Hit",)
+        for head, position in (("Ball", 2),) + tuple((g, 1) for g in self.goals):
+            self.h.set_predicate_time(head, position, 0)
+            self.h.set_observed_predicate(head)
         rules = [world_rule(x, op, y) for x in BALL for op in self.ops for y in BALL]
         rules += [goal_rule(y, g) for y in BALL for g in self.goals]
         self.h.add_atoms_no_check([f"(: rule{i} {r} (STV 0.5 0.01))" for i, r in enumerate(rules)])
@@ -346,9 +345,8 @@ class PLNAgent:
         t0 = time.perf_counter()
         d = self.d = self.d + 1
         x = obs[len("ball_"):] if obs else "equal"
-        facts = [f"(: {g.lower()}{d - 1} ({g} d{d - 1}) (STV {int(self.outcome == g)} 1))" for g in self.goals if d > 1]
-        facts += [f"(: ball{d}{y} (Ball {y} d{d}) (STV {int(y == x)} 1))" for y in BALL]
-        facts.append(f"(: at{d} (At {x} d{d}) (STV 1 1))")
+        facts = [f"(: outcome{d} ({self.outcome} d{d}) (STV 1 1))"] if self.outcome in self.goals else []
+        facts += [f"(: ball{d} (Ball {x} d{d}) (STV 1 1))", f"(: at{d} (At {x} d{d}) (STV 1 1))"]
         facts += [f"(: next{d} (NextPeriod d{d - 1} d{d}) (STV 1 1))"] if d > 1 else []
         self.outcome = None
         self.h.add_atoms_no_check(facts)
@@ -378,9 +376,9 @@ class PLNAgent:
         return d, ({op} - {"nothing"})
 
     def feedback(self, result):
-        """The outcome of a step played since the last decision; it becomes the
-        decision's time point's fact at the next decision, when the time
-        point has passed."""
+        """The outcome of a step played since the last decision, stated at
+        the next decision as an observation of the time point the step led
+        to."""
         if result:
             self.outcome = "Hit" if result == "hit" else "Miss"
         return set()
