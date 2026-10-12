@@ -5,11 +5,13 @@ import unittest
 from dataclasses import replace
 
 from supplynet import metta
-from supplynet.backends import LearnedReferenceBackend, PeTTaChainerBackend, PriorBackend, ReferenceBackend
+from supplynet.backends import GreedyBackend, LearnedReferenceBackend, PeTTaChainerBackend, PriorBackend, ReferenceBackend
+from supplynet.decisions import Problem, Values, best, expected_utilities, factored_utilities, greedy, options, utility
 from supplynet.game import GameConfig, run_game, stage_rates
 from supplynet.world import (
     MINE,
     POWER,
+    Action,
     Cell,
     Knowledge,
     Network,
@@ -18,6 +20,7 @@ from supplynet.world import (
     Rates,
     Route,
     counts,
+    enact,
     generate_network,
     learned_rates,
     observe,
@@ -26,13 +29,18 @@ from supplynet.world import (
 )
 
 
-def brute_force_posterior(network, rates, before, periods, observations):
+def brute_force_posterior(network, rates, before, periods, observations, actions=None, utility=None):
     """Enumerates every storm, block and degradation of every region, route
     and site over ``periods``, with production computed from them period by
     period. ``before`` holds the period preceding them: P(on) of each storm
     ("Storm", region) and degradation ("Degraded", site), and, with a cell, the
     fuel route's block ("Blocked", route) and the mine's production
-    ("Producing", mine)."""
+    ("Producing", mine). With decisions, ``actions`` holds each period's
+    action (the stock, the fuel's route, the repairs; ``before`` then also
+    holds ("Action", None), the preceding period's), and ``utility``, when
+    given, is a function of the last period's degradations, the block the
+    arriving fuel met and the fuel routes' blocks whose expectation is
+    returned with the posterior."""
     cell = network.cell
     sites = cell.sites if cell else {}
     late = {key: value for o in observations for key, value in o.late.items()}
@@ -43,16 +51,18 @@ def brute_force_posterior(network, rates, before, periods, observations):
     variables = [(var, period) for period in periods for var in chained + [("Blocked", route.name) for route in network.routes]]
     routes = {route.name: route for route in network.routes}
     totals = {}
-    norm = 0.0
+    norm = expected = 0.0
     for values in itertools.product((True, False), repeat=len(variables)):
         state = dict(zip(variables, values))
         weight = 1.0
         previous = dict(before)
         for period in periods:
+            action, before_action = (actions[period], previous[("Action", None)]) if actions else (None, None)
             for predicate, subject in chained:
                 kind = network.regions[subject] if predicate == "Storm" else sites[subject]
                 rate = rates.storm_rate if predicate == "Storm" else rates.degraded_rate
-                p = rate(kind, float(previous[(predicate, subject)]))
+                repaired = before_action is not None and subject in before_action.repairs
+                p = rate(kind, 0.0 if repaired else float(previous[(predicate, subject)]))
                 weight *= p if state[((predicate, subject), period)] else 1 - p
             for route in network.routes:
                 blocked = state[(("Blocked", route.name), period)]
@@ -68,29 +78,35 @@ def brute_force_posterior(network, rates, before, periods, observations):
                 degraded = {site: state[(("Degraded", site), period)] for site in sites}
                 if any(inspected.get((site, period), value) != value for site, value in degraded.items()):
                     weight = 0.0
-                fuel = cell.fuel_route.name
+                fuel = before_action.via(cell) if before_action else cell.fuel_route.name
                 fuel_blocked = previous[("Blocked", fuel)] if cell.timed else state[(("Blocked", fuel), period)]
                 observation = by_period[period]
-                produced = production(cell, degraded, observation.stocked, observation.inputs, fuel_blocked, previous[("Producing", MINE)])
+                stocked, repairs = (action.stock, action.repairs) if action else (observation.stocked, ())
+                produced = production(cell, degraded, stocked, observation.inputs, fuel_blocked, previous[("Producing", MINE)], repairs)
                 if (MINE, period) in reported and any(reported[(site, period)] != on for site, on in produced.items()):
                     weight = 0.0
                 for site, on in produced.items():
                     state[(("Producing", site), period)] = on
             if weight == 0.0:
                 break
+            last = (degraded, fuel_blocked, {route.name: state[(("Blocked", route.name), period)] for route in cell.fuel_routes}) if cell else None
             previous = {var: state[(var, period)] for var in chained} | (
-                {("Blocked", cell.fuel_route.name): state[(("Blocked", cell.fuel_route.name), period)], ("Producing", MINE): produced[MINE]}
+                {**{("Blocked", route.name): state[(("Blocked", route.name), period)] for route in cell.fuel_routes},
+                 ("Producing", MINE): produced[MINE], ("Action", None): action}
                 if cell
                 else {}
             )
         if weight == 0.0:
             continue
         norm += weight
+        if utility:
+            expected += weight * utility(*last)
         for ((predicate, subject), period), value in state.items():
             if (subject, period) in inspected or (predicate == "Producing" and period != periods[-1]):
                 continue
             totals[(predicate, subject, period)] = totals.get((predicate, subject, period), 0.0) + weight * value
-    return {key: value / norm for key, value in totals.items()}
+    posterior = {key: total / norm for key, total in totals.items()}
+    return (posterior, expected / norm) if utility else posterior
 
 
 def linked_run(network, rates, rng, count, inspect_rate):
@@ -115,6 +131,13 @@ def cell_network(cycle):
     """One region, one route carrying a plant's input, and the fuel route."""
     fuel = Route("rf", "north", "exposed", (), 1 if cycle == "timed" else 0)
     return Network({"north": "coastal"}, (Route("r1", "north", "sheltered", ("s1-1",), 1), fuel), Cell(fuel, {"plant-a": "s1-1"}))
+
+
+def decision_network():
+    """Stage 4's cell in one region: a plant's input route, the exposed fuel
+    route and its sheltered alternate."""
+    fuel, alternate = Route("rf", "north", "exposed", (), 1), Route("ra", "north", "sheltered", (), 1)
+    return Network({"north": "coastal"}, (Route("r1", "north", "sheltered", ("s1-1",), 1), fuel, alternate), Cell(fuel, {"plant-a": "s1-1"}, alternate))
 
 
 class WorldTests(unittest.TestCase):
@@ -175,6 +198,39 @@ class WorldTests(unittest.TestCase):
                 before = {("Storm", "north"): first.storms["north"], ("Blocked", "rf"): first.blocked["rf"], ("Producing", MINE): first.producing[MINE]}
                 before |= {("Degraded", site): value for site, value in first.degraded.items()}
                 self.assert_matches_brute_force(knowledge, brute_force_posterior(network, rates, before, names[1:], observations))
+
+    def test_stage4_exact_posterior_and_utilities_match_brute_force(self):
+        """After an action (a repair restarts a site healthy, a reroute sends
+        the fuel over the alternate route, the stock is decided), the next
+        period's posterior and every option's expected utility match
+        enumeration over every storm, block and degradation."""
+        rates, network = stage_rates(4), decision_network()
+        cell = network.cell
+        choices = options(cell, 2)
+        for seed, first in ((0, Action(stock=True, repairs=(POWER,))), (1, Action(reroute=True, repairs=(MINE,))), (2, Action())):
+            rng = random.Random(seed)
+            periods, observations = [], []
+            for index in range(2):
+                period = sample_period(network, rates, rng, f"t{index}", periods)
+                if index == 0:
+                    period = enact(network, period, None, first)
+                periods.append(period)
+                arrivals = {("s1-1", "t0"): periods[0].late["s1-1"]} if index else {}
+                observations.append(observe(network, period, rng, 0.5, arrivals, periods[0].producing if index else {}))
+            knowledge = Knowledge(network, rates.nodes(network))
+            knowledge.observe(observations[0])
+            knowledge.act("t0", first)
+            knowledge.observe(observations[1])
+            before = {("Storm", "north"): rates.stationary("coastal"), ("Blocked", "rf"): False, ("Blocked", "ra"): False,
+                      ("Producing", MINE): False, ("Action", None): None}
+            before |= {("Degraded", site): rates.degraded_stationary(kind) for site, kind in cell.sites.items()}
+            problem = Problem("t1", "t0", periods[1].inputs, periods[0].producing[MINE], periods[0].via, choices, Values())
+            exact = expected_utilities(knowledge, problem)
+            for action in choices[:: 3]:
+                brute, expected = brute_force_posterior(network, rates, before, ["t0", "t1"], observations, {"t0": first, "t1": None},
+                                                        lambda d, f, b: utility(cell, problem, action, d, f, b))
+                self.assertAlmostEqual(exact[action], expected, places=9, msg=action)
+            self.assert_matches_brute_force(knowledge, brute)
 
     def test_production_is_the_least_fixed_point(self):
         cell = cell_network("untimed").cell
@@ -241,6 +297,31 @@ class WorldTests(unittest.TestCase):
         self.assertGreater(late[("Storm", "north", "t2")], quiet[("Storm", "north", "t2")])
 
 
+class DecisionTests(unittest.TestCase):
+    def test_options_are_the_joint_actions_within_capacity(self):
+        cell = generate_network(random.Random(1), 3, 3, "timed", 2, decisions=True).cell
+        self.assertEqual([len(options(cell, capacity)) for capacity in (1, 2, 3)], [7, 22, 42])
+        self.assertTrue(all(action.units <= 2 for action in options(cell, 2)))
+        # Stage 4's network is stage 3's with the alternate route, and the fuel route exposed.
+        stage3 = generate_network(random.Random(1), 3, 3, "timed")
+        self.assertEqual(cell.inputs, stage3.cell.inputs)
+        self.assertEqual((cell.fuel_route.kind, cell.alternate.kind, cell.alternate.region), ("exposed", "sheltered", cell.fuel_route.region))
+
+    def test_the_best_joint_action_is_not_the_best_singles(self):
+        """No fuel arrives (the mine stopped), so only a stockpile runs the
+        cell; a storm makes the exposed fuel route likely blocked. Rerouting
+        alone gains nothing, since the mine does not run; with the stockpile
+        it saves the fuel sent on."""
+        cell = decision_network().cell
+        problem = Problem("t1", "t0", {"plant-a": True}, False, "rf", options(cell, 2), Values())
+        marginals = {("Degraded", site, "t1"): 0.0 for site in cell.sites} | {("Blocked", "rf", "t1"): 0.8, ("Blocked", "ra", "t1"): 0.4,
+                                                                               ("Blocked", "rf", "t0"): 0.0}
+        utilities = factored_utilities(cell, problem, marginals)
+        self.assertEqual(greedy(utilities, 2), Action(stock=True))
+        self.assertEqual(best(utilities), Action(stock=True, reroute=True))
+        self.assertAlmostEqual(utilities[Action(stock=True, reroute=True)] - utilities[Action(stock=True)], 8 * 0.4 - 1)
+
+
 class LearnedRatesTests(unittest.TestCase):
     def test_counts_and_laplace(self):
         """Persistence samples are consecutive labelled periods; a block's
@@ -296,8 +377,17 @@ class GameTests(unittest.TestCase):
             for kind in extra & {"degraded", "producing"}:
                 self.assertLess(reference["kinds"][kind]["brier"], prior["kinds"][kind]["brier"])
 
+    def test_stage4_reference_has_no_regret_and_the_interaction_matters(self):
+        config = GameConfig(seed=7, rounds=15, stage=4)
+        reference, greedy_run, prior = (run_game(config, backend) for backend in (ReferenceBackend(), GreedyBackend(), PriorBackend()))
+        self.assertEqual((reference["regret"], reference["agreement"]), (0.0, 1.0))
+        self.assertEqual(greedy_run["posterior_error"], 0.0)  # exact beliefs; its actions, and so its world, differ
+        self.assertGreater(greedy_run["regret"], 0.0)
+        self.assertGreater(prior["regret"], greedy_run["regret"])
+        self.assertEqual(set(reference["kinds"]), {"storm", "previous_storm", "blocked", "degraded"})
+
     def test_runs_are_deterministic(self):
-        for stage, cycle in ((1, "timed"), (2, "timed"), (3, "timed"), (3, "untimed")):
+        for stage, cycle in ((1, "timed"), (2, "timed"), (3, "timed"), (3, "untimed"), (4, "timed")):
             config = GameConfig(seed=11, rounds=5, stage=stage, cycle=cycle)
             first, second = (
                 {field: value for field, value in run_game(config, ReferenceBackend()).items() if "seconds" not in field}
@@ -382,6 +472,51 @@ class GameTests(unittest.TestCase):
                 "(: producing-mine-t2 (Producing mine t2) (STV 0 1))",
             ],
         )
+
+    def test_decision_statements(self):
+        network = decision_network()
+        rates = stage_rates(4)
+        semantic, chainer = metta.rules(network, rates), metta.rules(network, rates, positive_actions=True)
+        self.assertIn("(: fuelled (Implication (Or (StockedFuel $t) (FuelArrived $t)) (Fuelled power-plant $t)) (CTV (STV 1 1) (STV 0 1)))", semantic)
+        self.assertIn(
+            "(: (no_inverse runs-mine) (Implication (And (Producing power-plant $t) (Not (Degraded mine $t)) (InService mine $t)) "
+            "(Producing mine $t)) (CTV (STV 1 1) (STV 0 1)))",
+            chainer,
+        )
+        self.assertIn(
+            "(: persist-degraded-mine (Implication (And (NextPeriod $p $t) (Degraded mine $p) (Not (Repairing mine $p))) (Degraded mine $t)) "
+            "(CTV (STV 0.75 1) (STV 0.08 1)))",
+            chainer,
+        )
+        action = Action(reroute=True, repairs=(MINE,))
+        self.assertEqual(
+            metta.action_facts(network, "t3", action),
+            [
+                "(: via-t3 (FuelVia ra t3) (STV 1 1))",
+                "(: unstocked-t3 (Unstocked t3) (STV 1 1))",
+                "(: repairing-mine-t3 (Repairing mine t3) (STV 1 1))",
+                "(: repairing-power-plant-t3 (Repairing power-plant t3) (STV 0 1))",
+                "(: repairing-plant-a-t3 (Repairing plant-a t3) (STV 0 1))",
+                "(: in-service-power-plant-t3 (InService power-plant t3) (STV 1 1))",
+                "(: in-service-plant-a-t3 (InService plant-a t3) (STV 1 1))",
+            ],
+        )
+        self.assertEqual(
+            metta.decision_query(network, "t3", action),
+            "(: $prf (Assuming (And (FuelVia ra t3) (Unstocked t3) (Repairing mine t3) (InService power-plant t3) (InService plant-a t3)) "
+            "(Outcome t3 $o $v)) $tv)",
+        )
+
+    @unittest.skipUnless(os.environ.get("SUPPLYNET_LIVE_PETTACHAINER") == "1", "set SUPPLYNET_LIVE_PETTACHAINER=1")
+    def test_pettachainer_decides_with_assuming_queries(self):
+        """Round 1 of seed 1: every joint action asked is answered, and the
+        choice is the reference's (its values match the exact ones there)."""
+        rounds = []
+        summary = run_game(GameConfig(seed=1, rounds=2, budget=200, stage=4), PeTTaChainerBackend(os.environ.get("PETTACHAINER_PYTHONPATH")),
+                           on_round=rounds.append)
+        self.assertEqual(summary["coverage"], 1.0)
+        self.assertEqual([r["decision_answered"] for r in rounds], [r["decision_queries"] for r in rounds])
+        self.assertEqual(rounds[0]["regret"], 0.0)
 
     @unittest.skipUnless(os.environ.get("SUPPLYNET_LIVE_PETTACHAINER") == "1", "set SUPPLYNET_LIVE_PETTACHAINER=1")
     def test_pettachainer_answers_every_belief(self):

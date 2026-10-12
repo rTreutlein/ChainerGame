@@ -68,10 +68,17 @@ class ExactnessTests(unittest.TestCase):
                 self.assertAlmostEqual(answer[key], p, places=9, msg=key)
 
     def test_stages_match_the_exact_reference(self):
-        for (stage, cycle), engine in itertools.product(((1, "timed"), (2, "timed"), (3, "timed"), (3, "untimed")), ("ddnnf", "sdd")):
+        for (stage, cycle), engine in itertools.product(((1, "timed"), (2, "timed"), (3, "timed"), (3, "untimed"), (4, "timed")), ("ddnnf", "sdd")):
             with self.subTest(stage=stage, cycle=cycle, engine=engine):
                 config = GameConfig(seed=2, rounds=6, stage=stage, cycle=cycle)
                 self.assert_matches_reference(lambda backend: run_game(config, backend), RecordingReference(), RecordingProblog(engine=engine))
+
+    def test_stage4_decisions_are_the_reference_policy(self):
+        """One compilation per round values every joint action exactly."""
+        summary = run_game(GameConfig(seed=2, rounds=6, stage=4), ProblogBackend())
+        self.assertEqual(summary["problog_decisions"]["problog_answered"], 6)
+        self.assertAlmostEqual(summary["regret"], 0.0, places=9)
+        self.assertEqual(summary["agreement"], 1.0)
 
     def test_learned_rates_match_the_exact_posterior_under_counted_rates(self):
         """With learned rules ProbLog counts every rate from the labelled

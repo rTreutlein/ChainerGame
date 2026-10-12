@@ -4,7 +4,7 @@ periods as facts, a period's observations, and belief queries."""
 
 from __future__ import annotations
 
-from .world import MINE, POWER, Key, Network, Observation, Period, Rates
+from .world import MINE, POWER, Action, Key, Network, Observation, Period, Rates
 
 
 def _number(value: float) -> str:
@@ -22,15 +22,17 @@ def _certain(name: str, antecedent: str, consequent: str) -> str:
     return f"(: {name} (Implication {antecedent} {consequent}) (CTV (STV 1 1) (STV 0 1)))"
 
 
-def rules(network: Network, rates: Rates, learned: bool = False) -> list[str]:
+def rules(network: Network, rates: Rates, learned: bool = False, positive_actions: bool = False) -> list[str]:
     """A storm blocks each route of its region with the route's rate, and a
     blocked route delays each shipment departing on it; when storms persist, a
     storm continues into the next period or starts with the region's rate.
-    With a cell, a degradation persists or starts likewise, and the cycle's
-    production rules hold with certainty. All stated as certain CTVs, so the
-    rates are given; with ``learned`` every rule but the certain production
-    rules states its structure only, with the weak ``PRIOR`` in place of its
-    rates, which are left for the labelled history."""
+    With a cell, a degradation persists or starts likewise (with decisions,
+    unless the site was repaired), and the cycle's production rules hold with
+    certainty. All stated as certain CTVs, so the rates are given; with
+    ``learned`` every rule but the certain production rules states its
+    structure only, with the weak ``PRIOR`` in place of its rates, which are
+    left for the labelled history. ``positive_actions``: the chainer's
+    encoding of stage 4's actions (``_cycle_rules``)."""
     nodes = rates.nodes(network).table
 
     def ctv(node: tuple[str, str]) -> str:
@@ -49,41 +51,69 @@ def rules(network: Network, rates: Rates, learned: bool = False) -> list[str]:
             for shipment in route.shipments
         ]
     if network.cell:
+        repaired = (lambda site: f" (Not (Repairing {site} $p))") if network.cell.alternate else (lambda site: "")
         lines += [
-            f"(: persist-degraded-{site} (Implication (And (NextPeriod $p $t) (Degraded {site} $p)) (Degraded {site} $t)) {ctv(('Degraded', site))})"
+            f"(: persist-degraded-{site} (Implication (And (NextPeriod $p $t) (Degraded {site} $p){repaired(site)}) (Degraded {site} $t)) "
+            f"{ctv(('Degraded', site))})"
             for site in network.cell.sites
         ]
-    return lines + (_cycle_rules(network) if network.cell else [])
+    return lines + (_cycle_rules(network, positive_actions) if network.cell else [])
 
 
-def _cycle_rules(network: Network) -> list[str]:
+def _cycle_rules(network: Network, positive_actions: bool = False) -> list[str]:
     """The power plant runs when fuelled, by stock or by the mine's fuel
     arriving over the open fuel route, and is not degraded; the mine and the
     plants run when the power plant does, their input arrived, and they are
     not degraded. Timed, the fuel arriving now left in the previous period;
-    untimed, it is the mine's production now, and the rules form a loop."""
+    untimed, it is the mine's production now, and the rules form a loop. With
+    decisions the fuel leaves over the route the period's ``FuelVia`` names,
+    and a site under repair does not run.
+
+    WORKAROUND (PeTTaChainer master 2307ca50, docs/supply_network.md, "Stage
+    4 as built", gap 1) with ``positive_actions``: in an ``Assuming``
+    context the chainer never reads an unstated complete statement as false,
+    so a decision that does not assume a repair or a stock leaves every rule
+    reading it without an answer. The chainer's rules therefore read only
+    positive action facts, one for each branch: a site runs while
+    ``(InService site t)``, and the power plant is fuelled by one rule per
+    stock state, ``StockedFuel`` or ``Unstocked``, exactly one of which is
+    stated or assumed in a period, so the two never give a view together.
+    The semantic rules (ProbLog's) keep the ``Or`` and ``Not Repairing``.
+
+    WORKAROUND (gap 3) with ``positive_actions``: the production rules are
+    (no_inverse ...). Their antecedent completions make the degradations and
+    the repairs affected in every decision context, so each context derives
+    them again, and from the second context of a game on the chainer reaches
+    the production outcomes only at about twenty times the budget."""
     cell = network.cell
-    fuel = cell.fuel_route.name
-    arriving = (
-        f"(And (NextPeriod $p $t) (Producing {MINE} $p) (Not (Blocked {fuel} $p)))"
-        if cell.timed
-        else f"(And (Producing {MINE} $t) (Not (Blocked {fuel} $t)))"
-    )
+    if cell.alternate:
+        arriving = f"(And (NextPeriod $p $t) (Producing {MINE} $p) (FuelVia $r $p) (Not (Blocked $r $p)))"
+    elif cell.timed:
+        arriving = f"(And (NextPeriod $p $t) (Producing {MINE} $p) (Not (Blocked {cell.fuel_route.name} $p)))"
+    else:
+        arriving = f"(And (Producing {MINE} $t) (Not (Blocked {cell.fuel_route.name} $t)))"
+    if positive_actions:
+        repairing = lambda site: f" (InService {site} $t)"  # noqa: E731
+        fuelled = [_certain("fuelled-by-stock", "(StockedFuel $t)", f"(Fuelled {POWER} $t)"),
+                   _certain("fuelled-by-mine", "(And (Unstocked $t) (FuelArrived $t))", f"(Fuelled {POWER} $t)")]
+    else:
+        repairing = (lambda site: f" (Not (Repairing {site} $t))") if cell.alternate else (lambda site: "")
+        fuelled = [_certain("fuelled", "(Or (StockedFuel $t) (FuelArrived $t))", f"(Fuelled {POWER} $t)")]
     lines = [
         _certain("fuel-arrives", arriving, "(FuelArrived $t)"),
-        _certain("fuelled", "(Or (StockedFuel $t) (FuelArrived $t))", f"(Fuelled {POWER} $t)"),
-        _certain(f"runs-{POWER}", f"(And (Fuelled {POWER} $t) (Not (Degraded {POWER} $t)))", f"(Producing {POWER} $t)"),
-        _certain(f"runs-{MINE}", f"(And (Producing {POWER} $t) (Not (Degraded {MINE} $t)))", f"(Producing {MINE} $t)"),
+        *fuelled,
+        _certain(f"runs-{POWER}", f"(And (Fuelled {POWER} $t) (Not (Degraded {POWER} $t)){repairing(POWER)})", f"(Producing {POWER} $t)"),
+        _certain(f"runs-{MINE}", f"(And (Producing {POWER} $t) (Not (Degraded {MINE} $t)){repairing(MINE)})", f"(Producing {MINE} $t)"),
     ]
     lines += [
         _certain(
             f"runs-{plant}",
-            f"(And (Producing {POWER} $t) (InputArrived {plant} $t) (Not (Degraded {plant} $t)))",
+            f"(And (Producing {POWER} $t) (InputArrived {plant} $t) (Not (Degraded {plant} $t)){repairing(plant)})",
             f"(Producing {plant} $t)",
         )
         for plant in cell.inputs
     ]
-    return lines
+    return [line.replace("(: ", "(: (no_inverse ", 1).replace(" (Implication", ") (Implication", 1) for line in lines] if positive_actions else lines
 
 
 def complete_predicates(network: Network) -> list[str]:
@@ -120,6 +150,54 @@ def observation_facts(observation: Observation) -> list[str]:
     lines += [f"(: input-{plant}-{period} (InputArrived {plant} {period}) {_tv(value)})" for plant, value in observation.inputs.items()]
     lines += [f"(: producing-{site}-{previous} (Producing {site} {previous}) {_tv(value)})" for site, value in observation.reported.items()]
     return lines
+
+
+def action_facts(network: Network, period: str, action: Action) -> list[str]:
+    """A taken action as the chainer's facts (``rules`` with
+    ``positive_actions``): the route the fuel left on, the stock state as
+    ``StockedFuel`` or ``Unstocked``, every site's repair, true or false, and
+    ``InService`` for each site not repaired."""
+    return [
+        f"(: via-{period} (FuelVia {action.via(network.cell)} {period}) (STV 1 1))",
+        f"(: stocked-{period} (StockedFuel {period}) (STV 1 1))" if action.stock else f"(: unstocked-{period} (Unstocked {period}) (STV 1 1))",
+        *(f"(: repairing-{site}-{period} (Repairing {site} {period}) {_tv(site in action.repairs)})" for site in network.cell.sites),
+        *(f"(: in-service-{site}-{period} (InService {site} {period}) (STV 1 1))" for site in network.cell.sites if site not in action.repairs),
+    ]
+
+
+def decision_rules(network: Network, values) -> list[str]:
+    """A decision's outcomes, read from the beliefs (PeTTaChainer ``Assuming``
+    queries, as in StationOps' single-KB actions): the sites' production, the
+    mine's fuel sent over the route taken if it is open, and the
+    degradations the repairs clear. Each outcome carries its amount, which a
+    stored value fact gives, so a decision's expected value is the sum of
+    its outcomes' amounts weighted by their truth. The sum is the client's:
+    an in-KB ``FoldAllTruth`` over the outcomes misses members at some
+    budgets (docs/supply_network.md, "Stage 4 as built"). Every rule is
+    (no_inverse ...): a decision is never evidence for the beliefs it reads."""
+    cell = network.cell
+    certain = "(CTV (STV 1 1) (STV 0 1))"
+    lines = [
+        f"(: (no_inverse output-outcome) (Implication (And (OutputValue $site $v) (Producing $site $t)) (Outcome $t (Output $site) $v)) {certain})",
+        f"(: (no_inverse fuel-outcome) (Implication (And (FuelValue $v) (FuelVia $r $t) (Producing {MINE} $t) (Not (Blocked $r $t))) "
+        f"(Outcome $t FuelSent $v)) {certain})",
+        f"(: (no_inverse repair-outcome) (Implication (And (RepairValue $site $v) (Repairing $site $t) (Degraded $site $t)) "
+        f"(Outcome $t (Cleared $site) $v)) {certain})",
+        f"(: fuel-value (FuelValue {_number(values.fuel)}) (STV 1 1))",
+    ]
+    for site, kind in cell.sites.items():
+        lines.append(f"(: output-value-{site} (OutputValue {site} {_number(values.output[kind])}) (STV 1 1))")
+        lines.append(f"(: repair-value-{site} (RepairValue {site} {_number(values.repair[kind])}) (STV 1 1))")
+    return lines
+
+
+def decision_query(network: Network, period: str, action: Action) -> str:
+    """The ``Assuming`` query of one joint action's outcomes, assuming what
+    ``action_facts`` would state, its true facts only."""
+    facts = [f"(FuelVia {action.via(network.cell)} {period})", f"({'StockedFuel' if action.stock else 'Unstocked'} {period})"]
+    facts += [f"(Repairing {site} {period})" for site in action.repairs]
+    facts += [f"(InService {site} {period})" for site in network.cell.sites if site not in action.repairs]
+    return f"(: $prf (Assuming (And {' '.join(facts)}) (Outcome {period} $o $v)) $tv)"
 
 
 def resolution_facts(period: Period, observation: Observation) -> list[str]:

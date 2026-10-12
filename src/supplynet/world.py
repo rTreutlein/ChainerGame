@@ -11,14 +11,16 @@ shipment's lateness, decided by its route's block in its departure period, is
 seen only when it arrives. Stage 3 adds a ``Cell``: a mine fuels a power plant
 over the fuel route, and the power plant powers the mine and the plants; a
 site may be degraded, and production is the least fixed point of the cycle's
-rules (docs/supply_network.md, stages 1 to 3).
+rules. Stage 4 adds decisions: each period an ``Action`` stocks the fuel
+warehouse, sends the mine's fuel over an alternate route, and repairs sites
+(docs/supply_network.md, stages 1 to 4).
 """
 
 from __future__ import annotations
 
 import itertools
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 Key = tuple[str, str, str]  # (predicate, subject, period)
 
@@ -160,10 +162,17 @@ class Cell:
     the power plant, which also draws on the fuel warehouse; the power plant
     powers the mine and the plants, and each plant takes its input from one
     shipment of the network. Timed: fuel produced at t arrives at t + 1
-    (the fuel route's transit is 1); untimed: within t (transit 0)."""
+    (the fuel route's transit is 1); untimed: within t (transit 0). With
+    decisions (stage 4) the fuel may instead leave over the ``alternate``
+    route, in the fuel route's region."""
 
     fuel_route: Route
     inputs: dict[str, str]  # plant -> its input shipment
+    alternate: Route | None = None
+
+    @property
+    def fuel_routes(self) -> tuple[Route, ...]:
+        return (self.fuel_route, self.alternate) if self.alternate else (self.fuel_route,)
 
     @property
     def timed(self) -> bool:
@@ -189,24 +198,50 @@ class Network:
         return max(route.transit for route in self.routes)
 
 
+@dataclass(frozen=True, order=True)
+class Action:
+    """A period's decision (stage 4): stock the fuel warehouse, send the
+    mine's fuel over the cell's alternate route, and repair sites. A repaired
+    site produces nothing in the period and is healthy at its end."""
+
+    stock: bool = False
+    reroute: bool = False
+    repairs: tuple[str, ...] = ()  # sorted
+
+    @property
+    def units(self) -> int:
+        """The capacity it takes: one unit per stockpile, reroute and repair."""
+        return self.stock + self.reroute + len(self.repairs)
+
+    def via(self, cell: Cell) -> str:
+        """The route the mine's fuel leaves on."""
+        return (cell.alternate if self.reroute else cell.fuel_route).name
+
+
 def production(
-    cell: Cell, degraded: dict[str, bool], stocked: bool, inputs: dict[str, bool], fuel_blocked: bool, fuel_sent: bool
+    cell: Cell,
+    degraded: dict[str, bool],
+    stocked: bool,
+    inputs: dict[str, bool],
+    fuel_blocked: bool,
+    fuel_sent: bool,
+    repairing: tuple[str, ...] = (),
 ) -> dict[str, bool]:
     """The least fixed point of the cycle's rules in one period, iterated from
-    nothing producing: the power plant runs when fuelled and not degraded, the
-    mine and the plants when powered, supplied and not degraded. The power
-    plant is fuelled by stock, or by the mine's fuel over the open fuel route:
-    the fuel the mine sent in the previous period (``fuel_sent``, timed) or
-    what it produces now (untimed). ``fuel_blocked`` is the fuel route's block
-    in the period the fuel departs."""
+    nothing producing: the power plant runs when fuelled, not degraded and
+    not under repair, the mine and the plants when powered, supplied, not
+    degraded and not under repair. The power plant is fuelled by stock, or by
+    the mine's fuel over the open route it took: the fuel the mine sent in the
+    previous period (``fuel_sent``, timed) or what it produces now (untimed).
+    ``fuel_blocked`` is that route's block in the period the fuel departs."""
     producing = dict.fromkeys(cell.sites, False)
     while True:
         fuelled = stocked or (fuel_sent if cell.timed else producing[MINE]) and not fuel_blocked
-        power = fuelled and not degraded[POWER]
+        power = fuelled and not degraded[POWER] and POWER not in repairing
         step = {
-            MINE: power and not degraded[MINE],
+            MINE: power and not degraded[MINE] and MINE not in repairing,
             POWER: power,
-            **{plant: power and inputs[plant] and not degraded[plant] for plant in cell.inputs},
+            **{plant: power and inputs[plant] and not degraded[plant] and plant not in repairing for plant in cell.inputs},
         }
         if step == producing:
             return producing
@@ -224,6 +259,12 @@ class Period:
     stocked: bool = False
     inputs: dict[str, bool] = field(default_factory=dict)  # plant -> its input arrived
     producing: dict[str, bool] = field(default_factory=dict)
+    repairing: tuple[str, ...] = ()
+    via: str | None = None  # the route the mine's fuel leaves on
+
+    def action(self, cell: Cell) -> Action:
+        """The action the period was run under."""
+        return Action(self.stocked, self.via == cell.alternate.name, self.repairing)
 
     def truth(self, predicate: str) -> dict[str, bool]:
         return {"Storm": self.storms, "Blocked": self.blocked, "Degraded": self.degraded, "Producing": self.producing}[predicate]
@@ -239,7 +280,9 @@ class Observation:
     arrive, keyed by (shipment, departure period), and the block state of the
     routes inspected in this period. With a cell also the inspected sites'
     degradation, the fuel stock, the plants' inputs, and the previous
-    period's production, reported at its end."""
+    period's production, reported at its end. With decisions the stock is
+    part of the period's action, not observed (None): the action is told
+    apart (``Knowledge.act``)."""
 
     period: str
     previous: str | None
@@ -254,9 +297,23 @@ class Observation:
 REGION_NAMES = ("north", "south", "east", "west", "central", "coast")
 
 
-def generate_network(rng: random.Random, regions: int = 3, max_transit: int = 0, cycle: str | None = None) -> Network:
+def decides(network) -> bool:
+    """Whether a stage's network takes decisions (stage 4); stage scale's
+    networks have no cell."""
+    cell = getattr(network, "cell", None)
+    return bool(cell and cell.alternate)
+
+
+PLANT_NAMES = tuple(f"plant-{letter}" for letter in "abcdefgh")
+
+
+def generate_network(rng: random.Random, regions: int = 3, max_transit: int = 0, cycle: str | None = None, plants: int = 2,
+                     decisions: bool = False) -> Network:
     """Stage 1 with no transit, stage 2 with transits up to ``max_transit``,
-    stage 3 adding a cell whose cycle is "timed" or "untimed"."""
+    stage 3 adding a cell whose cycle is "timed" or "untimed" with
+    ``plants`` plants. With ``decisions`` (stage 4) the cell's fuel route is
+    exposed and a sheltered alternate route ``ra`` joins it in its region; the
+    draws are stage 3's, so a seed keeps its stage 3 network otherwise."""
     region_kinds = {}
     routes = []
     for index in range(regions):
@@ -271,8 +328,12 @@ def generate_network(rng: random.Random, regions: int = 3, max_transit: int = 0,
     if cycle is None:
         return Network(region_kinds, tuple(routes))
     fuel = Route("rf", rng.choice(list(region_kinds)), rng.choice(("exposed", "sheltered")), (), 1 if cycle == "timed" else 0)
-    first, second = rng.sample([shipment for route in routes for shipment in route.shipments], 2)
-    return Network(region_kinds, (*routes, fuel), Cell(fuel, {"plant-a": first, "plant-b": second}))
+    inputs = dict(zip(PLANT_NAMES, rng.sample([shipment for route in routes for shipment in route.shipments], plants)))
+    if not decisions:
+        return Network(region_kinds, (*routes, fuel), Cell(fuel, inputs))
+    fuel = replace(fuel, kind="exposed")
+    alternate = Route("ra", fuel.region, "sheltered", (), fuel.transit)
+    return Network(region_kinds, (*routes, fuel, alternate), Cell(fuel, inputs, alternate))
 
 
 def sample_period(network: Network, rates: Rates, rng: random.Random, name: str, timeline: list[Period]) -> Period:
@@ -294,7 +355,8 @@ def sample_period(network: Network, rates: Rates, rng: random.Random, name: str,
     if cell is None:
         return Period(name, previous.name if previous else None, storms, blocked, late)
     degraded = {
-        site: rng.random() < rates.degraded_rate(kind, float(previous.degraded[site]) if previous else rates.degraded_stationary(kind))
+        site: rng.random()
+        < rates.degraded_rate(kind, float(previous.degraded[site] and site not in previous.repairing) if previous else rates.degraded_stationary(kind))
         for site, kind in cell.sites.items()
     }
     stocked = rng.random() < rates.stocked
@@ -302,16 +364,27 @@ def sample_period(network: Network, rates: Rates, rng: random.Random, name: str,
     for plant, shipment in cell.inputs.items():
         transit = next(route.transit for route in network.routes if shipment in route.shipments)
         inputs[plant] = transit > len(timeline) or not timeline[-transit].late[shipment]
-    fuel = cell.fuel_route.name
+    period = Period(name, previous.name if previous else None, storms, blocked, late, degraded, inputs=inputs)
+    return enact(network, period, previous, Action(stock=stocked))
+
+
+def enact(network: Network, period: Period, previous: Period | None, action: Action) -> Period:
+    """The period under ``action``: its stock, repairs and fuel route, and the
+    production they give with the period's hidden state. Timed, the fuel
+    arriving is what the mine produced in the previous period, over the
+    route it took then."""
+    cell = network.cell
+    via = action.via(cell)
     producing = production(
         cell,
-        degraded,
-        stocked,
-        inputs,
-        previous.blocked[fuel] if cell.timed and previous else blocked[fuel],
+        period.degraded,
+        action.stock,
+        period.inputs,
+        (previous.blocked[previous.via] if previous else False) if cell.timed else period.blocked[via],
         previous is not None and previous.producing[MINE],
+        action.repairs,
     )
-    return Period(name, previous.name if previous else None, storms, blocked, late, degraded, stocked, inputs, producing)
+    return replace(period, stocked=action.stock, repairing=action.repairs, via=via, producing=producing)
 
 
 def observe(
@@ -323,25 +396,31 @@ def observe(
     if network.cell is None:
         return Observation(period.name, period.previous, late, inspected)
     degraded = {site: period.degraded[site] for site in network.cell.sites if rng.random() < inspect_rate}
-    return Observation(period.name, period.previous, late, inspected, degraded, period.stocked, period.inputs, reported or {})
+    stocked = None if network.cell.alternate else period.stocked
+    return Observation(period.name, period.previous, late, inspected, degraded, stocked, period.inputs, reported or {})
 
 
 class Knowledge:
     """The exact posterior from what the operator knows: the last resolved
-    period's labels and the evidence about the unresolved periods since.
+    period's labels, the evidence about the unresolved periods since, and the
+    actions taken in them.
 
     Per region the hidden state is a Markov chain over the unresolved window,
     filtered and smoothed by forward-backward. A region's state is its storm,
-    and in the cell's region also the fuel route's block and every site's
-    degradation (at most 2^6 states); the blocks of the other routes are
-    summed out per period given the storm. A window period's reported
-    production is a function of its state, the previous state's fuel route
-    and the mine's previous production (reported too), so it enters as a 0/1
-    factor between consecutive states. The state carried into the window is
-    the resolved period's, or before any period a pseudo-state holding the
-    stationary probabilities, from which the chains' onset gives the
-    stationary distribution. ``rates`` are read when the posterior is
-    computed, so they may be replaced between rounds."""
+    and in the cell's region also the fuel routes' blocks and every site's
+    degradation; the blocks of the other routes are summed out per period
+    given the storm. A state is a bit mask over the region's variables, and
+    the transition factorizes over them (a storm and a degradation follow
+    their own previous value, a block only its period's storm), so a
+    forward or backward step is one contraction per variable. A window
+    period's reported production is a function of its state, the block of the
+    route the arriving fuel took (in the previous state, timed) and the mine's
+    previous production (reported too), so it enters as a 0/1 factor that
+    reads the previous state through one bit. The state carried into the
+    window is the resolved period's, or before any period the stationary
+    probabilities, independent per variable, from which the chains' onset
+    gives the stationary distribution. ``rates`` are read when the posterior
+    is computed, so they may be replaced between rounds."""
 
     def __init__(self, network: Network, rates: NodeRates):
         self.network, self.rates = network, rates
@@ -351,23 +430,24 @@ class Knowledge:
         self.stocked: dict[str, bool] = {}
         self.inputs: dict[tuple[str, str], bool] = {}  # (plant, period)
         self.reported: dict[tuple[str, str], bool] = {}  # (site, period) -> produced
+        self.repairing: dict[str, tuple[str, ...]] = {}  # period -> sites repaired
+        self.via: dict[str, str] = {}  # period -> the route the mine's fuel left on
         self.mine_before = False  # the mine produced in the last resolved period
+        self.repairs_before: tuple[str, ...] = ()
         cell = network.cell
+        self.via_before = cell.fuel_route.name if cell else None
         self.variables = {
             region: [("Storm", region)]
             + (
-                [("Blocked", cell.fuel_route.name), *(("Degraded", site) for site in cell.sites)]
+                [*(("Blocked", route.name) for route in cell.fuel_routes), *(("Degraded", site) for site in cell.sites)]
                 if cell and cell.fuel_route.region == region
                 else []
             )
             for region in network.regions
         }
         self.before = {
-            region: {
-                (rates.stationary("Storm", region),)
-                + tuple(0.0 if predicate == "Blocked" else rates.stationary(predicate, subject) for predicate, subject in self.variables[region][1:]): 1.0
-            }
-            for region in network.regions
+            region: tuple(0.0 if predicate == "Blocked" else rates.stationary(predicate, subject) for predicate, subject in variables)
+            for region, variables in self.variables.items()
         }
 
     def observe(self, observation: Observation) -> None:
@@ -381,119 +461,205 @@ class Knowledge:
         if observation.previous in self.window:
             self.reported.update({(site, observation.previous): value for site, value in observation.reported.items()})
 
+    def act(self, period: str, action: Action) -> None:
+        """The action taken in the window's last period."""
+        self.stocked[period], self.repairing[period], self.via[period] = action.stock, action.repairs, action.via(self.network.cell)
+
     def resolve(self, period: Period) -> None:
         """The period, the oldest of the window, becomes labelled."""
         assert self.window[0] == period.name
         self.window.pop(0)
         for region, variables in self.variables.items():
-            self.before[region] = {tuple(period.truth(predicate)[subject] for predicate, subject in variables): 1.0}
+            self.before[region] = tuple(period.truth(predicate)[subject] for predicate, subject in variables)
         self.mine_before = period.producing.get(MINE, False)
+        self.repairs_before, self.via_before = period.repairing, period.via
         self.late, self.inspected, self.inputs, self.reported = (
             {key: value for key, value in store.items() if key[1] != period.name}
             for store in (self.late, self.inspected, self.inputs, self.reported)
         )
-        self.stocked.pop(period.name, None)
+        for store in (self.stocked, self.repairing, self.via):
+            store.pop(period.name, None)
+
+    def _fuel_route(self, index: int) -> str:
+        """The route the fuel took in window period ``index`` (-1: the resolved period)."""
+        cell = self.network.cell
+        return self.via_before if index < 0 else self.via.get(self.window[index], cell.fuel_route.name)
+
+    def _filter(self, region: str):
+        """Forward-backward over the window for one region. Returns each
+        window period's state marginals (lists over the bit-mask states), each
+        other route's block posterior per (period, storm, route), and for the
+        cell's region the last period's joint weights of the previous state's
+        fuel-route block (as the arriving fuel saw it) and the state,
+        normalized, as {(block, state): weight}."""
+        rates, cell = self.rates, self.network.cell
+        variables = self.variables[region]
+        in_cell = len(variables) > 1
+        size = 1 << len(variables)
+        position = {var: i for i, var in enumerate(variables)}
+        routes = [route for route in self.network.routes_of(region) if not (in_cell and route in cell.fuel_routes)]
+
+        # Per period and storm value: the likelihood of the period's route
+        # evidence, and each route's block posterior given that storm.
+        evidence, block_given = {}, {}
+        for period, storm in itertools.product(self.window, (True, False)):
+            weight = 1.0
+            for route in routes:
+                p_block = rates.rate("Blocked", route.name, storm)
+                like = {}
+                for blocked in (True, False):
+                    if self.inspected.get((route.name, period), blocked) != blocked:
+                        like[blocked] = 0.0
+                        continue
+                    value = p_block if blocked else 1 - p_block
+                    for shipment in route.shipments:
+                        late = self.late.get((shipment, period))
+                        if late is not None:
+                            p_late = rates.rate("Late", shipment, blocked)
+                            value *= p_late if late else 1 - p_late
+                    like[blocked] = value
+                total = like[True] + like[False]
+                weight *= total
+                block_given[(period, storm, route.name)] = like[True] / total if total else 0.0
+            evidence[(period, storm)] = weight
+
+        def local(period: str) -> list[float]:
+            """The period's evidence, its inspections of the region's
+            variables, and the fuel routes' blocks given the storm."""
+            weights = []
+            for state in range(size):
+                storm = bool(state & 1)
+                weight = evidence[(period, storm)]
+                for i, (predicate, subject) in enumerate(variables[1:], 1):
+                    value = bool(state >> i & 1)
+                    if self.inspected.get((subject, period), value) != value:
+                        weight = 0.0
+                        break
+                    if predicate == "Blocked":
+                        p_block = rates.rate(predicate, subject, storm)
+                        weight *= p_block if value else 1 - p_block
+                weights.append(weight)
+            return weights
+
+        def matrices(repaired: tuple[str, ...]) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+            """Per variable, P(value now | previous value): a storm and a
+            degradation follow their chain (a repaired site restarts
+            healthy), a block does not depend on its previous value."""
+            result = []
+            for predicate, subject in variables:
+                if predicate == "Blocked":
+                    result.append(((1.0, 1.0), (1.0, 1.0)))
+                    continue
+                rows = []
+                for before in (False, True):
+                    p = rates.rate(predicate, subject, before and subject not in repaired)
+                    rows.append((1 - p, p))
+                result.append(tuple(rows))
+            return result
+
+        def forward(values: list[float], mats) -> list[float]:
+            """Sum over previous states of values × P(state | previous)."""
+            for i, matrix in enumerate(mats):
+                bit = 1 << i
+                values = [values[state & ~bit] * matrix[0][state >> i & 1] + values[state | bit] * matrix[1][state >> i & 1] for state in range(size)]
+            return values
+
+        def backward(values: list[float], mats) -> list[float]:
+            """Sum over next states of P(state | previous) × values."""
+            for i, matrix in enumerate(mats):
+                bit = 1 << i
+                values = [values[state & ~bit] * matrix[state >> i & 1][0] + values[state | bit] * matrix[state >> i & 1][1] for state in range(size)]
+            return values
+
+        def produce(index: int, block: bool, state: int) -> dict[str, bool]:
+            period = self.window[index]
+            mine_before = self.reported[(MINE, self.window[index - 1])] if index else self.mine_before
+            inputs = {plant: self.inputs[(plant, period)] for plant in cell.inputs}
+            fuel_blocked = block if cell.timed else bool(state >> position[("Blocked", self._fuel_route(index))] & 1)
+            degraded = {site: bool(state >> position[("Degraded", site)] & 1) for site in cell.sites}
+            return production(cell, degraded, self.stocked[period], inputs, fuel_blocked, mine_before, self.repairing.get(period, ()))
+
+        before = self.before[region]
+        start = [1.0] * size  # the carried-in state, independent per variable
+        for i, value in enumerate(before):
+            start = [weight * (value if state >> i & 1 else 1 - value) for state, weight in enumerate(start)]
+        # steps[i]: period i's local weights, transition matrices, the bit of
+        # the previous state that the report factor reads, and that factor
+        # per (bit value, state), or None without a report.
+        steps, alphas, splits = [], [], []
+        previous = start
+        for index, period in enumerate(self.window):
+            mats = matrices(self.repairs_before if index == 0 else self.repairing.get(self.window[index - 1], ()))
+            weights = local(period)
+            bit = position[("Blocked", self._fuel_route(index - 1))] if in_cell else None
+            reported = {site: self.reported[(site, period)] for site in cell.sites} if in_cell and (MINE, period) in self.reported else None
+            factor = None if reported is None else {
+                (block, state): float(produce(index, block, state) == reported) for block in (False, True) for state in range(size) if weights[state]
+            }
+            split = {}
+            for block in (False, True) if in_cell else (False,):
+                masked = previous if bit is None else [w if bool(state >> bit & 1) == block else 0.0 for state, w in enumerate(previous)]
+                split[block] = [w * m for w, m in zip(weights, forward(masked, mats))]
+            alpha = [sum(split[block][state] * (factor.get((block, state), 0.0) if factor else 1.0) for block in split) for state in range(size)]
+            steps.append((weights, mats, bit, factor))
+            alphas.append(alpha)
+            splits.append(split)
+            previous = alpha
+        betas = [[1.0] * size]
+        for weights, mats, bit, factor in reversed(steps[1:]):
+            beta = betas[0]
+            by_block = {
+                block: backward([w * b * (factor.get((block, state), 0.0) if factor else 1.0) for state, (w, b) in enumerate(zip(weights, beta))], mats)
+                for block in ((False, True) if bit is not None else (False,))
+            }
+            betas.insert(0, [by_block[bool(state >> bit & 1)][state] if bit is not None else by_block[False][state] for state in range(size)])
+        norm = sum(alphas[-1]) if alphas else 1.0
+        marginals = [[a * b / norm for a, b in zip(alpha, beta)] for alpha, beta in zip(alphas, betas)]
+        last = {(block, state): w / norm for block, weights in splits[-1].items() for state, w in enumerate(weights) if w} if in_cell and splits else {}
+        return marginals, block_given, last
 
     def posterior(self) -> dict[Key, float]:
         """P(Storm region period), P(Degraded site period) and P(Blocked route
-        period) for every window period, the inspected ones excepted, and
-        P(Producing site now) for the last window period."""
-        rates, cell = self.rates, self.network.cell
+        period) for every window period, the inspected ones excepted, and,
+        once the last window period's stock is known, P(Producing site now)."""
         posterior = {}
-        for region in self.network.regions:
-            variables = self.variables[region]
-            in_cell = len(variables) > 1
-            routes = [route for route in self.network.routes_of(region) if not (in_cell and route == cell.fuel_route)]
-            states = list(itertools.product((True, False), repeat=len(variables)))
-            # Per period and storm value: the likelihood of the period's route
-            # evidence, and each route's block posterior given that storm.
-            evidence = {}
-            block_given = {}
-            for period, storm in itertools.product(self.window, (True, False)):
-                weight = 1.0
-                for route in routes:
-                    p_block = rates.rate("Blocked", route.name, storm)
-                    like = {}
-                    for blocked in (True, False):
-                        if self.inspected.get((route.name, period), blocked) != blocked:
-                            like[blocked] = 0.0
-                            continue
-                        value = p_block if blocked else 1 - p_block
-                        for shipment in route.shipments:
-                            late = self.late.get((shipment, period))
-                            if late is not None:
-                                p_late = rates.rate("Late", shipment, blocked)
-                                value *= p_late if late else 1 - p_late
-                        like[blocked] = value
-                    total = like[True] + like[False]
-                    weight *= total
-                    block_given[(period, storm, route.name)] = like[True] / total if total else 0.0
-                evidence[(period, storm)] = weight
-
-            def local(period: str, state: tuple) -> float:
-                """The period's evidence and the fuel route's block given the storm."""
-                weight = evidence[(period, state[0])]
-                for (predicate, subject), value in zip(variables[1:], state[1:]):
-                    if self.inspected.get((subject, period), value) != value:
-                        return 0.0
-                    if predicate == "Blocked":
-                        p_block = rates.rate(predicate, subject, state[0])
-                        weight *= p_block if value else 1 - p_block
-                return weight
-
-            def transition(previous: tuple, state: tuple) -> float:
-                weight = 1.0
-                for (predicate, subject), before, now in zip(variables, previous, state):
-                    if predicate != "Blocked":
-                        p = rates.rate(predicate, subject, before)
-                        weight *= p if now else 1 - p
-                return weight
-
-            def produce(index: int, previous: tuple, state: tuple) -> dict[str, bool]:
-                period = self.window[index]
-                mine_before = self.reported[(MINE, self.window[index - 1])] if index else self.mine_before
-                inputs = {plant: self.inputs[(plant, period)] for plant in cell.inputs}
-                fuel_blocked = bool((previous if cell.timed else state)[1])
-                return production(cell, dict(zip(cell.sites, state[2:])), self.stocked[period], inputs, fuel_blocked, mine_before)
-
-            # factors[i][(previous, state)]: from the state before window
-            # period i to its state, with period i's evidence.
-            transitions = {(previous, state): transition(previous, state) for previous in states for state in states}
-            factors = []
-            for index, period in enumerate(self.window):
-                reported = {site: self.reported[(site, period)] for site in cell.sites} if in_cell and (MINE, period) in self.reported else None
-                weights = {state: local(period, state) for state in states}
-                factor = {}
-                for previous in self.before[region] if index == 0 else states:
-                    for state in states:
-                        weight = weights[state] and weights[state] * (transitions[(previous, state)] if index else transition(previous, state))
-                        if weight and reported is not None and produce(index, previous, state) != reported:
-                            weight = 0.0
-                        factor[(previous, state)] = weight
-                factors.append(factor)
-            forward = [self.before[region]]
-            for factor in factors:
-                forward.append({state: sum(p * factor[(previous, state)] for previous, p in forward[-1].items()) for state in states})
-            backward = [dict.fromkeys(states, 1.0)]
-            for factor in reversed(factors[1:]):
-                backward.insert(0, {previous: sum(factor[(previous, state)] * backward[0][state] for state in states) for previous in states})
-            norm = sum(forward[-1].values())
-            for index, period in enumerate(self.window):
-                marginal = {state: forward[index + 1][state] * backward[index][state] / norm for state in states}
+        cell = self.network.cell
+        for region, variables in self.variables.items():
+            marginals, block_given, last = self._filter(region)
+            routes = [route for route in self.network.routes_of(region) if not (len(variables) > 1 and route in cell.fuel_routes)]
+            for period, marginal in zip(self.window, marginals):
                 for position, (predicate, subject) in enumerate(variables):
                     if (subject, period) not in self.inspected:
-                        posterior[(predicate, subject, period)] = sum(p for state, p in marginal.items() if state[position])
+                        posterior[(predicate, subject, period)] = sum(p for state, p in enumerate(marginal) if state >> position & 1)
                 for route in routes:
                     if (route.name, period) not in self.inspected:
                         posterior[("Blocked", route.name, period)] = sum(
-                            p * block_given[(period, state[0], route.name)] for state, p in marginal.items()
+                            p * block_given[(period, bool(state & 1), route.name)] for state, p in enumerate(marginal)
                         )
-            if in_cell and self.window:
-                last = len(self.window) - 1
+            if last and self.window[-1] in self.stocked:
                 producing = dict.fromkeys(cell.sites, 0.0)
-                for (previous, state), weight in factors[last].items():
-                    if weight:
-                        for site, on in produce(last, previous, state).items():
-                            producing[site] += forward[last][previous] * weight / norm * on
-                posterior.update({("Producing", site, self.window[last]): p for site, p in producing.items()})
+                for (values, fuel_blocked), weight in self.now(last).items():
+                    for site, on in self.production(values, fuel_blocked, self.stocked[self.window[-1]], self.repairing.get(self.window[-1], ())).items():
+                        producing[site] += weight * on
+                posterior.update({("Producing", site, self.window[-1]): p for site, p in producing.items()})
         return posterior
+
+    def now(self, last: dict | None = None) -> dict[tuple[tuple, bool], float]:
+        """The cell region's state in the last window period: the weight of
+        each (its variables' values, as ((predicate, subject), value) pairs,
+        and the block of the route the arriving fuel took)."""
+        if last is None:
+            last = self._filter(self.network.cell.fuel_route.region)[2]
+        variables = self.variables[self.network.cell.fuel_route.region]
+        return {(tuple((var, bool(state >> i & 1)) for i, var in enumerate(variables)), block): w for (block, state), w in last.items()}
+
+    def production(self, values: tuple, fuel_blocked: bool, stocked: bool, repairing: tuple[str, ...]) -> dict[str, bool]:
+        """The last window period's production in the cell region's state
+        ``values`` (from ``now``) under the given stock and repairs."""
+        cell, period = self.network.cell, self.window[-1]
+        state = dict(values)
+        mine_before = self.reported[(MINE, self.window[-2])] if len(self.window) > 1 else self.mine_before
+        inputs = {plant: self.inputs[(plant, period)] for plant in cell.inputs}
+        if not cell.timed:
+            fuel_blocked = state[("Blocked", self.via.get(period, cell.fuel_route.name))]
+        return production(cell, {site: state[("Degraded", site)] for site in cell.sites}, stocked, inputs, fuel_blocked, mine_before, repairing)

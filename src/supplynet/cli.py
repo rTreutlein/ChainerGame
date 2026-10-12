@@ -3,7 +3,8 @@ import json
 import os
 
 from . import scale
-from .backends import LearnedReferenceBackend, PeTTaChainerBackend, PriorBackend, ReferenceBackend
+from .backends import GreedyBackend, LearnedReferenceBackend, PeTTaChainerBackend, PriorBackend, ReferenceBackend
+from .decisions import Values
 from .game import GameConfig, run_game
 from .nars import NarsBackend
 from .problog_backend import ProblogBackend
@@ -13,14 +14,22 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="supplynet")
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="play rounds of a stage with one reasoner")
-    run.add_argument("--stage", choices=("1", "2", "3", "scale"), default="1")
+    run.add_argument("--stage", choices=("1", "2", "3", "4", "scale"), default="1")
     run.add_argument("--cycle", choices=("timed", "untimed"), default="timed", help="stage 3: the fuel loop through time or within a period")
     run.add_argument(
         "--backend",
-        choices=("reference", "learned-reference", "local", "prior", "pettachainer", "nars", "problog"),
+        choices=("reference", "learned-reference", "local", "prior", "greedy", "pettachainer", "mm2", "nars", "problog"),
         default="reference",
-        help="local: stage scale only; nars, learned-reference: stages 1-3",
+        help="local: stage scale only; nars, learned-reference: stages 1-3; greedy: stage 4 (exact beliefs, single actions ranked alone); "
+             "mm2: the PeTTaChainer harness on mm2_chainer.petta",
     )
+    decide = run.add_argument_group("stage 4")
+    decide.add_argument("--plants", type=int, default=2, help="stages 3-4: plants in the cell")
+    decide.add_argument("--capacity", type=int, default=2, help="action units per period")
+    decide.add_argument("--proposer", choices=("extend", "exhaustive"), default="extend",
+                        help="pettachainer/mm2: which joint actions are asked (backends.PeTTaChainerBackend)")
+    decide.add_argument("--beam", type=int, default=2, help="pettachainer/mm2 with --proposer extend: options extended per layer")
+    run.add_argument("--mm2-path", default=os.environ.get("MM2_CHAINER_PYTHONPATH"), help="the directory holding mm2_chainer")
     run.add_argument(
         "--learned-rules",
         action="store_true",
@@ -62,6 +71,10 @@ def main(argv=None):
         parser.error("--backend local needs --stage scale")
     if args.stage == "scale" and (args.backend in ("nars", "learned-reference") or args.learned_rules):
         parser.error("--backend nars, --backend learned-reference and --learned-rules run stages 1-3")
+    if args.stage == "4" and (args.backend in ("nars", "learned-reference", "local") or args.learned_rules):
+        parser.error("stage 4 runs reference, prior, greedy, pettachainer, mm2 and problog with given rates (docs/supply_network.md)")
+    if args.backend == "greedy" and args.stage != "4":
+        parser.error("--backend greedy needs --stage 4")
     on_round = (lambda record: print(json.dumps(record), flush=True)) if args.stream else None
     if args.stage == "scale":
         backend = {
@@ -84,13 +97,16 @@ def main(argv=None):
         print(json.dumps(scale.run_game(config, backend, on_round=on_round)), flush=True)
         return
     learned = args.learned_rules
+    chainer = lambda module, path: PeTTaChainerBackend(  # noqa: E731
+        path, args.evidence_k, learned=learned, review_steps=args.review_steps, mined=tuple(args.mine_rules) if args.mine_rules else None,
+        change_hazard=args.change_hazard, proposer=args.proposer, beam=args.beam, module=module)
     backend = {
         "reference": ReferenceBackend,
         "learned-reference": LearnedReferenceBackend,
         "prior": PriorBackend,
-        "pettachainer": lambda: PeTTaChainerBackend(args.pettachainer_path, args.evidence_k, learned=learned, review_steps=args.review_steps,
-                                                    mined=tuple(args.mine_rules) if args.mine_rules else None,
-                                                    change_hazard=args.change_hazard),
+        "greedy": GreedyBackend,
+        "pettachainer": lambda: chainer("pettachainer", args.pettachainer_path),
+        "mm2": lambda: chainer("mm2_chainer.petta", args.mm2_path),
         "nars": lambda: NarsBackend(args.nars_path, args.nars_cycles_per_step, args.nars_reading, args.nars_cache, learned=learned),
         "problog": lambda: ProblogBackend(engine=args.problog_engine, timeout=args.problog_timeout, learned=learned),
     }[args.backend]()
@@ -103,6 +119,8 @@ def main(argv=None):
         100 if args.budget is None else args.budget,
         int(args.stage),
         args.cycle,
+        args.plants,
+        Values(capacity=args.capacity),
     )
     print(json.dumps({**run_game(config, backend, on_round=on_round), "learned_rules": learned}), flush=True)
 

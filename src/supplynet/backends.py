@@ -2,7 +2,9 @@
 
 A backend is given a stage's network, rates, labelled history and rounds of
 observations. Stages 1-3 use ``world`` and ``metta``; stage "scale" passes its
-own knowledge class and statements (``scale``)."""
+own knowledge class and statements (``scale``). In stage 4 a backend also
+decides each round (``decide``, after ``beliefs``) and is told the action
+taken (``act``)."""
 
 from __future__ import annotations
 
@@ -12,7 +14,8 @@ import time
 from pathlib import Path
 
 from . import metta
-from .world import Key, Knowledge, Network, NodeRates, Observation, Period, Rates, learned_rates
+from .decisions import Problem, best, combine, expected_utilities, factored_utilities, greedy, singles
+from .world import Action, Key, Knowledge, Network, NodeRates, Observation, Period, Rates, decides, learned_rates
 
 
 class BackendUnavailable(RuntimeError):
@@ -34,6 +37,8 @@ class ReferenceBackend:
         self.knowledge = self._knowledge(network, rates)
         for period, observation in history:
             self.knowledge.observe(observation)
+            if decides(network):
+                self.act(period.name, period.action(network.cell))
             self.knowledge.resolve(period)
 
     def beliefs(self, observation: Observation, keys: list[Key], budget: int) -> dict[Key, float]:
@@ -43,6 +48,24 @@ class ReferenceBackend:
 
     def resolve(self, period: Period, observation: Observation) -> None:
         self.knowledge.resolve(period)
+
+    def decide(self, problem: Problem, budget: int) -> Action:
+        """The reference policy: the option of highest expected utility."""
+        return best(expected_utilities(self.knowledge, problem))
+
+    def act(self, period: str, action: Action) -> None:
+        self.knowledge.act(period, action)
+
+
+class GreedyBackend(ReferenceBackend):
+    """The exact posterior, deciding by the single actions' own gains
+    (``decisions.greedy``): what ignoring the actions' interaction costs."""
+
+    def __init__(self):
+        super().__init__(name="greedy")
+
+    def decide(self, problem: Problem, budget: int) -> Action:
+        return greedy(expected_utilities(self.knowledge, problem), problem.values.capacity)
 
 
 class LearnedReferenceBackend(ReferenceBackend):
@@ -77,6 +100,7 @@ class PriorBackend:
     name = "prior"
 
     def begin(self, network: Network, rates: Rates, history: list[tuple[Period, Observation]]) -> None:
+        self.network = network
         self.counts: dict[tuple[str, str], list[int]] = {}
         for period, observation in history:
             self.resolve(period, observation)
@@ -89,6 +113,16 @@ class PriorBackend:
             count = self.counts.setdefault(var, [0, 0])
             count[0] += value
             count[1] += 1
+
+    def decide(self, problem: Problem, budget: int) -> Action:
+        """The best option with every hidden variable at its base rate."""
+        cell = self.network.cell
+        keys = [("Degraded", site, problem.period) for site in cell.sites] + [("Blocked", route.name, problem.period) for route in cell.fuel_routes]
+        keys.append(("Blocked", problem.fuel_before, problem.previous))
+        return best(factored_utilities(cell, problem, self.beliefs(None, keys, 0)))
+
+    def act(self, period: str, action: Action) -> None:
+        pass
 
 
 class PeTTaChainerBackend:
@@ -113,21 +147,42 @@ class PeTTaChainerBackend:
     ordered by the period each fact refers to and the layers of
     ``predicate_times``, never by arrival, and
     each round's review or read is its ``review-hypotheses`` of all live
-    ones, which also drops those that do not predict."""
+    ones, which also drops those that do not predict.
 
-    name = "pettachainer"
+    In stage 4 it decides in the knowledge base that holds the beliefs: a
+    joint action's value is one ``Assuming`` query (``metta.decision_query``),
+    which assumes the action's facts and asks for its outcomes
+    (``metta.decision_rules``); their amounts weighted by their truth, less
+    the action's cost, are its expected utility. The joint actions of one
+    proposal layer are the roots of one ``query_many_refs`` call with
+    ``budget`` steps per root, so they share the search of what the
+    assumptions leave unchanged. The
+    ``proposer`` picks which joint actions are asked: "exhaustive" asks every
+    feasible one; "extend" asks doing nothing and every single action, then
+    extends the ``beam`` best of the last layer by one more action, until the
+    capacity is used, so a period costs 1 + n + beam·(n − 1) queries per extra
+    unit for n single actions instead of every combination.
+
+    ``module`` names the chainer's Python API: "pettachainer", or
+    "mm2_chainer.petta" for the MM2 chainer (``--backend mm2``), which
+    implements the same calls but not every setting; a complete-predicate
+    declaration it lacks is recorded in ``unsupported`` and skipped."""
 
     def __init__(self, python_path: str | None = None, evidence_k: float = 5, statements=metta, learned: bool = False, review_steps: int = 200,
-                 mined: tuple[int, int] | None = None, change_hazard: float | None = None):
+                 mined: tuple[int, int] | None = None, change_hazard: float | None = None, proposer: str = "extend", beam: int = 2,
+                 module: str = "pettachainer"):
         self.statements, self.learned, self.review_steps, self.mined = statements, learned, review_steps, mined
+        self.proposer, self.beam = proposer, beam
+        self.name = "mm2" if module.startswith("mm2") else "pettachainer"
+        self.decision: dict = {}
+        self.unsupported: list[str] = []
         if python_path:
             sys.path.insert(0, str(Path(python_path).expanduser().resolve()))
         try:
-            module = importlib.import_module("pettachainer")
-            self._handler = module.PeTTaChainer()
+            self._handler = importlib.import_module(module).PeTTaChainer()
         except (AttributeError, ImportError, OSError) as exc:
             raise BackendUnavailable(
-                "PeTTaChainer is not importable; pass --pettachainer-path or set PETTACHAINER_PYTHONPATH"
+                f"{module} is not importable; pass --pettachainer-path (or --mm2-path) or set PETTACHAINER_PYTHONPATH"
             ) from exc
         self._handler.set_evidence_confidence_k(evidence_k)
         if learned:
@@ -144,9 +199,14 @@ class PeTTaChainerBackend:
         self._clock = self._handler.timing() if hasattr(self._handler, "timing") else None
 
     def begin(self, network: Network, rates: Rates, history: list[tuple[Period, Observation]]) -> None:
+        self.network, self.valued = network, False
         for head in self.statements.complete_predicates(network):
-            self._handler.set_complete_predicate(head)
-        rules = self.statements.rules(network, rates, learned=True) if self.learned else self.statements.rules(network, rates)
+            if hasattr(self._handler, "set_complete_predicate"):
+                self._handler.set_complete_predicate(head)
+            else:
+                self.unsupported.append(f"set_complete_predicate {head}")
+        decided = {"positive_actions": True} if decides(network) else {}
+        rules = self.statements.rules(network, rates, learned=True, **decided) if self.learned else self.statements.rules(network, rates, **decided)
         self.reviews = [goal for goal in map(self.statements.review, rules) if goal] if self.learned else []
         if self.mined:
             self._handler.set_time_link("NextPeriod")
@@ -160,6 +220,8 @@ class PeTTaChainerBackend:
         self.unread = False
         for period, observation in history:
             self._handler.add_atoms_no_check(self.statements.observation_facts(observation))
+            if decides(network):
+                self.act(period.name, period.action(network.cell))
             self.resolve(period, observation)
 
     def _review_mined(self) -> None:
@@ -207,6 +269,39 @@ class PeTTaChainerBackend:
         self._handler.add_atoms_no_check(self.statements.resolution_facts(period, observation))
         self.unread = bool(self.reviews)
 
+    def decide(self, problem: Problem, budget: int) -> Action:
+        if not self.valued:
+            self._handler.add_atoms_no_check(metta.decision_rules(self.network, problem.values))
+            self.valued = True
+        evaluated: dict[Action, float | None] = {}
+
+        def evaluate(actions) -> list[Action]:
+            actions = [action for action in dict.fromkeys(actions) if action not in evaluated]
+            goals = [metta.decision_query(self.network, problem.period, action) for action in actions]
+            for action, answers in zip(actions, self._handler.query_many_refs(goals, steps=budget * len(goals)), strict=True):
+                outcomes = {str(answer.statement[2][2]): answer.statement[2][3] * answer.tv[1] for answer in answers}
+                evaluated[action] = sum(outcomes.values()) - problem.values.cost_of(action) if outcomes else None
+            return actions
+
+        if self.proposer == "exhaustive":
+            evaluate(problem.options)
+        else:
+            feasible = set(problem.options)
+            layer = evaluate(action for action in problem.options if action.units <= 1)
+            single = [action for action in layer if action.units == 1]
+            for _ in range(problem.values.capacity - 1):
+                top = sorted((a for a in layer if a.units and evaluated[a] is not None), key=evaluated.get, reverse=True)[: self.beam]
+                layer = evaluate(joint for a in top for s in single if s not in singles(a) for joint in [combine([a, s])] if joint in feasible)
+        answered = {action: value for action, value in evaluated.items() if value is not None}
+        self.decision = {"decision_queries": len(evaluated), "decision_answered": len(answered)}
+        return best(answered) if answered else Action()
+
+    def act(self, period: str, action: Action) -> None:
+        self._handler.add_atoms_no_check(metta.action_facts(self.network, period, action))
+
+    def decision_record(self) -> dict:
+        return self.decision
+
     def summary(self) -> dict:
         """Review figures of learned or mined rules, and the seconds of every
         chainer call of the run (setup included) split into inference
@@ -216,6 +311,7 @@ class PeTTaChainerBackend:
                      "hypotheses": sorted(self.hypotheses.values())}
         else:
             rules = {"review_seconds": round(self.review_seconds, 3), "rule_truths": self.rule_truths} if self.learned else {}
+        rules = {**rules, **({"unsupported": self.unsupported} if self.unsupported else {})}
         if self._clock is None:
             return rules
         now = self._handler.timing()

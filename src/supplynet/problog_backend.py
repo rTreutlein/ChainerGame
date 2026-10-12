@@ -30,7 +30,15 @@ exact, is in docs/problog_backend.md:
   posterior mean of each rate under a uniform prior;
 - every key is a ``query/1``; the cyclic untimed production rules are read
   under ProbLog's least-fixpoint semantics, the same as the chainer's
-  complete predicates.
+  complete predicates;
+- a stage 4 decision is one more compilation per round (``decide``): each
+  single action is a probabilistic fact of 0.5 that the period's action
+  statements follow, a joint action is the conjunction of its singles taken
+  and the others not, and each outcome's probability under a joint action is
+  P(joint ∧ outcome) / P(joint). The action facts are roots that no evidence
+  depends on, so this is the outcome's exact probability given the evidence
+  with the action taken, and every option's expected utility comes from one
+  circuit.
 
 Each round's program is ground, compiled and evaluated in a forked child, so a
 round that exceeds its timeout (or its memory) is killed and its keys stay
@@ -48,7 +56,8 @@ import time
 from dataclasses import dataclass
 
 from . import metta
-from .world import Key, Network, Observation, Period, Rates
+from .decisions import Problem, best
+from .world import MINE, Action, Key, Network, Observation, Period, Rates, decides
 
 
 def parse(text: str):
@@ -292,8 +301,10 @@ class ProblogBackend:
         load(engine)
         self.statements, self.engine, self.timeout, self.priors, self.learned = statements, engine, timeout, priors, learned
         self.rounds: list[dict] = []
+        self.decisions: list[dict] = []
 
     def begin(self, network: Network, rates: Rates, history: list[tuple[Period, Observation]]) -> None:
+        self.network = network
         texts = self.statements.rules(network, rates, learned=True) if self.learned else self.statements.rules(network, rates)
         self.rules = [rule(text, index) for index, text in enumerate(texts)]
         assert self.learned or all(r.rates for r in self.rules), "a rule without rates needs learned rules"
@@ -305,6 +316,8 @@ class ProblogBackend:
         self.last: str | None = None
         for period, observation in history:
             self._observe(observation)
+            if decides(network):
+                self.act(period.name, period.action(network.cell))
             self.resolve(period, observation)
 
     def _add(self, texts: list[str]) -> None:
@@ -351,5 +364,43 @@ class ProblogBackend:
         self.rounds.append(record)
         return dict(zip(keys, probabilities, strict=True)) if probabilities is not None else {}
 
+    def act(self, period: str, action: Action) -> None:
+        """The action's statements as facts (the chainer's encoding of them;
+        ``InService`` and ``Unstocked`` are read by no rule here)."""
+        self._add(metta.action_facts(self.network, period, action))
+
+    def decide(self, problem: Problem, budget: int) -> Action:
+        """The option of highest exact expected utility (module docstring);
+        doing nothing when the round's compilation fails."""
+        cell, values, t = self.network.cell, problem.values, f"'{problem.period}'"
+        sites = sorted(cell.sites)
+        lines = [
+            "0.5::act_stock.", "0.5::act_reroute.", *(f"0.5::act_repair('{site}')." for site in sites),
+            f"stockedfuel({t}) :- act_stock.",
+            f"fuelvia('{cell.alternate.name}', {t}) :- act_reroute.", f"fuelvia('{cell.fuel_route.name}', {t}) :- \\+act_reroute.",
+            f"repairing(S, {t}) :- act_repair(S).",
+            *(f"outcome(output_{i}) :- producing('{site}', {t})." for i, site in enumerate(sites)),
+            f"outcome(fuel) :- producing('{MINE}', {t}), fuelvia(R, {t}), \\+blocked(R, {t}).",
+            *(f"outcome(cleared_{i}) :- repairing('{site}', {t}), degraded('{site}', {t})." for i, site in enumerate(sites)),
+        ]
+        amounts = {f"output_{i}": values.output[cell.sites[site]] for i, site in enumerate(sites)} | {"fuel": values.fuel}
+        amounts |= {f"cleared_{i}": values.repair[cell.sites[site]] for i, site in enumerate(sites)}
+        queries = []
+        for j, action in enumerate(problem.options):
+            parts = ["act_stock" if action.stock else "\\+act_stock", "act_reroute" if action.reroute else "\\+act_reroute"]
+            parts += [f"act_repair('{site}')" if site in action.repairs else f"\\+act_repair('{site}')" for site in sites]
+            lines.append(f"option({j}) :- {', '.join(parts)}.")
+            lines.append(f"joint({j}, O) :- option({j}), outcome(O).")
+            queries += [f"option({j})", *(f"joint({j}, {o})" for o in amounts)]
+        text = self.program([]) + "\n".join([*lines, *(f"query({q})." for q in queries), ""])
+        probabilities, record = solve(text, queries, self.engine, self.timeout)
+        self.decisions.append(record)
+        if probabilities is None:
+            return Action()
+        p = dict(zip(queries, probabilities, strict=True))
+        return best({action: sum(amount * p[f"joint({j}, {o})"] for o, amount in amounts.items()) / p[f"option({j})"] - values.cost_of(action)
+                     for j, action in enumerate(problem.options)})
+
     def summary(self) -> dict:
-        return {"problog_engine": self.engine, "problog_timeout": self.timeout, **summary(self.rounds)}
+        return {"problog_engine": self.engine, "problog_timeout": self.timeout, **summary(self.rounds),
+                **({"problog_decisions": summary(self.decisions)} if self.decisions else {})}
