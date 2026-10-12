@@ -163,6 +163,29 @@ class PLNAgent:
     otherwise execute the best operation when its desire is at least 0.501,
     else nothing.
 
+    Outcome evidence (``outcome_evidence``). The agent sees only the chosen
+    operation's outcome, so the rewards stored for an operation come from the
+    trials where the agent expected it to pay, and an operation's population
+    prior (the answer to (Reward op t) when no hypothesis matches the trial)
+    is biased by the agent's choices. In these tasks exactly one of the two
+    operations is correct in a trial, so the outcome of the one not chosen
+    follows from the outcome of the chosen one:
+    - none: nothing about the unchosen operation (open world);
+    - rule: the knowledge base states the task structure, one rule per
+      direction, (Implication (Reward right $t) (Reward left $t))
+      (CTV (STV 0 1) (STV 1 1)) and the converse: the unchosen outcome is
+      derived. It also couples the current trial's two queries: each
+      operation's answer merges its own hypotheses with the complement of the
+      other's;
+    - facts: the harness stores the unchosen outcome as a fact
+      (Reward other t), (STV 1-s 1), and the unchosen operation gets its
+      hypotheses for the context as the chosen one does.
+
+    Desire (``desire``): ``all`` reads it from every answer to (Reward op t),
+    the population prior included; ``matching`` reads it only through the
+    hypotheses that match the trial, and an operation with none has desire
+    0.5 without a query.
+
     Each trial's timing also splits the chainer's time into inference
     (activation, search and evaluation) and overhead (the rest of its calls:
     the Python layer, reading calls, query setup and teardown, results,
@@ -172,7 +195,7 @@ class PLNAgent:
     OPS = ("left", "right")
 
     def __init__(self, seed, steps, pettachainer_path=None, relational=True, space="sample-pairs", mined=None,
-                 change_detection=None):
+                 change_detection=None, outcome_evidence="none", desire="all"):
         if pettachainer_path:
             sys.path.insert(0, pettachainer_path)
         from pettachainer import PeTTaChainer
@@ -190,6 +213,11 @@ class PLNAgent:
             for p in ("Sample", "LeftStim", "RightStim"):
                 self.h.set_predicate_time(p, 2, 0)
             self.h.set_predicate_time("Reward", 2, 1)
+        self.outcome_evidence = outcome_evidence
+        self.desire_from = desire
+        if outcome_evidence == "rule":
+            self.h.add_atoms_no_check([f"(: one-of-{a} (Implication (Reward {a} $t) (Reward {b} $t)) (CTV (STV 0 1) (STV 1 1)))"
+                                       for a, b in (self.OPS, self.OPS[::-1])])
         self.rng = random.Random(seed * 7919 + 1)
         self.steps = steps
         self.relational = relational
@@ -236,11 +264,17 @@ class PLNAgent:
             self.h.query_many_refs(review, steps=steps)
         t1r = time.perf_counter()
         desire = {}
+        prior = []
         for op in self.OPS:
+            if self.desire_from == "matching" and not any(o == op for _, o in matching):
+                desire[op] = 0.5
+                continue
             (rows,) = self.h.query_many_refs([f"(: $p (Reward {op} t{t}) $tv)"], steps=self.steps)
-            tvs = [(float(a.tv[1]), float(a.tv[2])) for a in rows if a.tv[0] == "STV"]
-            f, c = max(tvs, key=lambda x: x[1]) if tvs else (0.5, 0.0)
+            answers = [(float(a.tv[1]), float(a.tv[2]), a.proof) for a in rows if a.tv[0] == "STV"]
+            f, c, proof = max(answers, key=lambda x: x[1]) if answers else (0.5, 0.0, None)
             desire[op] = c * (f - 0.5) + 0.5
+            if isinstance(proof, list) and proof[0] == "population-prior":
+                prior.append(op)
         t2 = time.perf_counter()
         best = max(self.OPS, key=lambda o: (desire[o], self.rng.random()))
         babble = self.rng.choice(self.OPS) if self.rng.random() < 0.2 else None
@@ -251,20 +285,24 @@ class PLNAgent:
         else:
             op = None
         self.timing.append({"t": t, "add": t1 - t0, "review": t1r - t1, "decide": t2 - t1r, "reviewed": len(review),
-                            "desire": {k: round(v, 4) for k, v in desire.items()}})
+                            "desire": {k: round(v, 4) for k, v in desire.items()}, "prior": prior})
         self._split(clock)
         print(f"  trial {t} {sample} {left} {right} review {t1r - t1:.2f}s decide {t2 - t1r:.2f}s", file=sys.stderr, flush=True)
         return None if op is None else "^" + op
 
     def feedback(self, op, success):
         t0 = time.perf_counter()
+        chosen = op[1:]
+        (other,) = [o for o in self.OPS if o != chosen]
+        outcomes = [(chosen, int(success))] + ([(other, int(not success))] if self.outcome_evidence == "facts" else [])
         new = []
         for a in ([] if self.mined else self._antecedents(*self.context)):
-            if (a, op[1:]) not in self.hyps:
-                self.hyps.add((a, op[1:]))
-                new.append(f"(: h{len(self.hyps)} (Implication {a} (Reward {op[1:]} $t)) (STV 0.5 0.01))")
+            for o, _ in outcomes:
+                if (a, o) not in self.hyps:
+                    self.hyps.add((a, o))
+                    new.append(f"(: h{len(self.hyps)} (Implication {a} (Reward {o} $t)) (STV 0.5 0.01))")
         clock = self.h.timing()
-        self.h.add_atoms_no_check(new + [f"(: o{self.t} (Reward {op[1:]} t{self.t}) (STV {1 if success else 0} 1))"])
+        self.h.add_atoms_no_check(new + [f"(: {n}{self.t} (Reward {o} t{self.t}) (STV {s} 1))" for n, (o, s) in zip("oc", outcomes)])
         self.timing[-1]["feedback"] = time.perf_counter() - t0
         self._split(clock)
 
@@ -325,14 +363,20 @@ def main():
                     help="the knowledge base mines its own hypotheses (set-hypothesis-mining)")
     ap.add_argument("--change-detection", type=float, metavar="BAYES_FACTOR",
                     help="refined rules detect a change of their rate (PeTTaChainer set-rule-change-detection)")
+    ap.add_argument("--outcome-evidence", choices=("none", "rule", "facts"), default="none",
+                    help="what the PLN agent learns about the operation it did not choose (PLNAgent docstring)")
+    ap.add_argument("--desire", choices=("all", "matching"), default="all",
+                    help="read desires from every answer, or only through hypotheses matching the trial")
     ap.add_argument("--ona-dir", default="/nexus/Dev/OpenCog/ONA")
     ap.add_argument("--pettachainer-path")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
+    if a.mined and a.desire == "matching":
+        ap.error("--desire matching needs harness hypotheses, not --mined")
     out = os.path.abspath(a.out)
     agent = (ONAAgent(a.ona_dir, a.seed) if a.agent == "ona"
              else PLNAgent(a.seed, a.steps, a.pettachainer_path, not a.no_relational, a.space, a.mined,
-                      a.change_detection))
+                      a.change_detection, a.outcome_evidence, a.desire))
     t0 = time.perf_counter()
     res = run(a.task, agent, a.seed)
     res["wall"] = time.perf_counter() - t0
@@ -343,6 +387,8 @@ def main():
         res["mined"] = a.mined
         res["change_detection"] = a.change_detection
         res["dropped"] = agent.dropped
+        res["outcome_evidence"] = a.outcome_evidence
+        res["desire"] = a.desire
         res["timing"] = agent.timing
     with open(out, "w") as f:
         json.dump(res, f, indent=1)
