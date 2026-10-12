@@ -20,6 +20,8 @@ Tasks:
   with novel stimuli A3, A4 and no feedback: generalised identity).
 - reversal: an extension, not in ONA's suite: conditioning, then the mapping
   is reversed (A1->B2, A2->B1) for 20 feedback blocks and tested again.
+- rereversal: reversal, then the original mapping returns for 20 feedback
+  blocks and is tested again: a regime that recurs.
 """
 import argparse
 import itertools
@@ -67,9 +69,16 @@ TASKS = {
                  ("test", 4, COND, False, 100, None, True),
                  ("reverse", 20, COND_REV, True, 100, "each", False),
                  ("retest", 4, COND_REV, False, 100, None, True)],
+    "rereversal": [("baseline", 10, COND, False, 100, "end", False),
+                   ("train", 20, COND, True, 100, "each", False),
+                   ("test", 4, COND, False, 100, None, True),
+                   ("reverse", 20, COND_REV, True, 100, "each", False),
+                   ("retest", 4, COND_REV, False, 100, None, True),
+                   ("rereverse", 20, COND, True, 100, "each", False),
+                   ("final", 4, COND, False, 100, None, True)],
 }
 QUESTIONS = {"conditioning": COND_QUESTIONS, "identitymatching": IDENT_QUESTIONS,
-             "reversal": COND_QUESTIONS}
+             "reversal": COND_QUESTIONS, "rereversal": COND_QUESTIONS}
 
 
 class ONAAgent:
@@ -198,15 +207,15 @@ class PLNAgent:
     OPS = ("left", "right")
 
     def __init__(self, seed, steps, pettachainer_path=None, relational=True, space="sample-pairs", mined=None,
-                 change_detection=None, outcome_evidence="none", desire="all"):
+                 change_hazard=None, outcome_evidence="none", desire="all"):
         if pettachainer_path:
             sys.path.insert(0, pettachainer_path)
         from pettachainer import PeTTaChainer
         self.h = PeTTaChainer()
         self.h.set_evidence_confidence_k(1)
         self.h.set_rule_refinement(True)
-        if change_detection:
-            self.h.set_rule_change_detection(change_detection)
+        if change_hazard is not None:
+            self.h.set_rule_change_hazard(change_hazard)
         for p in ("Sample", "LeftStim", "RightStim"):
             self.h.set_positive_only_predicate(p)
         self.mined = mined
@@ -364,8 +373,9 @@ def main():
     ap.add_argument("--space", choices=("all", "sample-pairs"), default="sample-pairs")
     ap.add_argument("--mined", nargs=2, type=int, metavar=("MAX_NEW", "MAX_LIVE"),
                     help="the knowledge base mines its own hypotheses (set-hypothesis-mining)")
-    ap.add_argument("--change-detection", type=float, metavar="BAYES_FACTOR",
-                    help="refined rules detect a change of their rate (PeTTaChainer set-rule-change-detection)")
+    ap.add_argument("--change-hazard", type=float, metavar="HAZARD",
+                    help="prior probability that a sample starts a new regime of a refined rule's rate "
+                         "(PeTTaChainer set-rule-change-hazard; default PeTTaChainer's, 0 keeps one regime)")
     ap.add_argument("--outcome-evidence", choices=("none", "rule", "facts"), default="none",
                     help="what the PLN agent learns about the operation it did not choose (PLNAgent docstring)")
     ap.add_argument("--desire", choices=("all", "matching"), default="all",
@@ -379,7 +389,7 @@ def main():
     out = os.path.abspath(a.out)
     agent = (ONAAgent(a.ona_dir, a.seed) if a.agent == "ona"
              else PLNAgent(a.seed, a.steps, a.pettachainer_path, not a.no_relational, a.space, a.mined,
-                      a.change_detection, a.outcome_evidence, a.desire))
+                      a.change_hazard, a.outcome_evidence, a.desire))
     t0 = time.perf_counter()
     res = run(a.task, agent, a.seed)
     res["wall"] = time.perf_counter() - t0
@@ -388,7 +398,7 @@ def main():
         res["space"] = a.space
         res["hypotheses"] = len(agent.hyps)
         res["mined"] = a.mined
-        res["change_detection"] = a.change_detection
+        res["change_hazard"] = a.change_hazard
         res["dropped"] = agent.dropped
         res["outcome_evidence"] = a.outcome_evidence
         res["desire"] = a.desire
