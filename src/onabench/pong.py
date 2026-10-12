@@ -41,7 +41,6 @@ import argparse
 import json
 import os
 import random
-import re
 import sys
 import time
 
@@ -195,7 +194,7 @@ class ONAAgent:
         self.timing.append(time.perf_counter() - t0)
         return None, ops
 
-    def feedback(self, result, credited):
+    def feedback(self, result):
         t0 = time.perf_counter()
         ops = self._input("good_nar. :|:") if result == "hit" else set()
         self.timing[-1] += time.perf_counter() - t0
@@ -207,58 +206,110 @@ class ONAAgent:
         self.timing[-1] += time.perf_counter() - t0
 
 
+BALL = ("right", "left", "equal")
+
+
+def expectation(truth):
+    """A truth's expectation, c (f - 0.5) + 0.5, from (confidence, strength)."""
+    c, f = truth
+    return c * (f - 0.5) + 0.5
+
+
+def world_rule(x, op, y):
+    """The one-step world-model rule: the ball at x and operation op at a time
+    point put the ball at y at the next one."""
+    return f"(Implication (And (NextPeriod $t $u) (At {x} $t) (Did {op} $t)) (Ball {y} $u))"
+
+
+def goal_rule(y, goal):
+    """The goal rule: the ball at y at a time point, and the step from it to
+    the next has the outcome ``goal``."""
+    return f"(Implication (And (NextPeriod $t $u) (At {y} $t)) ({goal} $u))"
+
+
 class PLNAgent:
-    """PeTTaChainer learning which operation gets the ball hit.
+    """PeTTaChainer learning a one-step world model and the goal's states.
 
-    Events are time-indexed facts, one time point d per decision: the
-    observation ``(Ball right d)`` (``left``, Pong2 also ``equal``; nothing
-    when ONA's game inputs nothing), and, once the ball reaches the bat's row
-    within ``credit`` steps after the decision's operation moved the bat, its
-    outcome ``(Reward op d)``, (STV 1 1) for a hit and (STV 0 1) for a miss.
-    The operations are left, right (Pong2 also stop) and nothing; nothing
-    leaves the bat moving as it was. A decision whose operation reached no
-    scored ball has no outcome (open world). The chainer has no intervals
-    between events, so the harness assigns the delayed outcome: every
-    decision of the ``credit`` steps before a score gets it (6 by default,
-    about the steps the bat needs to cross to the ball; on seeds 1-3 at 2000
-    steps 1 step scored 0.57 on average, 3 0.77, 6 0.81, 10 0.77: one step
-    cannot tell tracking the ball from drifting with it).
+    Time points: one per decision, d1, d2, ..., linked by ``(NextPeriod d
+    d+1)``. At each the agent observes where the ball is, x right, left or
+    equal (Pong's level bat, where ONA's game inputs nothing, is equal: the
+    step happened and showed neither side), as ``(At x d)``, the condition
+    rules read, and as ``(Ball x d)``, the event rules predict; the outcome
+    of the step that led to it, ``(Hit d)`` when the ball was hit and, with
+    ``misses``, ``(Miss d)`` when it was missed; and then the operation it
+    takes, ``(Did op d)`` (left, right, Pong2 also stop, or nothing, which
+    leaves the bat moving as it was). A decision states the time point's
+    observations, then the link into it.
 
-    Hypotheses are ``(Implication (Ball x $t) (Reward op $t)) (STV 0.5
-    0.01)``: refined rules the harness states at an operation's first outcome
-    in a context, as the matching-to-sample agent does (onabench.mts), or,
-    with ``mined``, that the knowledge base proposes itself
-    (``set-hypothesis-mining``; Ball facts are layer 0 and Reward facts layer
-    1 of their time point). Evidence k = 1; ``Ball`` is positive-only.
+    Anticipation. ``Ball``, ``Hit`` and ``Miss`` are observed predicates
+    (PeTTaChainer ``set_observed_predicate``): once the link into a time
+    point is stated, the knowledge base stores false each statement of them
+    at it that a rule predicts and that was not observed, the positions the
+    ball is not at and the outcomes that did not happen. So a rule whose
+    predicted event did not come gets a negative sample, and with ``misses``
+    off no miss is ever stated. The observation is stated twice: as a
+    condition, ``At`` is positive-only (only true facts), so no completion
+    or inversion is compiled onto it; read as ``Ball``, which has false
+    facts, the refined rules' completions onto it built rows for every past
+    time point, each reading the rule's truth, and a decision took 0.84 s
+    over the first 100 decisions and 3.8 s over the third 100 (PeTTaChainer
+    2307ca50; 33 to 37 ms with ``At``:
+    benchmarks/ona/repros/one_step_rule_growth.py).
 
-    Decision: the truths of the hypotheses that apply are read (their
-    ``RuleTruth`` goals in one query, with budget only at a hypothesis's first
-    read: the instance tallies keep the truths current, so later reads are
-    reads). With one hypothesis per observation and operation and a stored
-    fact as its antecedent, the answer to ``(Reward op d)`` is that truth
-    (equal within 2e-8 over 4269 decisions, seed 12), so the read is the
-    desire, c(f - 0.5) + 0.5. Mined hypotheses can overlap (a relational and
-    a specific one), so that agent reviews them (``review-hypotheses``) and
-    then queries ``(Reward op d)`` for the merge. The choice is ONA's
-    ``Decision_Suggest`` babbling (probability 0.2 of one of ONA's operations
-    unless the best desire exceeds 0.55) and then, with ``policy`` "argmax",
-    the best operation, "nothing" included; with "ona", the best only if its
-    desire is at least 0.501, else nothing. ONA's threshold presumes a
-    rewarded hypothesis reads above 0.5; here every scored ball is a full
-    sample and hits start near 0.17, so no operation would pass it and the
-    agent would only babble.
+    Rules, all refined, stated at the start with a weak prior (STV 0.5,
+    the evidence of 0.01 observations, so the first samples decide):
 
-    An operation no live hypothesis applies to has desire 0.5 and
-    is not queried, as ONA's Decision_Suggest reads desire only through
-    hypotheses that match: the query would answer the population prior of
-    the stored rewards, which is biased by the agent's own choices (an
-    operation taken only where it worked reads near 1) and can beat a learned
-    rule in a near tie. Without an observation no hypothesis applies.
+    - world model, one step, for every x, op and y:
+      ``(And (NextPeriod $t $u) (At x $t) (Did op $t)) -> (Ball y $u)``;
+    - goal rules, for every y: ``(And (NextPeriod $t $u) (At y $t)) ->
+      (Hit $u)`` and, with ``misses``, the failure rule ``... -> (Miss
+      $u)``: the outcome of the step from a position.
+
+    ``At``, ``Did`` and ``NextPeriod`` are positive-only. Evidence k = 1.
+    Every rule's instances are joined from the links, so an instance exists
+    only once all its statements are in. A goal rule whose outcome was read
+    before its step played kept, for each time point, the rules started for
+    the outcome while it was unknown waiting on their truth once it was
+    stated (250 such joins a decision, 1.1 MB).
+
+    Decision: chaining the one-step rules. One query reads the truths of the
+    world rules from the observed x (every operation, every y) and of the
+    goal rules (``RuleTruth`` goals, with budget only when one of them is
+    read for the first time, which folds its instances: the instance tallies
+    keep the truths current, so later reads compute nothing). The predicted
+    next state of op is the world rules' strengths normalized over y. Each
+    state y has a value per goal g, V_g(y): the outcomes expected after a
+    step at y, discounted by ``gamma`` per step. An operation's value is
+    what its predicted next state leads to,
+
+        Q_g(op) = sum_y P(y | x, op) (E(g | y) + gamma V_g(y)),
+
+    where E(g | y) is the goal rule's truth expectation, c (f - 0.5) + 0.5,
+    as ONA reads desire: a state seen rarely counts near 0.5, so the agent
+    goes to find out, and its estimate takes over as samples come. With the
+    strength alone a state that missed its first few chances read 0, and the
+    agent never went back (Pong without misses, seeds 2 and 3, 0.06 and
+    0.12 at 2000 steps: the bat stayed at a wall).
+
+    and the best operation's value becomes V(x) (asynchronous value
+    iteration, one state per decision): the goal's desire flows back through
+    the one-step rules, from a hit through equal to the moves that reach
+    equal, so multi-step credit comes from chaining, at a constant cost per
+    decision (12 to 18 truth reads and 9 to 12 sums). With one step of
+    lookahead alone (V = 0) the agent in Pong stopped at the left wall: one
+    move right does not reach a state whose immediate hit rate is higher.
+    The best operation maximizes Q_Hit - Q_Miss (Q_Hit without misses). Its
+    desire, on ONA's scale, is the probability that the next scored ball is
+    hit, Q_Hit / (Q_Hit + Q_Miss), and without misses Q_Hit, the discounted
+    expectation of hits, about the probability of a hit within 1 / (1 -
+    gamma) steps. The choice is ONA's ``Decision_Suggest`` babbling
+    (probability 0.2 of one of ONA's operations unless the best desire
+    exceeds 0.55) and otherwise the best operation, nothing included, ties
+    broken at random.
     """
     name = "pln"
 
-    def __init__(self, variant, seed, steps, pettachainer_path=None, mined=None, change_hazard=None,
-                 policy="argmax"):
+    def __init__(self, variant, seed, steps, pettachainer_path=None, change_hazard=None, misses=True, gamma=0.9):
         if pettachainer_path:
             sys.path.insert(0, pettachainer_path)
         from pettachainer import PeTTaChainer
@@ -267,112 +318,78 @@ class PLNAgent:
         self.h.set_rule_refinement(True)
         if change_hazard is not None:
             self.h.set_rule_change_hazard(change_hazard)
-        self.h.set_positive_only_predicate("Ball")
-        self.mined = mined
-        if mined:
-            self.h.set_hypothesis_mining(*mined)
-            self.h.set_predicate_time("Ball", 2, 0)
-            self.h.set_predicate_time("Reward", 2, 1)
+        self.h.set_positive_only_predicate("Did")
+        self.h.set_positive_only_predicate("NextPeriod")
+        self.h.set_positive_only_predicate("At")
+        self.h.set_time_link("NextPeriod")
         self.babble_ops = ("left", "right") if variant == "pong" else ("left", "right", "stop")
         self.ops = self.babble_ops + ("nothing",)
+        self.goals = ("Hit", "Miss") if misses else ("Hit",)
+        for head, position in (("Ball", 2),) + tuple((g, 1) for g in self.goals):
+            self.h.set_predicate_time(head, position, 0)
+            self.h.set_observed_predicate(head)
+        rules = [world_rule(x, op, y) for x in BALL for op in self.ops for y in BALL]
+        rules += [goal_rule(y, g) for y in BALL for g in self.goals]
+        self.h.add_atoms_no_check([f"(: rule{i} {r} (STV 0.5 0.01))" for i, r in enumerate(rules)])
         self.rng = random.Random(seed * 7919 + 1)
         self.steps = steps
-        self.policy = policy
         self.d = 0
-        self.context = {}
-        self.hyps = set()
-        self.reviewed = set()
-        self.dropped = 0
+        self.gamma = gamma
+        self.value = {y: dict.fromkeys(self.goals, 0.0) for y in BALL}
+        self.outcome = None
+        self.read = set()
         self.timing = []
 
     def decide(self, obs):
-        self.d += 1
-        d = self.d
         clock = self.h.timing()
         t0 = time.perf_counter()
-        x = obs[len("ball_"):] if obs else None
-        desire = dict.fromkeys(self.ops, 0.5)
-        matching = []
-        if x:
-            self.h.add_atoms_no_check([f"(: b{d} (Ball {x} d{d}) (STV 1 1))"])
-            if self.mined:
-                verdicts = self.h.review_hypotheses(f"(Reward $op d{d})", steps=self.steps)
-                self.dropped += sum(v.endswith(" dropped)") for v in verdicts)
-                matching = sorted({op for v in verdicts if v.endswith(" kept)") for op in applies(v, x, self.ops)})
-                answers = self.h.query_many_refs([f"(: $p (Reward {op} d{d}) $tv)" for op in matching],
-                                                 steps=self.steps) if matching else []
-            else:
-                matching = [op for op in self.ops if (x, op) in self.hyps]
-                steps = self.steps if any((x, op) not in self.reviewed for op in matching) else 0
-                self.reviewed.update((x, op) for op in matching)
-                answers = self.h.query_many_refs(
-                    [f"(: $p (RuleTruth (Implication (Ball {x} $t) (Reward {op} $t))) $tv)" for op in matching],
-                    steps=steps) if matching else []
-            for op, rows in zip(matching, answers):
-                tvs = [(float(a.tv[1]), float(a.tv[2])) for a in rows if a.tv[0] == "STV"]
-                f, c = max(tvs, key=lambda tv: tv[1]) if tvs else (0.5, 0.0)
-                desire[op] = c * (f - 0.5) + 0.5
-        best = max(self.ops, key=lambda o: (desire[o], self.rng.random()))
+        d = self.d = self.d + 1
+        x = obs[len("ball_"):] if obs else "equal"
+        facts = [f"(: outcome{d} ({self.outcome} d{d}) (STV 1 1))"] if self.outcome in self.goals else []
+        facts += [f"(: ball{d} (Ball {x} d{d}) (STV 1 1))", f"(: at{d} (At {x} d{d}) (STV 1 1))"]
+        facts += [f"(: next{d} (NextPeriod d{d - 1} d{d}) (STV 1 1))"] if d > 1 else []
+        self.outcome = None
+        self.h.add_atoms_no_check(facts)
+        reads = [world_rule(x, op, y) for op in self.ops for y in BALL] + [goal_rule(y, g) for y in BALL for g in self.goals]
+        steps = self.steps if not self.read.issuperset(reads) else 0
+        self.read.update(reads)
+        answers = self.h.query_many_refs([f"(: $p (RuleTruth {r}) $tv)" for r in reads], steps=steps)
+        truth = {}
+        for r, rows in zip(reads, answers):
+            truth[r] = max(((float(a.tv[2]), float(a.tv[1])) for a in rows if a.tv[0] == "STV"), default=(0.0, 0.5))
+        q = {}
+        for op in self.ops:
+            p = [truth[world_rule(x, op, y)][1] for y in BALL]
+            q[op] = {g: sum(pi * (expectation(truth[goal_rule(y, g)]) + self.gamma * self.value[y][g]) for pi, y in zip(p, BALL))
+                     / sum(p) for g in self.goals}
+        best = max(self.ops, key=lambda o: (q[o]["Hit"] - q[o].get("Miss", 0.0), self.rng.random()))
+        self.value[x] = q[best]
+        value = {o: v["Hit"] / (v["Hit"] + v["Miss"]) if "Miss" in v and v["Hit"] + v["Miss"] else v["Hit"] for o, v in q.items()}
         babble = self.rng.choice(self.babble_ops) if self.rng.random() < 0.2 else None
-        if babble and desire[best] <= 0.55:
-            op = babble
-        elif desire[best] >= 0.501 or self.policy == "argmax":
-            op = best
-        else:
-            op = "nothing"
-        self.context[d] = (x, op)
+        op = babble if babble and value[best] <= 0.55 else best
+        self.h.add_atoms_no_check([f"(: did{d} (Did {op} d{d}) (STV 1 1))"])
         now = self.h.timing()
-        self.timing.append({"decide": time.perf_counter() - t0, "queried": len(matching),
-                            "desire": {o: round(v, 4) for o, v in desire.items() if v != 0.5},
+        self.timing.append({"decide": time.perf_counter() - t0, "x": x, "op": op,
+                            "desire": {o: round(v, 4) for o, v in value.items()},
                             "inference": now["inference"] - clock["inference"],
                             "overhead": now["overhead"] - clock["overhead"]})
         return d, ({op} - {"nothing"})
 
-    def feedback(self, result, credited):
-        if result is None:
-            return set()
-        clock = self.h.timing()
-        t0 = time.perf_counter()
-        atoms = []
-        for d in credited:
-            x, op = self.context[d]
-            if x is None:
-                continue
-            if not self.mined and (x, op) not in self.hyps:
-                self.hyps.add((x, op))
-                atoms.append(f"(: h{len(self.hyps)} (Implication (Ball {x} $t) (Reward {op} $t)) (STV 0.5 0.01))")
-            atoms.append(f"(: r{d} (Reward {op} d{d}) (STV {1 if result == 'hit' else 0} 1))")
-        if atoms:
-            self.h.add_atoms_no_check(atoms)
-        now = self.h.timing()
-        last = self.timing[-1]
-        last["feedback"] = time.perf_counter() - t0
-        last["inference"] += now["inference"] - clock["inference"]
-        last["overhead"] += now["overhead"] - clock["overhead"]
+    def feedback(self, result):
+        """The outcome of a step played since the last decision, stated at
+        the next decision as an observation of the time point the step led
+        to."""
+        if result:
+            self.outcome = "Hit" if result == "hit" else "Miss"
         return set()
 
     def idle(self):
         pass
 
 
-def applies(verdict, x, ops):
-    """The operations a reviewed hypothesis (review-hypotheses verdict)
-    predicts for an observation ``x``: its consequent's operation, the
-    observation itself where the operation is the antecedent's variable;
-    none when its antecedent names another observation."""
-    ball = re.search(r"\(Ball (\S+) \$\w+\)", verdict)
-    op = re.search(r"\(Reward (\S+) \$\w+\)", verdict)
-    if not ball or not op or (not ball[1].startswith("$") and ball[1] != x):
-        return []
-    if op[1].startswith("$"):
-        return [x] if op[1] == ball[1] and x in ops else list(ops)
-    return [op[1]] if op[1] in ops else []
-
-
-def play(env, agent, steps, credit=1, deadline=None, show=None):
+def play(env, agent, steps, deadline=None, show=None):
     """Play ``steps`` game steps. Each step the agent decides on the step's
-    observation; ``feedback`` gets the step's result and the decisions whose
-    operations moved the bat in the ``credit`` steps before it.
+    observation; ``feedback`` gets the step's result ("hit", "miss" or None).
 
     With ``deadline`` (seconds per step) the game runs on a clock of its own:
     step i starts at i * deadline whatever the agent does. An agent free at
@@ -383,7 +400,6 @@ def play(env, agent, steps, credit=1, deadline=None, show=None):
     agent spends busy are not observed by it. Idle time is not slept away
     (the outcome is the same) unless ``show`` asks to watch the game.
     """
-    applied = {}
     curve = []
     busy_until = 0.0
     pending = None
@@ -394,8 +410,7 @@ def play(env, agent, steps, credit=1, deadline=None, show=None):
         obs = env.observe()
         ops = set()
         if deadline is None:
-            d, ops = agent.decide(obs)
-            applied[i] = d
+            _, ops = agent.decide(obs)
             decisions += 1
         else:
             if pending is None and busy_until <= tick:
@@ -405,15 +420,13 @@ def play(env, agent, steps, credit=1, deadline=None, show=None):
                 pending = (d, o)
                 decisions += 1
             if pending is not None and busy_until <= tick + deadline:
-                applied[i] = pending[0]
                 ops = pending[1]
                 pending = None
             elif pending is not None:
                 late += 1
         result = env.advance()
-        credited = [applied[j] for j in range(i - credit, i) if j in applied and applied[j] is not None] if result else []
         t0 = time.perf_counter()
-        ops |= agent.feedback(result, credited)
+        ops |= agent.feedback(result)
         if deadline is not None and result:
             busy_until = max(busy_until, tick) + time.perf_counter() - t0
         env.act(ops)
@@ -452,10 +465,6 @@ def summarize_timing(timing):
            "p99_ms": total[int(len(total) * 0.99)], "max_ms": total[-1],
            "inference_ms": 1000 * statistics.fmean(r["inference"] for r in timing),
            "overhead_ms": 1000 * statistics.fmean(r["overhead"] for r in timing)}
-    queried = [r for r in timing if r["queried"]]
-    if queried:
-        out["queried_decisions"] = len(queried)
-        out["queried_mean_ms"] = 1000 * statistics.fmean(r["decide"] for r in queried)
     return {k: round(v, 3) if isinstance(v, float) else v for k, v in out.items()}
 
 
@@ -466,14 +475,13 @@ def main():
     ap.add_argument("--iterations", type=int, default=10000, help="as ./NAR pong ITERATIONS (runs one step more)")
     ap.add_argument("--seed", type=int, default=1, help="the game's generator seed (PLN's babbling too)")
     ap.add_argument("--steps", type=int, default=200, help="PLN query budget")
-    ap.add_argument("--credit", type=int, default=6, help="PLN: steps after an operation whose score is its outcome")
-    ap.add_argument("--mined", nargs=2, type=int, metavar=("MAX_NEW", "MAX_LIVE"),
-                    help="PLN: the knowledge base mines its own hypotheses (set-hypothesis-mining)")
+    ap.add_argument("--anticipation", action="store_true",
+                    help="PLN: no miss facts; a step without a hit is a step without a hit (ONA's information)")
+    ap.add_argument("--gamma", type=float, default=0.9,
+                    help="PLN: discount per step of the outcomes a state leads to (chaining the one-step rules)")
     ap.add_argument("--change-hazard", type=float, metavar="HAZARD",
                     help="PLN: prior probability that a sample starts a new regime of a refined rule's rate "
                          "(PeTTaChainer set-rule-change-hazard; default PeTTaChainer's, 0 keeps one regime)")
-    ap.add_argument("--policy", choices=("argmax", "ona"), default="argmax",
-                    help="PLN: take the best operation (argmax) or only one whose desire is at least 0.501 (ona)")
     ap.add_argument("--deadline-ms", type=float, help="real-time mode: the game advances every DEADLINE ms")
     ap.add_argument("--show", action="store_true", help="draw the game in the terminal")
     ap.add_argument("--ona-dir", default="/nexus/Dev/OpenCog/ONA")
@@ -483,18 +491,17 @@ def main():
     a = ap.parse_args()
     out = os.path.abspath(a.out) if a.out else None
     agent = (ONAAgent(a.variant, a.ona_dir, a.ona_seed) if a.agent == "ona"
-             else PLNAgent(a.variant, a.seed, a.steps, a.pettachainer_path, a.mined, a.change_hazard,
-                      a.policy))
+             else PLNAgent(a.variant, a.seed, a.steps, a.pettachainer_path, a.change_hazard, not a.anticipation,
+                      a.gamma))
     env = Pong(a.variant, a.seed)
     deadline = a.deadline_ms / 1000 if a.deadline_ms else None
     t0 = time.perf_counter()
-    res = play(env, agent, a.iterations + 1, a.credit, deadline, Show(a.agent) if a.show else None)
+    res = play(env, agent, a.iterations + 1, deadline, Show(a.agent) if a.show else None)
     res.update({"variant": a.variant, "agent": a.agent, "seed": a.seed, "iterations": a.iterations,
                 "deadline_ms": a.deadline_ms, "wall": time.perf_counter() - t0})
     if a.agent == "pln":
-        res.update({"budget": a.steps, "credit": a.credit, "policy": a.policy, "mined": a.mined, "change_hazard": a.change_hazard,
-                    "hypotheses": len(agent.hyps), "dropped": agent.dropped,
-                    "timing_summary": summarize_timing(agent.timing), "timing": agent.timing})
+        res.update({"budget": a.steps, "outcomes": "anticipation" if a.anticipation else "misses", "gamma": a.gamma,
+                    "change_hazard": a.change_hazard, "timing_summary": summarize_timing(agent.timing), "timing": agent.timing})
     else:
         res["ona_seed"] = a.ona_seed
         ms = sorted(1000 * x for x in agent.timing)

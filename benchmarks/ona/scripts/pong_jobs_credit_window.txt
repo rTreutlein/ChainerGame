@@ -1,0 +1,42 @@
+# The credit-window agent of supply-network 4b0cf2a, for comparison with the one-step agent:
+# run with PONG_CG set to a checkout of 4b0cf2a (onabench.pong there has --credit and explicit misses).
+cw_pong_s11 pong --agent pln --seed 11
+cw_rt50_pong_s11 pong --agent pln --seed 11 --deadline-ms 50
+cw_pong_s12 pong --agent pln --seed 12
+cw_rt50_pong_s12 pong --agent pln --seed 12 --deadline-ms 50
+cw_pong_s13 pong --agent pln --seed 13
+cw_rt50_pong_s13 pong --agent pln --seed 13 --deadline-ms 50
+cw_pong_s14 pong --agent pln --seed 14
+cw_rt50_pong_s14 pong --agent pln --seed 14 --deadline-ms 50
+cw_pong_s15 pong --agent pln --seed 15
+cw_rt50_pong_s15 pong --agent pln --seed 15 --deadline-ms 50
+cw_pong_s16 pong --agent pln --seed 16
+cw_rt50_pong_s16 pong --agent pln --seed 16 --deadline-ms 50
+cw_pong_s17 pong --agent pln --seed 17
+cw_rt50_pong_s17 pong --agent pln --seed 17 --deadline-ms 50
+cw_pong_s18 pong --agent pln --seed 18
+cw_rt50_pong_s18 pong --agent pln --seed 18 --deadline-ms 50
+cw_pong_s19 pong --agent pln --seed 19
+cw_rt50_pong_s19 pong --agent pln --seed 19 --deadline-ms 50
+cw_pong_s20 pong --agent pln --seed 20
+cw_rt50_pong_s20 pong --agent pln --seed 20 --deadline-ms 50
+cw_pong2_s11 pong2 --agent pln --seed 11
+cw_rt50_pong2_s11 pong2 --agent pln --seed 11 --deadline-ms 50
+cw_pong2_s12 pong2 --agent pln --seed 12
+cw_rt50_pong2_s12 pong2 --agent pln --seed 12 --deadline-ms 50
+cw_pong2_s13 pong2 --agent pln --seed 13
+cw_rt50_pong2_s13 pong2 --agent pln --seed 13 --deadline-ms 50
+cw_pong2_s14 pong2 --agent pln --seed 14
+cw_rt50_pong2_s14 pong2 --agent pln --seed 14 --deadline-ms 50
+cw_pong2_s15 pong2 --agent pln --seed 15
+cw_rt50_pong2_s15 pong2 --agent pln --seed 15 --deadline-ms 50
+cw_pong2_s16 pong2 --agent pln --seed 16
+cw_rt50_pong2_s16 pong2 --agent pln --seed 16 --deadline-ms 50
+cw_pong2_s17 pong2 --agent pln --seed 17
+cw_rt50_pong2_s17 pong2 --agent pln --seed 17 --deadline-ms 50
+cw_pong2_s18 pong2 --agent pln --seed 18
+cw_rt50_pong2_s18 pong2 --agent pln --seed 18 --deadline-ms 50
+cw_pong2_s19 pong2 --agent pln --seed 19
+cw_rt50_pong2_s19 pong2 --agent pln --seed 19 --deadline-ms 50
+cw_pong2_s20 pong2 --agent pln --seed 20
+cw_rt50_pong2_s20 pong2 --agent pln --seed 20 --deadline-ms 50

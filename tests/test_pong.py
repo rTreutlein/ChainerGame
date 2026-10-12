@@ -8,7 +8,7 @@ import tempfile
 import time
 import unittest
 
-from onabench.pong import MyRand, Pong, applies, play, trace
+from onabench.pong import MyRand, Pong, play, trace
 
 ONA_SRC = os.environ.get("ONA_DIR", "/nexus/Dev/OpenCog/ONA") + "/src/system_tests"
 TRACE_C = os.path.join(os.path.dirname(__file__), "..", "benchmarks", "ona", "pong", "pong_trace.c")
@@ -76,16 +76,15 @@ class Scripted:
 
     def __init__(self, op=None, delay=0.0):
         self.op, self.delay, self.d = op, delay, 0
-        self.credits = []
+        self.results = []
 
     def decide(self, obs):
         self.d += 1
         time.sleep(self.delay)
         return self.d, {self.op} - {None}
 
-    def feedback(self, result, credited):
-        if result:
-            self.credits.append(list(credited))
+    def feedback(self, result):
+        self.results.append(result)
         return set()
 
     def idle(self):
@@ -93,16 +92,13 @@ class Scripted:
 
 
 class PlayTest(unittest.TestCase):
-    def test_a_score_credits_the_decisions_of_the_steps_before_it(self):
-        for credit in (1, 3):
-            agent = Scripted()
-            res = play(Pong("pong", 5), agent, 600, credit)
-            self.assertEqual(res["decisions"], 600)
-            self.assertEqual(len(agent.credits), res["hits"] + res["misses"])
-            # decision d is made at step d - 1; a score at step i credits steps i - credit .. i - 1
-            for c in agent.credits:
-                self.assertEqual(len(c), credit)
-                self.assertEqual(c, list(range(c[0], c[0] + credit)))
+    def test_feedback_gets_every_steps_result(self):
+        agent = Scripted()
+        res = play(Pong("pong", 5), agent, 600)
+        self.assertEqual(res["decisions"], 600)
+        self.assertEqual(len(agent.results), 600)
+        self.assertEqual(agent.results.count("hit"), res["hits"])
+        self.assertEqual(agent.results.count("miss"), res["misses"])
 
     def test_the_curve_counts_steps(self):
         res = play(Pong("pong", 3), Scripted(), 250)
@@ -119,30 +115,62 @@ class PlayTest(unittest.TestCase):
         self.assertEqual(fast["curve"], play(Pong("pong", 5), Scripted("right"), 400)["curve"])
 
 
-class AppliesTest(unittest.TestCase):
-    OPS = ("left", "right", "nothing")
-
-    def test_operations_a_mined_hypothesis_predicts(self):
-        v = "(hypothesis hypothesis-1 (Implication (Ball $x $t) (Reward $x $t)) (STV 0.9 0.5) kept)"
-        self.assertEqual(applies(v, "right", self.OPS), ["right"])
-        v = "(hypothesis hypothesis-2 (Implication (Ball left $t) (Reward nothing $t)) (STV 0.2 0.5) kept)"
-        self.assertEqual(applies(v, "left", self.OPS), ["nothing"])
-        self.assertEqual(applies(v, "right", self.OPS), [])
-        v = "(hypothesis hypothesis-3 (Implication (Ball $x $t) (Reward $y $t)) (STV 0.2 0.5) kept)"
-        self.assertEqual(applies(v, "equal", self.OPS), list(self.OPS))
-
-
 @unittest.skipUnless(importlib.util.find_spec("pettachainer"), "run in a PeTTaChainer venv")
 class PLNAgentTest(unittest.TestCase):
-    def test_the_agent_learns_from_its_outcomes(self):
+    def truth(self, agent, rule):
+        (rows,) = agent.h.query_many_refs([f"(: $p (RuleTruth {rule}) $tv)"], steps=0)
+        return max((float(a.tv[2]), float(a.tv[1])) for a in rows)[1]
+
+    def test_rule_truths_count_the_observed_transitions_and_outcomes(self):
+        """With one regime (hazard 0) a world rule's truth is the share of
+        its context's next observations at y, every position not observed
+        counting as a failed prediction, and a goal rule's the share of its
+        state's steps with that outcome, misses included."""
+        from onabench.pong import BALL, PLNAgent, goal_rule, world_rule
+        agent = PLNAgent("pong2", 1, 200, change_hazard=0)
+        outcomes = []
+        play(Pong("pong2", 1), _Recorder(agent, outcomes), 150)
+        steps = [(r["x"], r["op"]) for r in agent.timing]
+        agent.decide("ball_left")  # the last step's outcome and position become facts
+        nxt = [r["x"] for r in agent.timing[1:]]
+        (x, op), = [max(set(steps[:-1]), key=steps[:-1].count)]
+        after = [n for (c, n) in zip(steps, nxt) if c == (x, op)]
+        for y in BALL:
+            self.assertAlmostEqual(self.truth(agent, world_rule(x, op, y)),
+                                   (after.count(y) + 0.005) / (len(after) + 0.01), delta=2e-4)
+        for y in BALL:
+            at = [o for (c, _), o in zip(steps, outcomes) if c == y]
+            for g in ("Hit", "Miss"):
+                self.assertAlmostEqual(self.truth(agent, goal_rule(y, g)),
+                                       (at.count(g) + 0.005) / (len(at) + 0.01), delta=2e-4)
+
+    def test_anticipation_states_no_misses(self):
         from onabench.pong import PLNAgent
-        agent = PLNAgent("pong", 1, 200)
-        res = play(Pong("pong", 1), agent, 300)
-        self.assertEqual(len(agent.timing), 300)
-        self.assertGreater(len(agent.hyps), 0)
+        agent = PLNAgent("pong", 1, 200, misses=False)
+        res = play(Pong("pong", 1), agent, 120)
+        self.assertEqual(len(agent.timing), 120)
         self.assertGreater(res["hits"] + res["misses"], 0)
-        queried = [r for r in agent.timing if r["queried"]]
-        self.assertTrue(queried)
+        self.assertEqual(agent.h.query_many_refs(["(: $p (Miss $d) $tv)"], steps=0), [[]])
+        self.assertTrue(all(set(r["desire"]) == {"left", "right", "nothing"} for r in agent.timing))
+
+
+class _Recorder:
+    """Passes the agent's calls through and records each decision's outcome."""
+
+    def __init__(self, agent, outcomes):
+        self.agent, self.outcomes = agent, outcomes
+
+    def decide(self, obs):
+        self.outcomes.append(None)
+        return self.agent.decide(obs)
+
+    def feedback(self, result):
+        if result:
+            self.outcomes[-1] = "Hit" if result == "hit" else "Miss"
+        return self.agent.feedback(result)
+
+    def idle(self):
+        self.agent.idle()
 
 
 if __name__ == "__main__":
