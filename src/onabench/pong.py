@@ -494,6 +494,7 @@ def main():
                     "hypotheses": len(agent.hyps), "dropped": agent.dropped,
                     "timing_summary": summarize_timing(agent.timing), "timing": agent.timing})
     else:
+        res["ona_seed"] = a.ona_seed
         ms = sorted(1000 * x for x in agent.timing)
         res["timing_summary"] = {"mean_ms": round(sum(ms) / len(ms), 3), "p95_ms": round(ms[int(len(ms) * 0.95)], 3),
                                  "max_ms": round(ms[-1], 3)}

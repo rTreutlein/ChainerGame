@@ -40,10 +40,10 @@ def load(results):
     for f in sorted(glob.glob(os.path.join(results, "raw", "*.json"))):
         r = json.load(open(f))
         if r["agent"] == "ona":
-            group = "ONA on the port (NAR.py)"
+            group = "ONA on the port (NAR.py)" + (", generator seeded" if r["ona_seed"] is not None else "")
         else:
-            group = "PLN" + (" mined" if r.get("mined") else "") + (
-                f", {r['deadline_ms']:g} ms deadline" if r.get("deadline_ms") else ", unconstrained")
+            group = "PLN" + (" mined" if r["mined"] else "") + (", ONA's 0.501 threshold" if r["policy"] == "ona" else "") + (
+                f", {r['deadline_ms']:g} ms deadline" if r["deadline_ms"] else ", unconstrained")
         runs.append({"group": group, "variant": r["variant"], "seed": r["seed"], "ratio": r["ratio"],
                      "curve": r["curve"], "timing": r.get("timing_summary", {}), "late": r.get("late_steps", 0),
                      "decisions": r.get("decisions")})
