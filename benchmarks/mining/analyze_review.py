@@ -4,16 +4,25 @@ Run through capped, with the shared Python and PYTHONPATH=src. This script never
 changes existing run evidence. Supply a fresh --out directory.
 """
 
+from dataclasses import asdict, replace
 import argparse
 from collections import defaultdict
 import json
+import hashlib
 from pathlib import Path
 import statistics
 
-from miningbench.report import report, interval, formatted
+from miningbench.report import report, interval, formatted, separate_runtime_cohorts
 from miningbench.runner import source_hash, revision
-from miningbench.scoring import losses, CostMeter, association_scores
+from miningbench.scoring import (
+    losses,
+    CostMeter,
+    RunningAverage,
+    association_scores,
+    recovery,
+)
 from miningbench.world import Config, World, Rule, Literal
+from miningbench.petta import parse, decode, export_rules
 
 
 def main():
@@ -31,6 +40,14 @@ def main():
         ]["system"].startswith("budgeted"):
             continue
         result = json.loads(path.read_text())
+        if result["metadata"].get(
+            "level"
+        ) == "entity_holdout" and path.parent.parent.name not in (
+            "entity-final",
+            "directed-entity-final",
+            "petta-entity-final",
+        ):
+            continue
         if path.parent.parent.name == "pure" and result["metadata"]["config"][
             "kinds"
         ] == ["numeric"]:
@@ -38,7 +55,11 @@ def main():
         status_path = path.parent / "status.json"
         if status_path.exists() and json.loads(status_path.read_text())["returncode"]:
             continue
-        if path.parent.parent.name in ("directed", "directed-bounded"):
+        if path.parent.parent.name in (
+            "directed",
+            "directed-bounded",
+            "directed-entity-final",
+        ):
             # These are a distinct six-target cohort, not extra independent
             # seeds for the single-type base experiment.
             result["metadata"]["level"] = "directed_" + result["metadata"].get(
@@ -49,8 +70,33 @@ def main():
             name: CostMeter(result["metadata"]["config"]["samples"])
             for name in ("cost", "mining_cost", "feedback_cost")
         }
+        held = {}
+        live, negative_rates = {}, {}
+        domains = result["metadata"]["domains"]
+        label_counts = {target: [0] * len(domain) for target, domain in domains.items()}
         for line in (path.parent / "steps.jsonl").open():
             step = json.loads(line)
+            if not step.get("holdout"):
+                for target, value in step["label"].items():
+                    label_counts[target][value] += 1
+            for event in step.get("events", []):
+                if "raw" not in event:
+                    continue
+                _, name, implication, tv, verdict = parse(event["raw"])
+                rule = decode(implication, domains)
+                positive = tv[1] if tv[0] == "CTV" else tv
+                rule = replace(rule, strength=float(positive[1]))
+                if verdict == "dropped":
+                    live.pop(name, None)
+                    negative_rates.pop(name, None)
+                else:
+                    live[name] = rule
+                    if tv[0] == "CTV":
+                        negative_rates[name] = float(tv[2][1])
+            if step.get("holdout"):
+                for target, score in step["scores"].items():
+                    kind = result["metadata"]["types"][target]
+                    held.setdefault(kind, RunningAverage()).add(score)
             for name, field in (
                 ("cost", "total_seconds"),
                 ("mining_cost", "mining_path_seconds"),
@@ -58,10 +104,25 @@ def main():
             ):
                 meters[name].add(step[field])
         result.update({name: meter.result() for name, meter in meters.items()})
+        result["holdout_by_type"] = {
+            kind: score.result() for kind, score in held.items()
+        }
         config = result["metadata"]["config"]
-        if "numeric" in config["kinds"]:
-            world = World(Config(**config))
-            rules = [
+        world = World(Config(**config))
+        rules = [
+            Rule(
+                **dict(
+                    rule,
+                    body=tuple(
+                        Literal(**dict(literal, args=tuple(literal["args"])))
+                        for literal in rule["body"]
+                    ),
+                )
+            )
+            for rule in result["learned_rules"]
+        ]
+        if result["metadata"]["system"].startswith("petta"):
+            expected_live = [
                 Rule(
                     **dict(
                         rule,
@@ -71,12 +132,22 @@ def main():
                         ),
                     )
                 )
-                for rule in result["learned_rules"]
+                for rule in result["petta"]["live_rules"]
             ]
-            phase = int(config["drift"])
-            result["associations"] = association_scores(
-                rules, world.rules[phase], world, phase, path.parent / "samples.jsonl"
-            )
+            if set(live.values()) != set(expected_live):
+                raise ValueError(
+                    f"raw verdict replay disagrees with saved live rules: {path}"
+                )
+            rules = export_rules(live, negative_rates, label_counts, domains)
+            result["learned_rules"] = [asdict(rule) for rule in rules]
+            result["rule_state_replay_verified"] = True
+        phase = int(config["drift"])
+        result["associations"] = association_scores(
+            rules, world.rules[phase], world, phase, path.parent / "samples.jsonl"
+        )
+        result["recovery"] = recovery(
+            rules, world.rules[phase], world.types, world, phase
+        )
 
         results.append(result)
         paths[id(result)] = path
@@ -87,7 +158,32 @@ def main():
             status["completed_steps"] = (
                 sum(1 for _ in raw.open()) if raw.exists() else 0
             )
+            world_path = path.parent / "world.json"
+            if world_path.exists():
+                status["petta_commit"] = json.loads(world_path.read_text()).get(
+                    "petta_commit"
+                )
+            if raw.exists():
+                meter = CostMeter(1024)
+                peak = 0
+                total_seconds = 0
+                for line in raw.open():
+                    step = json.loads(line)
+                    meter.add(step["mining_path_seconds"])
+                    total_seconds += step["total_seconds"]
+                    peak = max(peak, step["rss_peak_kib"])
+                status["partial_mining_cost"] = meter.result() if meter.count else None
+                status["partial_total_seconds"] = total_seconds
+                status["logged_peak_rss_mib"] = peak / 1024
             failures.append(status)
+    cohorts, failures = separate_runtime_cohorts(results, failures)
+    paths = {id(new): paths[id(old)] for old, new in zip(results, cohorts)}
+    results = cohorts
+    with (args.out / "rescored_results.jsonl").open("x") as output:
+        for row in results:
+            output.write(
+                json.dumps({"source": str(paths[id(row)]), "result": row}) + "\n"
+            )
     text, checks = report(results, failures)
     (args.out / "report.md").write_text(text)
     (args.out / "acceptance.json").write_text(json.dumps(checks, indent=2) + "\n")
@@ -105,10 +201,8 @@ def main():
         for point in result["learning_curve"]:
             for kind, score in point["cumulative"].items():
                 curves[(system, level, kind, point["samples"])].append(score["brier"])
-        if result["holdout_scores"]:
-            holdout[(system, tuple(config["kinds"]), config["targets"])].append(
-                result["holdout_scores"]["brier"]
-            )
+        for kind, score in result["holdout_by_type"].items():
+            holdout[(system, (kind,), config["targets"])].append(score["brier"])
         if (
             system == "oracle"
             and config["kinds"] == ["numeric"]
@@ -196,6 +290,24 @@ def main():
         )
     sections += [
         "",
+        "## Censored cost measurements",
+        "",
+        "Only completed steps are measured; an in-flight stalled step can make these lower bounds. "
+        "These are not full-stream cost fits or completed prediction scores.",
+        "",
+        "| Difficulty | System | Type | Seed | Exit | Steps | Mean mining seconds | Logged peak MiB |",
+        "|---|---|---|---:|---:|---:|---:|---:|",
+    ]
+    for failure in failures:
+        cost = failure.get("partial_mining_cost")
+        if cost and failure["returncode"] == 124:
+            sections.append(
+                f"| {failure['level']} | {failure['system']} | {', '.join(failure['kinds'])} | "
+                f"{failure['seed']} | {failure['returncode']} | {failure['completed_steps']} | "
+                f"{cost['mean_seconds']:.4f} | {failure['logged_peak_rss_mib']:.1f} |"
+            )
+    sections += [
+        "",
         "## Learning curves",
         "",
         "| System | Difficulty | Type | Samples | Brier [95% CI] |",
@@ -209,12 +321,18 @@ def main():
         output.write("\n".join(sections) + "\n")
     provenance = {
         "analysis_source_sha256": source_hash(),
+        "analysis_script_sha256": hashlib.sha256(
+            Path(__file__).read_bytes()
+        ).hexdigest(),
         "analysis_commit": revision(Path(__file__).resolve().parents[2]),
         "recomputed": [
             "cost slopes after 32 steps",
             "numeric finite-history association calibration",
+            "recovery threshold in the observed outcome channel",
+            "CTV exports replayed from raw verdicts, preserving the pooled complement",
         ],
         "runs": [str(paths[id(r)]) for r in results],
+        "run_systems": {str(paths[id(r)]): r["metadata"]["system"] for r in results},
         "failures": failures,
         "petta_commits": sorted(
             {
