@@ -31,7 +31,7 @@ print("| policy | seeds | regret/round | gain over myopic | realized reward | s/
 print("|---|---|---|---|---|---|---|---|---|")
 for name, rows in groups.items():
     print(f"| {name} | {len(rows)} | {mean(rows, 'regret'):.3f} | {mean(rows, 'lookahead_gain'):.3f} | {mean(rows, 'utility'):.3f} | {mean(rows, 'decision_seconds'):.3f} | {mean(rows, 'reference_seconds'):.3f} | {mean(rows, 'candidate_pairs'):.1f} | {mean(rows, 'pair_mean_error'):.3f} |")
-print("\n| case | options | possible pairs | evaluated pairs | context bound | s/round | regret | open answers |")
+print("\n| case | options | possible pairs | candidate pair branches | context bound | s/round | regret | open answers |")
 print("|---|---|---|---|---|---|---|---|")
 for name, r in sorted(runs.items()):
     if name.startswith("growth"):

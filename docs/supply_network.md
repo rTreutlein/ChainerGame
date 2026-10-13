@@ -1,7 +1,8 @@
 # SupplyNet: a supply network with feedback
 
-Status: stages 1 to 4 and stage "scale" built (`src/supplynet`, see the
-Stage 1, 2, 3, 4 and scale results), October 2026.
+Status: stages 1 to 5 and stage "scale" built (`src/supplynet`, see the
+Stage 1, 2, 3, 4, 5 and scale results), October 2026. Stage 5 is a small,
+fully inspected planning benchmark, with limits below.
 
 ## Why another benchmark
 
@@ -223,7 +224,9 @@ starts.
 - **Candidate pairs for lookahead.** Who proposes them: the game (top single
   actions extended by one), or the chainer (an open query for the second
   action under an assumed first)? The second tests more but may be
-  expensive.
+  expensive. Stage 5 measures both; see "Stage 5 results". On the frozen
+  chainer the nested open query returns no candidates, so the game supplies
+  the working proposal policy.
 - **Continuous quantities.** Stock and flow amounts are small integers so
   the oracle stays exact; a larger version would need an approximate oracle.
 - **MM2.** Whether the MM2 backend takes part from stage 1, as in StationOps,
@@ -993,6 +996,342 @@ harness's three workarounds (positive action facts, non-invertible
 production rules, the client's sum of outcomes); without them the chainer
 decides on nothing (gap 1) or on contexts that lose their answers (gaps 3, 4).
 
+
+## Stage 5 as built
+
+`supplynet run --stage 5` uses `src/supplynet/lookahead.py` and
+`lookahead_worker.py`. This stage is benchmark work only. It isolates
+planning from the partial-observation problems of stages 1–4:
+
+- One coastal region, the exposed `rf` and sheltered `ra` fuel routes,
+  transit one, a mine, power plant, and one plant by default. Plant inputs
+  are guaranteed contracts. `--plants 0..3` and `--capacity 1..3` keep the
+  enumerations finite; the main grid uses one plant and capacity two.
+- The operator observes the full current state: storm, degradations,
+  both route blocks, and usable fuel arriving from its preceding action.
+  The next observation reveals the same variables. Thus enumeration over
+  next states **is** enumeration over next observations, with a point-mass
+  posterior after each observation. This is not a clairvoyant reference
+  compared with an agent receiving noisy observations. It does not test
+  stage 4's filtering or delayed plant-input evidence.
+- Production is the existing `world.production` least fixed point, under
+  the existing joint `Action` and capacity constraint. Storm persistence,
+  degradation persistence/onset, repair downtime and clearance, stock and
+  rerouting use the stage 4 rates and mechanics. Repairing a site resets
+  its next degradation probability to its onset hazard. The mine's fuel
+  actually arrives next period if it produced now and its selected route
+  was open now; it is not an independent marginal.
+- One decision per physical period, for 30 rounds after 30 history
+  periods. Only the first action of a plan is enacted. Every policy
+  replans at the next fully observed state. History is used for the
+  frozen history-frequency prior baseline; the other planners know the
+  rates.
+
+**Horizon and reference.** Two periods, without discounting:
+
+```
+Q(s,a) = production(s,a) - cost(a)
+       + sum_s' P(s' | s,a) max_b [production(s',b) - cost(b) + inventory(s',b)]
+```
+
+The reference enumerates every feasible first action, every next state,
+and every feasible second action. At the default size there are 5 single
+actions, 16 joint options, 256 fixed pairs, and 64 next states per first
+action (storm + two route blocks + three degradations; incoming fuel is
+determined by the first action). The two blocks share their storm. The
+tests compare this expectimax and every fixed pair with a separately
+written exhaustive product calculation, and check repair hazards and fuel
+transitions.
+
+Stage 4's cleared-degradation terminal reward is entirely removed from
+stage 5's objective. Fuel sent in the **first** period is consumed in the
+second and never credited separately. Fuel left after the second period
+retains stage 4's value 8 as terminal inventory. Immediate output values
+and action costs remain stage 4's. A repair can cost current output and
+credits, and pay through actual next-period production. Deferring it
+preserves current resources and allows a later decision after onset or
+natural recovery. A repair in the plan's final period cannot benefit
+production before the horizon ends; such plans are dominated. Repair
+later is a choice made at the next receding-horizon decision, not an
+artificial final-period repair bonus.
+
+Regret is `max_a Q(s,a) - Q(s,chosen)`. `lookahead_gain` compares the chosen
+action with the myopic action **in the same visited state**, using Q;
+`utility` is realized immediate output minus costs. Different policies
+visit different states, so their average realized rewards are not paired
+counterfactual returns. `reference_seconds` reports the reference's own
+transition/pair/feedback enumeration per round; its policy decision time
+includes that enumeration. Scoring-reference time is excluded from the
+other policies' decision times.
+
+**PLN decisions and pair proposals.** Each round creates a bounded
+two-period snapshot KB in a fresh child process under the admitted parent
+job. The process exits after the decision, discarding all its contexts and
+KB. Cold process and library setup are included in seconds per round;
+`worker_setup_seconds` and `timing()` deltas additionally separate setup,
+inference and overhead. No historical or hypothetical KB grows across
+rounds. The rates and inspected current state are facts/rules, not values
+calculated by the reference.
+
+The working pair query flattens the two assumptions into one context:
+
+```metta
+(: $p (Assuming (And (StockedFuel now) (InService mine now) …
+                     (Unstocked later) (InService mine later) …)
+                (Outcome $period $outcome $amount)) $tv)
+```
+
+Current production determines later `FuelArrived`, and the first action's
+`Repairing`/`InService` branch determines later degradation. The client
+sums distinct outcome amounts weighted by their truth strengths and
+subtracts the costs of both actions. No `FoldAllTruth` is used. Exclusive
+positive action branches and `(no_inverse …)` rules retain the stage 4
+workarounds. The two alternative sufficient causes of `Fuelled` use positive
+STV implications: a CTV zero-valued negative branch on each alternative
+would incorrectly deny fuelling when the other cause holds. Because the
+state is inspected, each site's next-degradation
+rule can directly select its known current state and read either positive
+action branch, avoiding an unstated `Not Repairing` in a context.
+An explicit zero-valued `Empty` outcome makes a pair's value available
+even when all production is off. Consequently `decision_answered` alone
+does not establish outcome completeness; the raw records compare every
+queried pair's numeric value with the exact fixed-pair value as well.
+
+- **Game proposer (`extend`, default).** Ask no action and all singles,
+  with both no action and stock as second-period seed continuations.
+  The stock continuation lets repair-now candidates pay even when their
+  downtime sends no fuel. Extend the top two singles by one legal action,
+  then extend the best two first actions in time with legal second
+  actions, interleaved between the two first actions. Every seed and
+  extension consumes `--pair-cap` (default 32). A batch uses one
+  `query_many_refs` call with `budget × roots` total search steps.
+- **Chainer proposer (`open`).** The game supplies only the legal second
+  action vocabulary, as rules of the form
+  `(Implication (Assuming <second facts> (Outcome $t $o $v))
+  (SecondOutcome action-id $t $o $v))`. Under each of the two top first
+  singles, ask `(SecondOutcome $second $t $o $v)` openly. The legal
+  vocabulary is truncated so seed pairs plus first-by-second branches
+  stay within the pair cap. The total potential context bound is that
+  cap plus at most the beam's outer contexts. If no second action is
+  returned, use the best seed pair and record `open_answered=0`.
+- **Exhaustive pair control.** Ask fixed pairs in the action enumeration
+  order, stopping at the pair cap. At 256 this covers all default pairs;
+  at smaller caps the order can exclude useful first actions.
+
+All proposals are fixed pairs chosen before seeing the next observation.
+The reference adapts its second action to that observation. `openloop`
+is the best exact fixed pair, and `beam` uses exact values with the game's
+bounded proposer, to distinguish that information gap from proposal and
+chainer errors. `feedback_value_gap` records the reference's value minus
+the best fixed pair's value; it need not translate into first-action
+regret, since every planner replans after enacting its first action.
+
+**Other systems.** `myopic` applies stage 4's exact joint one-period policy
+(including its original repair proxy) at every visited state. `greedy`
+combines positive single-action gains from that same policy. `prior`
+uses independent Laplace-smoothed frequencies from the 30 history
+periods, ignores current observations, evaluates fixed pairs under those
+frequencies and the known dynamics, and caches its resulting policy.
+ProbLog independently represents the shared next storm, its two route
+blocks, and each site's repaired/unrepaired transition, queries the joint
+next-state probabilities, then maximizes utilities in Python after that
+state is observed. It receives no reference probabilities. A timed-out
+compilation falls back to no action and is explicitly counted. NARS is
+skipped for the stage 4 reason: no comparable joint expected-utility
+planner. MM2 is attempted through `--backend mm2` and its existing adapter.
+
+**Frozen-chainer gaps.** PeTTaChainer stays at `888379a2`; no edits to it
+or its shared venv. Repros are in `benchmarks/supplynet_stage5/repro/`:
+
+1. `nested_open.py`: a joint `(Assuming (And (A now) (B later)) (P later))`
+   succeeds with strength 1. The equivalent nested `Assuming` returns no
+   answer at 400 steps. A rule reading the inner `Assuming` to expose an
+   open `(Choice $b)` also returns no answer. The game-pair query above
+   avoids nesting; the open proposer measures this unsupported path rather
+   than silently replacing it with game-generated second actions.
+2. `mm2_assuming.py`: direct versus assumed zero-value outcome, run with
+   MM2's Python 3.13 environment. The installed extension is CPython 3.13,
+   so importing it from PeTTa's shared Python 3.10 environment fails before
+   inference. The matching-interpreter behavior and missing API settings
+   are recorded with the results.
+
+An **encoding defect in the initial harness**, not a chainer gap, is kept
+as `repro/branch_semantics.py`: the inherited alternative fuel rules with
+CTV zero-valued negative branches gave 7.142544 for a pair whose exact
+value is 16.285088. Each negative branch contradicted the other rule's
+sufficient cause, halving certain production. Using positive STV
+implications fixes it (16.285088 at both 50 and 400 steps).
+`fuel_between_periods.py BUDGET` verifies this fuel path, freshly and after
+proposal probes. Draft measurements using the contradictory encoding are
+archived under `results/supplynet-stage5/draft-ctv-alternatives/` and are
+excluded from the final tables. No reference values enter the PLN KB.
+
+**Running and validation.** `benchmarks/supplynet_stage5/sweep.py` covers
+budgets 50, 100, 200, 400, seeds 1–4, 30 rounds, and both proposers; it
+also measures pair caps 16–256 over five rounds and exact/ProbLog sizes
+with 0, 2 and 3 plants. All jobs use `capped --slots 1`, DISPLAY unset,
+`ulimit -v 16000000`, and an outer timeout. ProbLog gets 15 seconds per
+compilation in the sweep. Streams, summaries, exit status, command/source
+fingerprints and repro outputs go to
+`/nexus/Dev/OpenCog/bench/results/supplynet-stage5/`. Resume skips only
+successful runs with the same arguments and source fingerprint.
+
+```bash
+unset DISPLAY
+ulimit -v 16000000
+/nexus/Dev/OpenCog/bench/capped --slots 4 --peak-mb 128 \
+  python3 benchmarks/supplynet_stage5/sweep.py --jobs 4 --group all
+python3 benchmarks/supplynet_stage5/report.py
+PYTHONPATH=src .venv/bin/python -m pytest -q tests
+```
+
+The suite's stage 5 live tests use the existing gates
+`SUPPLYNET_LIVE_PETTACHAINER=1` and `SUPPLYNET_LIVE_PROBLOG=1`; execute
+them through capped using the corresponding installed environment.
+
+## Stage 5 results
+
+Seeds 1–4, 30 history periods and 30 rounds, default one-plant inspected
+cell, capacity two, 16 joint options and 64 next states. PeTTaChainer's
+package tree is `0458a175b52c38e7758845e6801ef43daa65ce07`, exactly the
+tree at `888379a2`. The shared checkout advanced independently to
+`4e6b059b` during the work, changing workflow docs/scripts only; no
+PeTTaChainer package or shared-venv files were changed for this benchmark.
+`environment.json` records the Python versions, component identity and
+MM2 extension hash. The measured SupplyNet source SHA-256 is
+`61aa820e753fb012982a5b44a866a7eb4b6457bce6d0b4969244ea13588e5efa`,
+implemented by commit `8e91721`.
+
+Mean over the four seeds (seconds include fresh-worker startup for PLN/MM2):
+
+| policy | regret/round | gain over myopic at visited states | realized reward/round | decision s/round | candidate pair branches/round |
+|---|---|---|---|---|---|
+| exact feedback reference | 0 | 0 | 4.942 | 0.039 | all 256 pairs |
+| myopic, stage 4 joint policy | 0 | 0 | 4.942 | 0.000065 | – |
+| exact fixed pair | 0 | 0 | 4.942 | 0.033 | 256 |
+| exact values, game proposer | 0 | 0 | 4.942 | 0.033 | 32 |
+| greedy, stage 4 singles | 0.089 | −0.089 | 4.875 | 0.000088 | – |
+| history prior | 4.517 | −4.493 | 1.300 | 0.136 | – |
+| ProbLog exact feedback | 0 | 0 | 4.942 | 2.255 | exact next-state circuit |
+| PLN game, budget 50 | 0 | 0 | 4.942 | 3.815 | 32 |
+| PLN game, budget 100 | 0 | 0 | 4.942 | 3.778 | 32 |
+| PLN game, budget 200 | 0 | 0 | 4.942 | 3.806 | 32 |
+| PLN game, budget 400 | 0 | 0 | 4.942 | 3.777 | 32 |
+| PLN open, budget 200, seed-pair fallback | 0.478 | −0.468 | 4.542 | 2.054 | 32 potential branches; 12 valued seeds |
+| MM2, no-action fallback, **zero answers** | 6.095 | −6.070 | 0.008 | 0.100 | 12 attempted seed pairs |
+
+The reference cost is its own enumeration, rather than the almost-free
+lookup of a choice after scoring already calculated it. All four ProbLog
+runs answered all 30 rounds without a timeout; their Q values agree with
+the independently enumerated reference to floating-point precision.
+Myopic and the exact feedback reference chose identical actions in all
+120 main rounds, so **the measured lookahead gain is zero**. The exact
+fixed pair and game proposer also choose those same first actions. This
+is not evidence that a general two-period partially observed problem is
+solved: the small inspected cell has very few opportunities to change a
+myopic choice, as the structural probe below shows.
+
+The PLN game proposer scores its queried fixed pairs correctly, with all
+four tested budgets already above its accuracy threshold. More budget
+does not improve this cell. The open proposer returns **no second-action
+answers in any of the 120 rounds**. Its lower time pays for 12 scored
+seed pairs plus two unsuccessful open roots; it is not a cheaper
+successful planner. Its fallback's regret per seed is 0.357, 0.182,
+0.599, 0.774. The game therefore proposes the working pairs on this
+frozen chainer; the open-query alternative requires support for nested
+`Assuming` goals/premises before its cost can be assessed as a planner.
+
+At budget 200, game decisions average 3.794 s in the first ten rounds
+and 3.816 s in the last ten; per round the worker setup is 0.863 s,
+chainer inference 1.424 s and chainer overhead 1.459 s. These diagnostics
+overlap during setup, so they should not be summed as exclusive phases.
+Contexts and inference cost do not accumulate with history. Timings come
+from one shared-machine sweep, with other admitted jobs running; small
+differences between budgets are not performance conclusions.
+
+MM2 uses its existing CPython 3.13 extension, SHA-256
+`64592c18b7e149070958bb1c7f2b47aa5fec33b29f229874d41d1d851b511b0f`.
+With its matching interpreter all four rollouts finish, but every
+decision query is unanswered, so the table is the no-action fallback,
+not supported two-period reasoning. The repro proves a direct outcome
+fact, then fails to retrieve the same fact under `Assuming`. Missing
+adapter settings are `set_complete_predicate` (Producing, Fuelled,
+FuelArrived) and `set_positive_only_predicate` (the eight structural/action
+predicates listed in `lookahead_worker.py`). No MM2 source or extension
+was rebuilt. NARS remains skipped for the stage 4 reason.
+
+The structural probe `repro/myopic_states.py` enumerates all 128 current
+states of the default cell (the 64 stochastic bits configurations, with
+each incoming-fuel value). Stage 4's proxy policy is suboptimal in only
+two of them, by 0.5776: a healthy mine and power plant, degraded plant,
+blocked main route, open alternate and no incoming fuel, under either
+storm value. With two crews it stocks and reroutes; the two-period policy
+stocks and repairs the plant. These are uniform structural counts, not
+visitation probabilities. The main seeds' actual lookahead gain must be
+reported separately; this small cell can be too forgiving of the myopic
+proxy even though the timing tradeoff exists.
+
+**Cost against candidate pairs** (seed 1, five rounds, budget 200; all
+default fixed pairs total 256):
+
+| pair cap | game pairs actually queried | game s/round | game regret | exhaustive-prefix s/round | exhaustive-prefix regret |
+|---|---|---|---|---|---|
+| 16 | 16 | 2.296 | 0.578 | 2.319 | 5.957 |
+| 32 | 32 | 3.700 | 0 | 3.703 | 5.357 |
+| 64 | 54 | 5.526 | 0 | 6.453 | 1.460 |
+| 128 | 54 | 5.585 | 0 | 12.798 | 0.578 |
+| 256 | 54 | 5.619 | 0 | 25.512 | 0 |
+
+Exhaustive-prefix queries exactly the cap's number of distinct pairs.
+Its time rises from 2.32 s for 16 pairs to 25.51 s for 256, approximately
+linear in pair count after setup. Asking every pair therefore grows
+quadratically in the number of joint actions. At 256 the full fixed-pair
+planner gains no first-action quality here over the 32-pair game proposer,
+while costing about seven times as much. The game heuristic stops at 54
+pairs at this size even if given a larger cap. Reducing its cap to 16 does
+hurt: 0.578 regret, showing the proposal-quality tradeoff.
+
+The open experiment ranges from 16 potential pair branches/18 contexts
+at cap 16 to 44 branches/46 contexts at caps 64–256. It remains around
+2.0–2.1 s/round and 0.578 regret, with zero second-action answers at every
+cap. Those are bounds on the attempted open experiment; they do not
+measure the cost of a working open proposer. The lower exhaustive caps
+are enumeration prefixes, not competitive proposal policies.
+
+**Exact-system size cost** (seed 1, five rounds; ProbLog ddnnf, 15 s
+per-compilation limit):
+
+| plants | joint options | possible pairs | next states/first | reference s/round | ProbLog s/round | ProbLog answered / timeout rounds |
+|---|---|---|---|---|---|---|
+| 0 | 11 | 121 | 32 | 0.007 | 0.407 | 5 / 0 |
+| 1, main four-seed mean | 16 | 256 | 64 | 0.039 | 2.255 | 120 / 0 |
+| 2 | 22 | 484 | 128 | 0.143 | 15.101 | 0 / 5 |
+| 3 | 29 | 841 | 256 | 0.474 | 15.123 | 0 / 5 |
+
+The larger ProbLog rows are all timeouts and use the no-action fallback
+(regret 9.919 and 11.694 respectively), not exact choices. The reference
+stays exact at those sizes. No solver failure was hidden as a timeout or
+an exact result. All 73 sweep processes finished, with the same SupplyNet
+source fingerprint; solver-level timeouts are separate from process exit
+status. Raw streams, summaries and `report.md` are under
+`/nexus/Dev/OpenCog/bench/results/supplynet-stage5/`.
+
+**Validation and limits.** `PYTHONPATH=src .venv/bin/python -m pytest -q
+tests`: 158 passed, 29 skipped. The stage 5 live PLN test also passed,
+checking actual pair values (including certain production fuelling the
+second period) at budgets 50 and 400; the live ProbLog test passed against
+the exact reference. Across every round of the four-seed PLN budget grid,
+the largest queried-pair value error was below `4e-9`.
+
+This is a planning/cost benchmark with full inspection, guaranteed plant
+inputs and horizon-end fuel inventory. It does not establish lookahead
+gains in stage 4's partially observed delayed network, or support for
+nested assumptions. The reference adapts its second choice to the next
+observation while fixed-pair agents replan only after committing their
+first choice; a mean reference-versus-best-fixed-plan value gap remains
+even where their first choices agree. No terminal repair bonus hides a
+third period. Longer horizons, larger PLN cells and successful open
+proposals remain unmeasured. No push or merge is part of this work.
 
 ## Learned rules
 
