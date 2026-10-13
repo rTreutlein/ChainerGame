@@ -7,3 +7,8 @@ benchmark-runs/*/ona-cache*/
 benchmark-runs/*/*
 !benchmark-runs/*/report.md
 .venv-problog/
+
+# Local benchmark validation dependencies and temporary files.
+.test-deps/
+.scratch/
+.pytest_cache/
