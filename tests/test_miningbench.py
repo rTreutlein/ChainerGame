@@ -567,6 +567,25 @@ class ReviewRegressionTest(unittest.TestCase):
             spike.add(1000000 if step == 0 else step + 1)
         self.assertFalse(spike.result()["constant_cost_screen"])
 
+    def test_difficulty_average_excludes_incomplete_type_cohorts(self):
+        from miningbench.report import paired_difficulty_values
+
+        complete = {seed: 0.2 for seed in range(1, 11)}
+        partial = {seed: -100 for seed in range(1, 10)}
+        values, included, omitted = paired_difficulty_values(
+            {("single",): complete, ("and2",): partial}
+        )
+        self.assertEqual(values, [0.2] * 10)
+        self.assertEqual(included, [["single"]])
+        self.assertEqual(omitted, {"and2": 9})
+        self.assertEqual(paired_difficulty_values({("and2",): partial})[0], [])
+        shifted = {seed: 0.4 for seed in range(2, 12)}
+        values, _, _ = paired_difficulty_values(
+            {("single",): complete, ("and2",): shifted}
+        )
+        self.assertEqual(len(values), 9)  # Insufficient common seeds cannot pass.
+        self.assertTrue(all(abs(value - 0.3) < 1e-12 for value in values))
+
     def test_skill_and_every_gate_negative_control(self):
         from miningbench.report import interval
 

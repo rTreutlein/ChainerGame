@@ -118,6 +118,22 @@ def separate_runtime_cohorts(results, failures=()):
     return separated, separated_failures
 
 
+def paired_difficulty_values(by_type):
+    """Use the same powered type cohort in every seed-level average."""
+    eligible = {k: values for k, values in by_type.items() if len(values) >= 10}
+    omitted = {
+        ",".join(k): len(values) for k, values in by_type.items() if k not in eligible
+    }
+    if not eligible:
+        return [], [], omitted
+    seeds = set.intersection(*(set(values) for values in eligible.values()))
+    differences = [
+        statistics.fmean(values[seed] for values in eligible.values())
+        for seed in sorted(seeds)
+    ]
+    return differences, [list(k) for k in sorted(eligible)], omitted
+
+
 def acceptance(results, failures=()):
     results, failures = separate_runtime_cohorts(results, failures)
     checks = []
@@ -203,7 +219,7 @@ def acceptance(results, failures=()):
                 "drift",
                 "targets",
             ):
-                seed_differences = defaultdict(list)
+                type_differences = defaultdict(dict)
                 for r in results:
                     m = r["metadata"]
                     if m["system"] != system or m.get("level") != knob:
@@ -219,18 +235,21 @@ def acceptance(results, failures=()):
                         ):
                             continue
                         difference = b["normalized_skill"] - r["normalized_skill"]
-                        seed_differences[key[0]].append(difference)
-                values = [statistics.fmean(v) for v in seed_differences.values()]
-                checks.append(
-                    gate(
-                        f"{system}: harder {knob}",
-                        values,
-                        0.01,
-                        "above",
-                        [broken["difficulty"]] * 10,
-                        "input-ignoring population predictor in both paired levels (skill zero)",
-                    )
+                        type_differences[key[1]][key[0]] = difference
+                values, included_types, omitted_types = paired_difficulty_values(
+                    type_differences
                 )
+                check = gate(
+                    f"{system}: harder {knob}",
+                    values,
+                    0.01,
+                    "above",
+                    [broken["difficulty"]] * 10,
+                    "input-ignoring population predictor in both paired levels (skill zero)",
+                )
+                check["paired_rule_types"] = included_types
+                check["underpowered_rule_types"] = omitted_types
+                checks.append(check)
         long = [
             r
             for r in results
@@ -398,12 +417,13 @@ def report(results, failures=()):
         "",
         "## Acceptance",
         "",
-        "| Check | Status | Paired evidence | Rejects broken system |",
-        "|---|---|---|---|",
+        "| Check | Status | Paired evidence | Included types / omitted pair counts | Rejects broken system |",
+        "|---|---|---|---|---|",
     ]
     for check in checks:
         lines.append(
-            f"| {check['check']} | {check['status']} | {check['evidence']} | {check['discriminates']} |"
+            f"| {check['check']} | {check['status']} | {check['evidence']} | "
+            f"{check.get('paired_rule_types', [])} / {check.get('underpowered_rule_types', {})} | {check['discriminates']} |"
         )
     lines += [
         "",
