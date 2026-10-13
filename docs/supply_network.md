@@ -225,8 +225,9 @@ starts.
   actions extended by one), or the chainer (an open query for the second
   action under an assumed first)? The second tests more but may be
   expensive. Stage 5 measures both; see "Stage 5 results". On the frozen
-  chainer the nested open query returns no candidates, so the game supplies
-  the working proposal policy.
+  chainer the unsupported nested/open forms return no candidates, so the
+  game supplies the working proposal policy; this does not establish that
+  the documented flat Assuming API cannot propose actions.
 - **Continuous quantities.** Stock and flow amounts are small integers so
   the oracle stays exact; a larger version would need an approximate oracle.
 - **MM2.** Whether the MM2 backend takes part from stage 1, as in StationOps,
@@ -849,6 +850,13 @@ search of what their assumptions leave unchanged.
 
 ## Stage 4 results
 
+**Superseded PLN measurements.** All stage 4 PLN accuracy, budget and
+proposal-cost numbers below are historical. Stage 5 corrected the shared
+fuel rules in `metta.py` from CTVs with incompatible negative branches to
+positive STV sufficient causes. That changes stage 4's PLN beliefs and
+action valuation; its old grid has not been rerun with this encoding.
+Reference, greedy and prior results do not use those PLN rules.
+
 Seeds 1–4, 3 regions, 2 plants, capacity 2 (22 options), 30 labelled history
 periods, 30 rounds, inspection rate 0.25; PeTTaChainer master 2307ca50
 (shared venv), evidence k 5, with the harness's workarounds 1–3; ProbLog
@@ -1149,16 +1157,34 @@ retrospective labels, production reports and noisy weather evidence.
   Batches use `query_many_refs`, with budget times roots total steps.
 - **Chainer (`open`):** rank seed pairs, then ask the second action openly
   under each of the two top first assumptions. Rules expose a legal second
-  action vocabulary through an inner Assuming. Seed evaluations plus potential
+  action vocabulary through an inner Assuming in a rule antecedent. This and
+  `(Assuming A (Assuming B G))` are unsupported forms absent from API.md,
+  rather than defects in its documented flat Assuming operation. Seed evaluations plus potential
   first-by-second branches stay within the cap; at most two additional outer
   contexts are possible. If no second answer is returned, retain the best
   seed pair and record zero open answers.
-- **Controls:** `openloop` enumerates every responsive pair with exact
+- **Controls:** `exact-pairs` enumerates every responsive pair with exact
   values; `beam` uses exact pair values with the bounded game proposer.
   These distinguish restricted continuation, proposal coverage and PLN
   value errors. `feedback_value_gap` measures full-feedback value minus
   best responsive-pair value, which need not imply first-action regret.
   `exhaustive` visits pairs in enumeration order up to the requested cap.
+
+For PLN attribution, the host separately constructs `model.factored(marginal)`
+from PLN's actual queried marginals and calls `evaluate`. It chooses the
+best of all responsive pairs, chooses the best of the exact pairs actually
+proposed by PLN's game proposer, and computes the stage 4 myopic action on
+those same marginals. These controls run after PLN has chosen; their
+combined `control_seconds` is excluded from agent decision time. They do
+not provide scores, probabilities or ranks to the agent. Regrets use the
+true joint reference Q. Same-belief true-Q gain compares PLN's chosen
+first action with the myopic action chosen from the same PLN marginals.
+Belief-scored gain instead uses the exact two-stage Q on that factored
+belief for both actions, with observation-conditioned continuation. These
+are counterfactual first-action controls on PLN's trace, not separate
+physical rollouts. Per-round errors include all eight current variables,
+the worst key with both probabilities, and a legacy six-core-key mean for
+comparison with earlier logs.
 
 Thus the operational proposer is the **game**. The chainer experiment
 measures the unsupported nested/open path, not an unreported replacement
@@ -1170,7 +1196,9 @@ including its original repair proxy (mine/power/plant 10/20/8) and sent-fuel
 proxy 8, applied to the current shift's real costs, fines and production.
 Keeping those anticipatory proxies makes it a stronger baseline than a
 strictly immediate-reward policy. It ignores future buffer, diagnostics and
-phase transition. Greedy combines positive single-action gains from that
+phase transition. About 20% of myopic's regret is rush-shift rerouting
+caused by stage 4's sent-fuel proxy of 8 being miscalibrated for two periods.
+Greedy combines positive single-action gains from that
 one-period objective. Prior uses independent Laplace-smoothed resolved-history
 frequencies, ignores current diagnostic/shipment evidence, and scores
 responsive pairs with given dynamics and known operational inputs/buffer.
@@ -1190,7 +1218,9 @@ no action and is counted. Conditional-table setup is amortized into cost.
 NARS is skipped for stage 4's reason: no comparable joint expected-utility
 planner.
 
-MM2 is attempted in its matching CPython 3.13 worker. Its installed adapter
+MM2 is probed in its matching CPython 3.13 worker, selected with
+`--mm2-python` (or `MM2_CHAINER_PYTHON`); the game defaults to the current
+interpreter rather than hardcoding an environment path. Its installed adapter
 lacks `set_complete_predicate` and `set_positive_only_predicate`; the minimal
 Assuming query also returns no answer. The worker records these gaps and
 backend unavailability instead of running a planner with incompatible
@@ -1204,8 +1234,10 @@ remain unchanged. Its package tree matches `888379a2`; the checkout's
 `benchmarks/supplynet_stage5/repro/` are benchmark-local:
 
 1. `nested_open.py`: flattened joint Assuming returns strength 1; equivalent
-   nested Assuming and an open choice through an inner Assuming return no
-   second-action answer at budget 400.
+   `(Assuming A (Assuming B G))` and an inner Assuming used as a rule
+   antecedent return no second-action answer at budget 400. Neither form is
+   specified in `docs/metta/API.md`; these are unsupported API experiments,
+   not defects in documented Assuming semantics.
 2. `mm2_assuming.py`: a direct zero-value outcome answers, the assumed form
    does not; both required predicate settings are absent.
 3. `branch_semantics.py`: alternative fuel causes require positive STV
@@ -1229,8 +1261,8 @@ remain unchanged. Its package tree matches `888379a2`; the checkout's
    6.080. The inspect-mine/no-action pair is returned as 4.858 instead of
    10.938 because next mine output and final inventory outcomes are absent.
    Cold queries at budgets 400 and 2,000 repeat the omission. This is a
-   separate query-path failure under uncertainty, not an error attributable
-   solely to projecting the current posterior into marginals.
+   separate query-path failure with an uncertain input, not evidence that
+   uncertainty triggers the defect or an error attributable solely to projecting the current posterior into marginals.
 7. `myopic_ablation.py`: removes the legacy one-period repair/fuel proxies
    for a strictly immediate-reward check, without changing production code.
 8. `visited_beliefs.py`: counts unique reached decision beliefs as well as
@@ -1244,17 +1276,24 @@ remain unchanged. Its package tree matches `888379a2`; the checkout's
    This uniform coverage count is **not** a visitation distribution and
    omits the continuum of partially observed beliefs. Rollout fractions
    separately evaluate actual partially observed beliefs.
-10. `uncertain_carry.py`: nine rules reduce the missing-output path. Current
-    mine health supplies later power; degradation also carries forward.
-    The direct conjunction of later power and later health answers .437,
-    its exact joint probability. Routing health through `Operational` and
-    deriving later mine production returns no answer at budgets 400 and
-    2,000, both with stated service and under Assuming. The simple carry
-    controls in item 5 still succeed. In the larger reduced graph, some
-    unassumed negative-carry controls also return .363 or .437 instead of
-    .46; the assumed versions return .46. These are recorded query-path
-    gaps, not PeTTaChainer changes or a claim that every shared-cause
-    conjunction fails.
+10. `uncertain_carry.py`: cold-process controls isolate a shared-ancestor
+    conjunction through a derived positive-STV predicate over `Not`.
+    `(And (Fuel later) (Operational mine later))` with both paths descending
+    from `(D now)` returns no answer at budgets 400/2,000 for D=.5, against
+    exact .46. An independent `(E now)` ancestor answers .2925; replacing
+    the operational alias with `(Not (D later))` answers .46. Thus neither
+    generic uncertainty nor generic shared ancestry identifies the gap:
+    the alias/dependency graph matters, and simpler controls succeed.
+    The larger production graph also omits mine production at .437.
+    Negative-carry controls return .363/.437 against exact .46.
+    Each case runs in a fresh process because earlier queries can change
+    subsequent answers. The live expected-gap test covers the uncertain
+    mine alias conjunction; a future fix becomes an unexpected success.
+    **Certain-D discrepancy:** the review reports a missing answer even
+    with D at STV 0. Here the tested cold D=0 controls answer .92/.874,
+    including nontrivial fuel transfer, a compound carry and flat Assuming.
+    That particular reviewed fixture has been requested but not reproduced;
+    its failure is not claimed as verified. No chainer files change.
 11. `baseline_costs.py`: measures exact belief construction separately from
     the shared two-period scoring pass for myopic and greedy. Their 240
     replayed actions match the main runs; the report adds this belief cost
@@ -1277,7 +1316,7 @@ ulimit -v 16000000
   PYTHONPATH=src:benchmarks/supplynet_stage5/scratch/deps \
   /nexus/Dev/OpenCog/NL2PLN_Project/PeTTaChainer/.venv/bin/python \
   benchmarks/supplynet_stage5/repro/baseline_costs.py \
-  > /nexus/Dev/OpenCog/bench/results/supplynet-stage5/partial-network/baseline-costs.jsonl
+  > /nexus/Dev/OpenCog/bench/results/supplynet-stage5/review-fixes/baseline-costs.jsonl
 python3 benchmarks/supplynet_stage5/audit.py
 python3 benchmarks/supplynet_stage5/report.py
 ```
@@ -1285,11 +1324,11 @@ python3 benchmarks/supplynet_stage5/report.py
 The coordinator takes one slot; each of its four independently admitted
 inference jobs takes one slot.
 
-The recorded run was split into disjoint seed and growth batches to queue
-independent jobs concurrently: four inference workers for each seed batch,
-eight for growth, and two for the seed-1/2 MM2 probes. Each inference job
+The review-fix run uses separate main and growth coordinators, each with
+eight independently admitted workers, plus a disjoint seed-1/budget-50
+pilot. Each inference job
 was admitted separately with one slot and a 1-GB expected peak. `--out`
-and `--case-pattern` support separate batch directories and named subsets.
+and `--case-pattern`/`--exclude-case-pattern` support disjoint batches.
 Only verified complete cases are combined into the final table; admission
 waiting is recorded in exit metadata and excluded from decision seconds.
 
@@ -1302,7 +1341,8 @@ explicit-false-branch encoding, incomplete prior queries and omitted
 retrospective labels, are archived separately and excluded.
 Raw streams, summaries, commands, source hashes,
 statuses and repro outputs are under
-`/nexus/Dev/OpenCog/bench/results/supplynet-stage5/partial-network/`.
+`/nexus/Dev/OpenCog/bench/results/supplynet-stage5/review-fixes/`.
+The preceding reviewed grid remains under `partial-network/` for provenance.
 Successful runs are reused only when fingerprints match.
 
 Tests in `tests/test_supplynet.py` check real shipments and partial state,
@@ -1319,144 +1359,154 @@ through capped. No PeTTaChainer changes, push or merge are part of this work.
 
 ## Stage 5 results
 
-Four seeds, 30 rounds each, 30 labelled history periods, one plant and
-capacity two. PLN uses the game proposer with a 64-pair cap. All 71 main
-and growth cases have verified zero exit status, matching source hashes,
-complete round streams and checked context bounds (`audit.py`). Four MM2
-cases explicitly report backend unavailability; a zero runner exit is not
-evidence that its planner works. Rejected and superseded runs are excluded.
+Four seeds × 30 rounds, 30 labelled history periods, one plant, capacity
+two and a 64-pair PLN cap. The review-fix grid has 71 complete cases with
+matching source fingerprints, zero runner exits and verified context
+bounds. MM2's four successful runner exits are capability probes reporting
+backend unavailability, and are excluded from the policy table. Raw data:
+`/nexus/Dev/OpenCog/bench/results/supplynet-stage5/review-fixes/`.
 
-**Does lookahead matter?** The exact reference gains **0.640 credits per
-round** over the stage 4 myopic policy on the reference's trace. Myopic's
-own mean regret is **0.661**. Across its four 30-round runs, myopic is
-suboptimal in **67/120 rounds (55.8%)**; each seed exceeds 20% (50–66.7%).
-On the reference's trace it is suboptimal in **61/120 rounds (50.8%)**.
-The canonical visited-belief probe finds 120 distinct beliefs on each
-trace, so the corresponding reached-state fractions are also 55.8% and
-50.8%. This equality reflects the absence of repeated beliefs in these
-short noisy trajectories; it is not a claim that all rounds are independent.
+**Lookahead gain with the same beliefs.** The reference gains **0.640**
+credits of expected two-period value per decision over myopic, on the
+reference trace. PLN and its counterfactual myopic control both choose
+from PLN's actual marginals; the table below scores their actions with the
+true reference Q. Belief-scored gain additionally evaluates both actions
+with the exact two-stage Q on those factored marginals. All controls are
+on PLN's own visited histories, with the same public inputs and probes;
+they do not execute separate rollouts or feed the agent oracle answers.
+The previous −0.385 comparison used exact-posterior myopic and PLN's own
+beliefs together, so it mixed belief quality with planning.
 
-The separate uniform structural probe finds **284/1,024 (27.7%)** suboptimal
-configurations, versus the rejected cell's 2/128. It uses point beliefs for
-the core condition, not the rollout distribution. The stricter immediate
-reward ablation, without stage 4's repair and sent-fuel proxies, has regret
-**2.614** and suboptimal-round fraction 56.7%. The main comparison keeps
-the stronger stage 4 baseline.
+| policy on PLN's trace | true regret/round | true-Q gain vs same-belief myopic | belief-scored gain | decision seconds/round |
+|---|---:|---:|---:|---:|
+| PLN b50 | 1.072 | **+0.314** | +0.443 | 11.193 |
+| PLN b100 | 1.072 | **+0.314** | +0.443 | 11.058 |
+| PLN b200 | 1.072 | **+0.314** | +0.443 | 11.075 |
+| PLN b400 | 1.072 | **+0.314** | +0.443 | 10.858 |
+| exact all responsive pairs | 0.856 | +0.530 | +0.700 | — |
+| exact PLN proposed pairs | 0.998 | +0.388 | +0.543 | — |
+| myopic on PLN marginals | 1.386 | +0.000 | +0.000 | — |
 
-**Main comparison.** Regret and gain are credits per round. Gain compares
-the chosen first action with myopic on the **same visited belief**, not
-the difference between two policies' mean regrets. Seconds include run
-startup amortized over 30 rounds and exclude capped admission waiting.
-Myopic/greedy also include .7 ms/round of separately measured exact
-belief construction: a replay omits the common two-period regret-scoring
-pass and verifies all 240 actions against the full runs before adding
-that belief cost to their original scoring times.
+Control rows aggregate budget 400; all four budgets have identical actions,
+beliefs and control results within each seed. Combined post-decision host
+instrumentation costs 0.064 seconds per round,
+excluded from PLN decision timing. The two exact controls optimize
+responsive pairs, with the proposed-pair control using the **actual pair
+tuples** selected by PLN's game proposer, rather than just its first-action
+coverage. Regret still uses the full-feedback reference.
 
-| policy | regret/round | gain over myopic | realized reward/round | seconds/round | pair evaluations/round |
-|---|---:|---:|---:|---:|---:|
-| exact reference | 0.000 | **0.640** | 7.758 | **0.125** | — |
-| myopic, stage 4 proxy | **0.661** | 0.000 | 7.533 | 0.006 | — |
-| greedy | 0.980 | −0.322 | 7.233 | 0.006 | — |
-| prior | 5.895 | −5.318 | 2.433 | 0.085 | — |
-| ProbLog | 0.000 | 0.640 | 7.758 | 0.719 | — |
-| exact responsive pairs | 0.064 | 0.568 | 7.754 | 0.136 | 592 |
-| game proposal with exact pair values | 0.173 | 0.457 | 7.633 | 0.136 | 64 |
-| PLN, budget 50 | 1.072 | **−0.385** | 7.537 | 11.157 | 64 |
-| PLN, budget 100 | 1.072 | **−0.385** | 7.537 | 11.278 | 64 |
-| PLN, budget 200 | 1.072 | **−0.385** | 7.537 | 11.287 | 64 |
-| PLN, budget 400 | 1.072 | **−0.385** | 7.537 | 11.275 | 64 |
-| PLN open, budget 200, seed fallback | 2.313 | −1.653 | 6.625 | 4.042 | 18 + 2 open roots |
-| MM2 | unavailable | — | — | — | 0 |
+**Attribution.** Seed 1, budget 50 reproduces the review: PLN regret .884,
+exact all-pair planning on its marginals .610, and exact planning on its
+proposed pairs .789. This nested counterfactual decomposition assigns
+about **69%** to beliefs/marginal projection (including the responsive
+policy-class floor), **20%** to the two-beam proposal restriction and
+**11%** to chainer valuation. These are seed-specific descriptive shares. Across all
+four seeds the corresponding shares are approximately 80%/13%/7%.
+The dominant loss is the known stage 3/4 production-report gap: belief-KB
+production rules are `no_inverse` (`metta._cycle_rules`), and antecedent
+completion does not invert production reports into degradation. In seed 1,
+round 4, PLN's mine degradation probability is **.1336**, against exact
+**.75**. That is a belief failure despite a correct action-pair encoding;
+budget flatness is real saturation, not missing budget wiring.
 
-The reference's own enumeration/filter cost is .119 seconds per round
-before startup amortization. ProbLog has zero timeouts and failed calls
-across all main and size runs; successful Q values agree with the
-reference to floating-point tolerance. Every budget gives **identical
-PLN action traces within each seed**. More steps do not capture the
-lookahead gain on this frozen implementation. Its per-seed paired gains
-are −.407, +.064, −.223 and −.972; its aggregate regret exceeds myopic's
-by .411. The paired loss is .385 because the policies visit different
-beliefs. The reference buys 40 diagnostics over 120 rounds, PLN buys one,
-and myopic buys none.
+Across 120 budget-400 rounds, the legacy six-core-key mean error exceeds
+.05 in **13 rounds**, carrying **70.7%**
+of regret. The updated eight-current-key mean is 0.0148;
+its .05 threshold selects 13 rounds carrying 70.7% of regret.
+The **per-round worst-key** error averages **0.1085**
+and reaches **0.6650**; its .05 threshold
+selects **75/120 rounds**, carrying **93.8%** of regret.
+Every raw round records `belief_worst_key` with key, PLN probability, exact
+probability and error, plus all eight `belief_errors`. Averaging keys hides
+large individual degradation errors. The 3.640 mixed-belief
+pair-score error compares PLN scores with true-joint-posterior scores and
+therefore includes belief error; it is not a pure valuation diagnostic.
+The shared-ancestor repro isolates a smaller valuation gap independently.
 
-PLN's mean pair-value error is **3.640**; current marginal belief error is
-.0197. The best oracle first action among its attempted first actions
-loses only .029, but this first-action coverage metric does not test
-whether the right continuation was proposed. Exact responsive and exact
-bounded controls show that continuation restrictions and proposal coverage
-also matter. The uncertain-carry repro additionally isolates omitted
-future production and inventory outcomes with identical input beliefs.
-All 64 roots return answers because zero-value anchors exist; that is
-not complete outcome coverage or accurate valuation.
+**Full-system comparison.** Baselines below use their stated beliefs;
+PLN's same-belief comparisons are above. Regrets are against exact
+full-feedback first-action Q on each policy's own trace. Seconds include
+startup amortized over 30 rounds and exclude admission waiting and the
+shared benchmark regret-scoring pass. Myopic/greedy include separately
+profiled exact belief construction, with all 240 replayed actions verified.
 
-At budget 400 the first/last ten rounds cost 11.413/11.082 seconds,
-without a growing planning-context count. The worker timing API reports
-5.203 seconds of inference and 4.947 of overhead per round; worker setup
-averages .993 seconds and overlaps some API timing. Thus cost is not
-just inference steps, and these components should not be added blindly.
+| policy | beliefs/inference and planner | regret/round | realized reward/round | seconds/round | evaluated pairs |
+|---|---|---:|---:|---:|---:|
+| reference | exact posterior; full-feedback expectimax | 0.000 | 7.758 | 0.119 | — |
+| myopic | exact posterior; stage 4 proxies | 0.661 | 7.533 | 0.005 | — |
+| greedy | exact posterior; positive singles | 0.980 | 7.233 | 0.005 | — |
+| prior | history marginals; exact responsive pairs | 5.895 | 2.433 | 0.079 | — |
+| ProbLog + NumPy | ProbLog posterior/transitions; shared NumPy expectimax | 0.000 | 7.758 | 0.721 | — |
+| exact-pairs | exact posterior; all responsive pairs | 0.064 | 7.754 | 0.130 | 592 |
+| exact beam | exact posterior; game proposer | 0.173 | 7.633 | 0.131 | 64 |
+| PLN b400 | PLN marginals; game proposer | 1.072 | 7.537 | 10.858 | 64 |
+| open experiment b200 | unsupported Assuming forms; seed fallback | 2.313 | 6.625 | 3.956 | 18 flat + 2 open roots |
 
-Open returns **zero second-action answers in all 120 main rounds**.
-MM2's ABI-matched worker lacks `set_complete_predicate` and
-`set_positive_only_predicate`; its minimal Assuming probe is unanswered
-on all four seeds. The raw no-action fallback has regret 13.531 and costs
-.099 seconds per round; these are capability-probe/fallback numbers,
-not MM2 planner performance. NARS remains skipped.
+The reference's own posterior/enumeration cost is 0.115
+seconds per round before startup amortization. ProbLog agrees to floating
+point tolerance, with zero timeouts/failed inference across the main and
+size runs; its expectimax is performed by the shared NumPy planner.
+All PLN budgets return 64 anchored roots, which does not guarantee complete
+outcome coverage. Reference buys 40 diagnostics in 120 rounds; PLN buys one.
 
-Validation: the complete ChainerGame suite passes **171 tests**, with 22
-live-gated skips and 14 subtests. A separate run with both SupplyNet live
-gates enabled passes **all 37 tests**, including the ProbLog comparison and
-the four known-state PLN pair controls. The implementation is committed
-as `cec0834`; the measurement source hash starts `99b9cdaa37d2`.
+**Does lookahead matter?** Myopic's regret remains **.661**, with **67/120
+suboptimal rounds (55.8%)**, and each seed exceeds 20%. Reference-trace
+myopic is suboptimal in **61/120 rounds (50.8%)**. The canonical reached
+beliefs are all distinct on these traces, giving the same reached-state
+fractions. The retained physical probes keep their original source provenance under
+`partial-network/`; all rerun actions/regrets match that grid.
+The uniform structural probe remains **284/1,024 (27.7%)**;
+point-belief configurations are not a visitation distribution. Removing
+both stage 4 proxies raises strictly immediate myopic regret to **2.614**
+(suboptimal in 56.7% of rounds). About 20% of the main myopic regret is
+rush-shift rerouting induced by stage 4's sent-fuel proxy of 8 being
+miscalibrated for two periods.
 
-**Candidate cost growth.** Budget 200, seed 1, five rounds per case; all
-rows have 37 first actions, 16 second actions and 592 possible pairs.
-Seconds include run startup amortized over five rounds; planning-worker
-startup is already inside each round. Timing is from the shared machine.
+At budget 400, first/last ten rounds cost 11.088/10.704
+seconds, with fixed planning-context bounds. The worker timing API records
+5.219 seconds inference and 4.565 overhead per round;
+worker setup averages 0.958 seconds and overlaps API timing.
+Open returns no second-action answers in all 120 rounds. Its nested
+`(Assuming A (Assuming B G))` and Assuming-as-rule-antecedent forms are
+absent from API.md and recorded as **unsupported forms**, not API defects.
+MM2 lacks complete/positive-only predicate settings and its minimal
+Assuming probe is unanswered. Its no-action fallback is excluded above;
+capability streams remain available. NARS remains skipped.
 
-| proposer | cap | evaluated or potential pairs/round | queried roots/round | seconds/round | regret/round | open second answers |
-|---|---:|---:|---:|---:|---:|---:|
-| game extend | 16 | 16 | 16 | 4.116 | 3.801 | — |
-| game extend | 32 | 32 | 32 | 6.684 | 1.835 | — |
-| game extend | 64 | 64 | 64 | 11.944 | 1.835 | — |
-| game extend | 128 | 74.6 | 74.6 | 16.789 | 1.835 | — |
-| game extend | 256 | 74.6 | 74.6 | 16.947 | 1.835 | — |
-| exhaustive prefix | 16 | 16 | 16 | 4.059 | 10.715 | — |
-| exhaustive prefix | 32 | 32 | 32 | 6.791 | 5.772 | — |
-| exhaustive prefix | 64 | 64 | 64 | 15.263 | 5.772 | — |
-| exhaustive prefix | 128 | 128 | 128 | 29.164 | 3.801 | — |
-| exhaustive prefix | 256 | 256 | 256 | 57.407 | 1.835 | — |
-| chainer open | 16 | 16 | 16 | 4.103 | 3.801 | 0 |
-| chainer open | 32 | 32 | 20 | 4.459 | 3.801 | 0 |
-| chainer open | 64 | 50 | 20 | 4.415 | 3.801 | 0 |
-| chainer open | 128 | 50 | 20 | 5.502 | 3.801 | 0 |
-| chainer open | 256 | 50 | 20 | 5.452 | 3.801 | 0 |
+Validation: **171 passed, 23 skipped, 14 subtests** in the complete
+ChainerGame suite; **37 passed and one expected failure** in 38 live
+SupplyNet tests. The expected gap has an uncertain mine and the shared
+ancestor/positive Not alias shape. Measurement source starts `08bc968f3f9d`;
+PeTTaChainer's package remains frozen.
 
-The game proposes pairs in practice. It asks singles, extends the best
-two, then asks continuations under the best two resulting first actions.
-Its structural ceiling is 75 evaluations at this size; the average 74.6
-reflects duplicate seed/continuation pairs. The cap holds planning contexts
-constant per period, but each context remains expensive. Exhaustive cost
-grows from 4.1 seconds for 16 pairs to 57.4 for 256; on these five rounds,
-32 game evaluations already reach the same regret as 256 exhaustive ones.
-This is a bounded proposal result, not proof that two-beam coverage is
-generally sufficient. Adding pairs need not reduce regret when their
-values are incomplete or biased. The growth rows also follow different
-action-dependent trajectories.
+**Candidate cost growth.** Budget 200, seed 1, five rounds per case; 37
+first actions, 16 second actions and 592 possible pairs. Startup is
+amortized; timing excludes admission waiting.
 
-Open's count includes potential nested pair branches. It actually asks
-18 flat seed roots and at most two outer open roots (16 seed roots and no
-open roots at cap 16). Its context bound is at most cap + 2; there are
-**no returned second-action answers**. Its lower cost measures an
-unsupported query and seed fallback, not successful open pair evaluation.
+| cap | game actual pairs | game seconds/round | exhaustive-prefix pairs | exhaustive seconds/round |
+|---|---:|---:|---:|---:|
+| 16 | 16.0 | 4.174 | 16 | 4.219 |
+| 32 | 32.0 | 6.580 | 32 | 6.631 |
+| 64 | 64.0 | 11.752 | 64 | 11.198 |
+| 128 | 74.6 | 12.545 | 128 | 22.760 |
+| 256 | 74.6 | 12.633 | 256 | 49.719 |
 
-**Exact size checks.** Seed 1, five rounds, zero/two plants: reference
-cost is .061/.848 seconds per round; ProbLog is 1.019/4.638, including
-conditional-table setup amortized over five rounds. Both ProbLog cases
-have zero regret and zero timeouts. Zero plants gives 64 current and 64
-next tensor states, 22 first actions, 11 second actions, 242 pairs; two
-plants gives 256/1,024 states, 56/22 actions and 1,232 pairs. ProbLog is
-feasible here because it compiles independent conditional tables and uses
-the shared numeric maximizer; these are not all-in-ProbLog action circuits.
+The game proposer saturates at about 75 candidate pairs; exhaustive-prefix
+cost keeps growing with evaluated pairs and still covers only 256/592.
+The detailed report retains open's potential branches and queried roots;
+its cap-64 experiment has 50 potential branches but only 18 flat seed
+queries plus two unsupported open roots, and zero second answers. This
+measures the chosen unsupported construction, rather than the capability
+of a supported flat open proposer.
+
+| plants | current/next states | first/second actions | pairs | reference seconds/round | ProbLog + NumPy seconds/round |
+|---|---|---|---:|---:|---:|
+| 0 | 64/64 | 22/11 | 242 | 0.036 | 0.869 |
+| 2 | 256/1024 | 56/22 | 1232 | 0.735 | 4.436 |
+
+Both sizes have zero ProbLog regret and inference timeouts. This is feasible
+because ProbLog compiles conditional tables and NumPy maximizes them;
+these are not all-in-ProbLog action circuits.
 
 **Limits.** The rates are given, the main network has one coastal region
 and one plant, and observations and production are binary. The main
@@ -1465,13 +1515,17 @@ This is an undiscounted two-period receding horizon with a remaining
 terminal inventory value of 8, not an optimal infinite-horizon policy.
 PLN projects its belief onto marginals, evaluates restricted responsive
 second actions and has a bounded proposal beam; it also omits outcomes
-in the confirmed uncertain-production carry repro. Its point-state
+in the verified shared-ancestor positive-Not-alias repro. The main loss comes from
+production reports failing to update degradation, not that smaller valuation
+gap. Its point-state
 controls do not establish correctness under partial observation. NARS is
 skipped; MM2 cannot run the required settings/Assuming path. Wall-time
 measurements share a machine with other admitted jobs. No frozen chainer
 gap is fixed here, and no push or merge is performed.
-Stage 4's world is retained, but its full old PLN grid was not rerun after
-the positive-fuel-rule harness correction; the live stage 4 gates pass.
+The review's certain-D alias counterexample remains unverified in the
+fixtures here; the uncertain alias and negative-carry failures are verified.
+Stage 4's old PLN grid is explicitly superseded above after the shared
+positive-fuel-rule harness correction; it was not rerun.
 
 ## Learned rules
 
