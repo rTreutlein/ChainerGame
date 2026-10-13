@@ -30,6 +30,8 @@ def source_hash():
 def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
+    if any((out/name).exists() for name in ('world.json','steps.jsonl','result.json')):
+        raise FileExistsError(f'refusing to overwrite benchmark evidence in {out}')
     world = World(config)
     metadata = world.metadata()
     metadata.update({'system': system, 'python': platform.python_version(), 'source_sha256': source_hash(),

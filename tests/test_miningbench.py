@@ -165,3 +165,35 @@ class DirectedContractTest(unittest.TestCase):
         report = audit(events)
         self.assertEqual(report['violation_count'],6)
         self.assertEqual(report['means']['pair_interaction_contrast'],2)
+
+
+class EvidenceIntegrityTest(unittest.TestCase):
+    def test_run_refuses_to_overwrite_evidence(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as d:
+            run(Config(samples=8,kinds=('single',)), 'oracle', d)
+            original = (Path(d)/'result.json').read_bytes()
+            with self.assertRaises(FileExistsError):
+                run(Config(samples=8,kinds=('xor',)), 'oracle', d)
+            self.assertEqual((Path(d)/'result.json').read_bytes(),original)
+
+    def test_report_exposes_timeouts_without_fabricating_scores(self):
+        from miningbench.report import report
+        text, checks = report([], [{'level':'targets','system':'petta','kinds':['numeric'],
+                                  'seed':1,'returncode':124,'completed_steps':7}])
+        self.assertIn('Incomplete runs',text)
+        self.assertIn('| targets | petta | numeric | 1 | 124 | 7 |',text)
+        self.assertNotIn('PASS',text)
+
+
+class RuleExtractionTest(unittest.TestCase):
+    def test_petta_weak_positive_association_and_complement(self):
+        from miningbench.petta import Petta
+        a = Petta.__new__(Petta)
+        a.domains = {'Y':('0','1')}
+        a.label_counts = {'Y':[80,20]}
+        a.live = {'h':Rule('Y',(Literal('A'),),strength=.3)}
+        a.negative_rates = {'h':.1}
+        self.assertEqual(a.rules(),list(a.live.values()))
+        a.negative_rates = {'h':.6}
+        self.assertEqual(a.rules()[0].body,(Literal('A',negative=True),))
+        self.assertEqual(a.rules()[0].strength,.6)

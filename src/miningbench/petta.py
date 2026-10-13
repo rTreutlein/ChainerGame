@@ -53,6 +53,7 @@ class Petta:
         from pettachainer import PeTTaChainer
         self.h = PeTTaChainer()
         self.domains, self.budget = domains, budget
+        self.label_counts = {t: [0]*len(d) for t,d in domains.items()}
         self.h.set_evidence_confidence_k(1)
         self.h.set_hypothesis_mining(max_new, max_live)
         self.h.set_positive_only_predicate('NextPeriod')
@@ -115,6 +116,7 @@ class Petta:
     def learn(self, history, labels):
         positives, negatives = [], []
         for t, y in labels.items():
+            self.label_counts[t][y] += 1
             domain = self.domains[t]
             for v in (('1',) if len(domain) == 2 else domain):
                 stmt = self.statement(t, v, self.period)
@@ -159,13 +161,18 @@ class Petta:
         return events
 
     def rules(self):
-        # Kept weak candidates are not equivalent to confident positive rules.
-        rules = [r for r in self.live.values() if r.strength > .5]
-        for name, rate in self.negative_rates.items():
-            if rate > .5:
-                r = self.live[name]
+        # A probabilistic planted rule can have strength below 0.5. Recovery
+        # asks which condition raises its target rate, not which label wins.
+        rules = []
+        for name, r in self.live.items():
+            counts = self.label_counts[r.target]
+            baseline = counts[self.domains[r.target].index(r.value)]/max(1,sum(counts))
+            other = self.negative_rates.get(name, baseline)
+            if r.strength > other:
+                rules.append(r)
+            if name in self.negative_rates and other > r.strength:
                 # CTV's negative branch conditions on NOT(the whole body).
-                # De Morgan expands this into one disjunct per negated literal.
-                rules.extend(replace(r, body=(replace(l, negative=not l.negative),), strength=rate)
+                # De Morgan gives one disjunct per negated literal.
+                rules.extend(replace(r, body=(replace(l, negative=not l.negative),), strength=other)
                              for l in r.body)
         return rules

@@ -42,8 +42,18 @@ def main():
     p.add_argument('path', type=Path)
     a = parser.parse_args()
     if a.command == 'report':
-        results = [json.loads(p.read_text()) for p in sorted(a.path.rglob('result.json'))]
-        text, checks = report(results)
+        results, failures = [], []
+        for p in sorted(a.path.rglob('result.json')):
+            status = p.parent/'status.json'
+            if not status.exists() or json.loads(status.read_text())['returncode'] == 0:
+                results.append(json.loads(p.read_text()))
+        for p in sorted(a.path.rglob('status.json')):
+            item = json.loads(p.read_text())
+            if item['returncode']:
+                trace = p.parent/'steps.jsonl'
+                item['completed_steps'] = sum(1 for _ in trace.open()) if trace.exists() else 0
+                failures.append(item)
+        text, checks = report(results, failures)
         (a.path/'report.md').write_text(text)
         (a.path/'acceptance.json').write_text(json.dumps(checks, indent=2)+'\n')
         print(text)
@@ -58,6 +68,8 @@ def main():
         print(json.dumps({'out': str(a.out), 'scores': result['scores'], 'recovery': result['recovery']['all']}))
         return
     a.out.mkdir(parents=True, exist_ok=True)
+    if any(a.out.iterdir()):
+        parser.error('sweep output directory must be empty; preserve prior evidence')
     tasks = []
     kind_groups = [[k] for k in a.kinds] if a.separate_kinds else [a.kinds]
     for kinds in kind_groups:

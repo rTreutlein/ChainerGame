@@ -4,7 +4,6 @@ from fractions import Fraction
 from dataclasses import replace
 from itertools import permutations
 import math
-import statistics
 
 
 def formula_key(source):
@@ -107,10 +106,6 @@ def losses(predicted, exact):
     brier = sum((v-q)**2 for v, q in zip(predicted, exact))/len(exact)
     return {'log_loss': ce, 'excess_log_loss': max(0., ce-entropy), 'brier': brier,
             'expected_brier': brier+sum(q*(1-q) for q in exact)/len(exact)}
-
-
-def average(rows):
-    return {k: statistics.fmean(r[k] for r in rows) for k in rows[0]} if rows else {}
 
 
 class RunningAverage:

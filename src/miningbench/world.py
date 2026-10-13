@@ -1,8 +1,7 @@
 """Seeded, fully observed input streams with stochastic hidden mechanisms."""
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from itertools import product
 import hashlib
-import json
 import random
 
 KINDS = ('single', 'and2', 'and3', 'and4', 'negation', 'lag', 'xor', 'or', 'numeric', 'binding')

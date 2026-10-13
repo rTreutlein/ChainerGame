@@ -1,6 +1,5 @@
 """Learners receive public schema, history and labels, never planted rules."""
 from dataclasses import replace
-import math
 from .world import Rule
 
 
@@ -20,8 +19,6 @@ class Marginal:
         self.x = self.vector(history)
         result = {}
         for t, domain in self.domains.items():
-            base = self.total[t]
-            n = sum(base)
             best, chosen = -1., None
             for j, cells in enumerate(self.counts[t]):
                 gain = sum(sum(v*v for v in c)/sum(c) for c in cells if sum(c))

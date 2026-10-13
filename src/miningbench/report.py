@@ -3,10 +3,9 @@ from collections import defaultdict
 import statistics
 
 
-def report(results):
+def report(results, failures=()):
     groups = defaultdict(list)
     for r in results:
-        c = r['metadata']['config']
         level = r['metadata'].get('level', 'run')
         for kind in r['by_type']:
             groups[(level, r['metadata']['system'], kind)].append(r)
@@ -23,6 +22,14 @@ def report(results):
                      f'{mean(lambda r:r["cost"]["mean_seconds"])*1000:.3f} | '
                      f'{mean(lambda r:r["cost"]["late_over_early"]):.2f} | '
                      f'{max(r["peak_rss_kib"] for r in rows)/1024:.1f} |')
+    if failures:
+        lines.extend(['', '## Incomplete runs', '',
+                      'These runs have no completed score. Partial scores are not substituted for full-stream results.', '',
+                      '| Difficulty | System | Type | Seed | Exit | Completed steps |',
+                      '|---|---|---|---:|---:|---:|'])
+        for f in failures:
+            lines.append(f'| {f["level"]} | {f["system"]} | {", ".join(f["kinds"])} | '
+                         f'{f["seed"]} | {f["returncode"]} | {f["completed_steps"]} |')
     checks = acceptance(results)
     lines.extend(['', '## Acceptance', '', '| Check | Status | Evidence |', '|---|---|---|'])
     for c in checks:
@@ -78,4 +85,10 @@ def acceptance(results):
                            'status': 'PASS' if degraded else ('FAIL' if changes else 'UNMEASURED'),
                            'evidence': f'mean error delta {statistics.fmean(x[0] for x in changes):+.5f}; '
                                        f'cost ratio {statistics.fmean(x[1] for x in changes):.2f}' if changes else 'no matched sweep'})
+    for system in sorted({r['metadata']['system'] for r in results}):
+        rows = [r for r in results if r['metadata']['system'] == system and r['metadata']['config']['samples'] >= 64]
+        failed = sum(not r['cost']['constant_cost_screen'] for r in rows)
+        checks.append({'check': f'{system}: constant-cost screen',
+                       'status': ('FAIL' if failed else 'PASS') if rows else 'UNMEASURED',
+                       'evidence': f'{failed}/{len(rows)} completed runs exceed late/early ratio 2; empirical screen only'})
     return checks

@@ -194,9 +194,11 @@ domain. The closing link lets observed predicates supply false observations for
 missed conclusions inside that domain, including conclusions whose learned rate
 is low. This preserves samples for never-successful targets while exercising
 anticipation for existing predictions. Reviews return actual kept/dropped rules.
-Raw verdicts and truth values remain in the trace. CTV negative branches above
-0.5 are expanded with De Morgan into positive-target DNF rules; weak positive
-branches are not mistaken for positive rules. Unparsed verdicts are exposed in
+Raw verdicts and truth values remain in the trace. For a CTV, the branch with higher target probability is the positive association
+exported for recovery, even when its strength is below 0.5. A higher negative
+branch is expanded with De Morgan into positive-target DNF rules. An STV must
+exceed the empirical target marginal. This tests association, not majority-class
+prediction, and supports weak planted rules. Unparsed verdicts are exposed in
 results and must be inspected before trusting recovery.
 
 The time-link repro under `benchmarks/mining/repros/` shows an actual boundary in
