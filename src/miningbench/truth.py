@@ -31,8 +31,22 @@ def numeric_matching_contexts(world, target, rules):
 
     core_heads = (target + "_Pos", target + "_Vel")
     literals = [literal for rule in rules for literal in rule.body]
+    from .scoring import formula_coefficients
+
+    expressions = [rule.formula for rule in rules if rule.formula]
+    expressions += [
+        rule.condition.split(":", 1)[1] for rule in rules if ":" in rule.condition
+    ]
+    formula_lags = [
+        int(name[1:])
+        for expression in expressions
+        for name in formula_coefficients(expression)
+        if name.startswith("x")
+    ]
     depth = max(
-        [1] + [literal.lag for literal in literals if literal.head in core_heads]
+        [1]
+        + formula_lags
+        + [literal.lag for literal in literals if literal.head in core_heads]
     )
     paths = [[history[-1]] for history in numeric_contexts(world, target)]
     width = world.config.numeric_width
@@ -113,16 +127,26 @@ def numeric_rule_value(rule, history, width, phase=0):
         values = {"1": 1, "x1": position, "v1": velocity}
 
         def evaluate(formula):
+            coefficients = formula_coefficients(formula)
+            for name in coefficients:
+                if name.startswith("x") and name not in values:
+                    lag = int(name[1:])
+                    values[name] = next(
+                        int(args[0])
+                        for (head, args), truth in history[-lag].items()
+                        if truth and head == rule.target + "_Pos"
+                    )
             return sum(
                 float(coefficient) * values[name]
-                for name, coefficient in formula_coefficients(formula).items()
+                for name, coefficient in coefficients.items()
             )
 
-        region, expression = rule.condition.split(":", 1)
-        z = evaluate(expression)
-        actual_region = "below" if z < 0 else "above" if z > width else "inside"
-        if actual_region != region:
-            return None
+        if rule.condition not in ("", "not_body"):
+            region, expression = rule.condition.split(":", 1)
+            z = evaluate(expression)
+            actual_region = "below" if z < 0 else "above" if z > width else "inside"
+            if actual_region != region:
+                return None
         value = evaluate(rule.formula)
         return int(value) if value == int(value) else value
     return int(rule.value) if World.holds(rule, history) else None
@@ -158,7 +182,7 @@ def conditional(world, rule, phase=0):
     """
     target = rule.target
     if world.types[target] == "numeric":
-        histories = numeric_contexts(world, target)
+        histories = numeric_matching_contexts(world, target, [rule])
     else:
         literals = list(rule.body)
         literals += [
@@ -203,7 +227,7 @@ def conditional(world, rule, phase=0):
                     history[-lag].update(cell)
                 yield history
 
-        histories = enumerate_histories()
+        histories = ((history, 1) for history in enumerate_histories())
     total = count = 0
     # Restrict to this target: other independent targets need not be enumerated.
     from copy import copy
@@ -211,10 +235,23 @@ def conditional(world, rule, phase=0):
     subworld = copy(world)
     subworld.types = {target: world.types[target]}
     subworld.domains = {target: world.domains[target]}
-    for history in histories:
-        if World.holds(rule, history):
-            total += interpret(subworld, history, phase)[target][
+    for history, weight in histories:
+        if world.types[target] == "numeric":
+            value = numeric_rule_value(rule, history, world.config.numeric_width, phase)
+            if value is None:
+                continue
+            probabilities = interpret(subworld, history, phase)[target]
+            probability = (
+                probabilities[value]
+                if isinstance(value, int) and 0 <= value < len(probabilities)
+                else 0
+            )
+        elif World.holds(rule, history):
+            probability = interpret(subworld, history, phase)[target][
                 world.domains[target].index(rule.value)
             ]
-            count += 1
+        else:
+            continue
+        total += probability * weight
+        count += weight
     return total / count if count else None

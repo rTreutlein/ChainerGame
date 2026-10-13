@@ -35,6 +35,7 @@ def main():
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--seconds", type=int, default=600)
     parser.add_argument("--stress-seconds", type=int, default=1800)
+    parser.add_argument("--stress-peak-mb", type=int, default=6000)
     parser.add_argument("--required-petta-commit")
     parser.add_argument("--keep-timeouts", action="store_true")
     args = parser.parse_args()
@@ -97,6 +98,13 @@ def main():
             level in ("targets", "distractors", "long", "deep_lags")
             or kind == "numeric"
         )
+        if kind == "numeric":
+            peak_mb = 15000
+        elif kind == "binding":
+            peak_mb = 6000 if stress else 3000
+        else:
+            peak_mb = args.stress_peak_mb if stress else 1500
+        timeout_seconds = args.stress_seconds if stress else args.seconds
         command = [
             sys.executable,
             "-m",
@@ -142,10 +150,10 @@ def main():
             "--slots",
             "1",
             "--peak-mb",
-            "15000" if kind == "numeric" else "6000" if stress else "1500",
+            str(peak_mb),
             "timeout",
             "--kill-after=10",
-            str(args.stress_seconds if stress else args.seconds),
+            str(timeout_seconds),
             *command,
         ]
         with (out / "process.log").open("w") as log:
@@ -158,6 +166,8 @@ def main():
             "seed": seed,
             "kinds": [kind],
             "returncode": status,
+            "admission_peak_mb": peak_mb,
+            "timeout_seconds": timeout_seconds,
             "result": str(out / "result.json"),
         }
         (out / "status.json").write_text(json.dumps(record, indent=2) + "\n")

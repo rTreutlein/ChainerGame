@@ -188,6 +188,49 @@ class EvidenceIntegrityTest(unittest.TestCase):
                 run(Config(samples=8, kinds=("xor",)), "oracle", d)
             self.assertEqual((Path(d) / "result.json").read_bytes(), original)
 
+    def test_holdout_counts_reads_but_no_training_updates(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            result = run(
+                Config(
+                    samples=16, kinds=("binding",), distractors=10, entity_holdout=True
+                ),
+                "budgeted",
+                directory,
+                budget=10,
+            )
+            self.assertLessEqual(result["work_totals"]["feature_reads"], 160)
+            self.assertEqual(result["work_totals"]["table_updates"], 72)
+            self.assertEqual(
+                result["holdout_scored_predictions_by_type"], {"binding": 7}
+            )
+            steps = [
+                json.loads(line) for line in (Path(directory) / "steps.jsonl").open()
+            ]
+            self.assertEqual(steps[8]["holdout_scored_targets"], [])
+            self.assertTrue(
+                all(
+                    step["holdout_scored_targets"] == ["T0_binding"]
+                    for step in steps[9:]
+                )
+            )
+            for step in steps[8:]:
+                self.assertEqual(step["work_units"]["table_updates"], 0)
+                self.assertEqual(step["work_units"]["by_lag"], {})
+
+    def test_zero_signal_noise_reports_undefined_skill(self):
+        from miningbench.report import report
+
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            result = run(
+                Config(samples=8, kinds=("single",), observation_noise=0.5),
+                "oracle",
+                directory,
+            )
+            self.assertEqual(result["scores"]["brier"], 0)
+            self.assertIsNone(result["normalized_skill"])
+            text, _ = report([result])
+            self.assertIn("undefined", text)
+
     def test_report_exposes_timeouts_without_fabricating_scores(self):
         from miningbench.report import report
 
@@ -286,6 +329,58 @@ class ReviewRegressionTest(unittest.TestCase):
         relational = World(Config(kinds=("binding",)))
         unequal = replace(relational.rules[0][0], condition="not_body")
         self.assertEqual(conditional(relational, unequal), 0)
+
+    def test_numeric_formula_calibration_and_past_position_roles(self):
+        from miningbench.scoring import association_scores
+        from miningbench.truth import conditional, numeric_rule_value
+
+        world = World(Config(samples=64, kinds=("numeric",)))
+        weak = replace(world.rules[0][0], strength=0.5)
+        self.assertEqual(conditional(world, weak), 1)
+        score = association_scores([weak], world.rules[0], world, 0)
+        self.assertEqual(score["mean_squared_error"], 0.25)
+        lagged = Rule(
+            "T0_numeric",
+            (
+                Literal("T0_numeric_Pos", ("$x",)),
+                Literal("T0_numeric_Pos", ("$y",), lag=2),
+            ),
+            value="*",
+            formula="2*x1-x2",
+            strength=0.5,
+        )
+        samples = list(world.stream())
+        expected = []
+        for sample in samples:
+            positions = [
+                next(
+                    int(args[0])
+                    for (head, args), value in row.items()
+                    if value and head == "T0_numeric_Pos"
+                )
+                for row in sample["history"]
+            ]
+            prediction = 2 * positions[-1] - positions[-2]
+            self.assertEqual(
+                numeric_rule_value(lagged, sample["history"], 32), prediction
+            )
+            expected.append(
+                sample["q"]["T0_numeric"][prediction] if 0 <= prediction <= 32 else 0
+            )
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            path = Path(directory) / "samples.jsonl"
+            path.write_text(
+                "".join(json.dumps(serial_sample(sample)) + "\n" for sample in samples)
+            )
+            score = association_scores([lagged], world.rules[0], world, 0, path)
+        self.assertEqual(
+            score["rules"][0]["exact_conditional"], sum(expected) / len(expected)
+        )
+        matched = recovery(
+            [replace(lagged, strength=1)], world.rules[0], world.types, world
+        )
+        self.assertGreater(matched["all"]["recall"], 0)
+        self.assertLess(matched["all"]["recall"], 1)
 
     def test_numeric_association_uses_exact_probabilities_over_observed_histories(self):
         from miningbench.scoring import association_scores
@@ -396,11 +491,26 @@ class ReviewRegressionTest(unittest.TestCase):
                 distractors=10,
             )
         )
+
+        class Observations(dict):
+            def __init__(self, row):
+                super().__init__(row)
+                self.reads = 0
+
+            def get(self, *args):
+                self.reads += 1
+                return super().get(*args)
+
         learner = BudgetedMarginal(w.features, w.domains, budget=10)
         seen = set()
         for sample in w.stream():
-            learner.predict(sample["history"])
-            learner.learn(sample["history"], sample["y"])
+            history = [Observations(row) for row in sample["history"]]
+            learner.predict(history)
+            learner.learn(history, sample["y"])
+            reads = sum(row.reads for row in history)
+            self.assertLessEqual(reads, 10)
+            self.assertEqual(learner.work["feature_reads"], reads)
+            self.assertLessEqual(learner.work["candidate_evaluations"], 10)
             seen.update(j for _, j in learner.active)
             self.assertLessEqual(learner.work["table_updates"], 10)
             self.assertLessEqual(learner.work["feature_reads"], 10)
@@ -416,21 +526,31 @@ class ReviewRegressionTest(unittest.TestCase):
         self.assertEqual(
             seen, {j for j, literal in enumerate(w.features) if literal.lag == 1}
         )
+        # The same external read counter rejects an unrestricted scan.
+        history = [Observations(row) for row in next(w.stream())["history"]]
+        Marginal(w.features, w.domains).predict(history)
+        self.assertGreater(sum(row.reads for row in history), 10)
+        # Scheduled search may move on; the learned predictor must remain usable.
+        incumbent = BudgetedMarginal(
+            [Literal(f"F{i}") for i in range(3)], {"Y": ("0", "1")}, budget=2
+        )
+        incumbent.counts["Y"][0] = [[10, 0], [0, 10]]
+        incumbent.total["Y"] = [10, 10]
+        incumbent.selected["Y"] = 0
+        incumbent.step = 1
+        history = [{("F0", ()): 1, ("F1", ()): 0, ("F2", ()): 0}] * 3
+        self.assertGreater(incumbent.predict(history)["Y"][1], 0.9)
+        self.assertEqual(incumbent.active, [("Y", 1)])
+        self.assertGreater(incumbent.predict(history)["Y"][1], 0.9)
+        self.assertEqual(incumbent.active, [("Y", 2)])
+        self.assertEqual(incumbent.work["base_rate_updates"], 0)
         early = list(w.stream())[0]["history"][-1]
         late = list(w.stream())[-1]["history"][-1]
         self.assertTrue(
-            all(
-                a[0] in ("e0", "e1", "e2", "e3")
-                for (h, a), v in early.items()
-                if v and a
-            )
+            all(a[0] in ("e0", "e1", "e2", "e3") for (h, a), v in early.items() if a)
         )
         self.assertTrue(
-            all(
-                a[0] in ("e4", "e5", "e6", "e7")
-                for (h, a), v in late.items()
-                if v and a
-            )
+            all(a[0] in ("e4", "e5", "e6", "e7") for (h, a), v in late.items() if a)
         )
 
     def test_cost_slope_rejects_growing_work(self):
@@ -448,6 +568,10 @@ class ReviewRegressionTest(unittest.TestCase):
         self.assertFalse(spike.result()["constant_cost_screen"])
 
     def test_skill_and_every_gate_negative_control(self):
+        from miningbench.report import interval
+
+        values = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 1, 2, 4, 8]
+        self.assertEqual(interval(values), interval(list(reversed(values))))
         from miningbench.report import gate
 
         # A population predictor has zero skill at all strengths, even though
@@ -562,6 +686,8 @@ class ReviewRegressionTest(unittest.TestCase):
             adapter.input_count = 0
             history = [{("A", ()): 1}] * 3
             adapter.predict(history)
+            self.assertEqual(adapter.work["label_atoms"], 0)
+            self.assertEqual(adapter.work["review_rows"], 0)
             adds = adapter.h.added
             self.assertEqual(
                 sum("NextPeriod" in row for row in adds), 2 if link_first else 1

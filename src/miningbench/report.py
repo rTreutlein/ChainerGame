@@ -9,6 +9,7 @@ def interval(values, seed=731, repeats=2000):
     """Seed-level percentile bootstrap; no step-level pseudoreplication."""
     if not values:
         return None
+    values = sorted(values)  # Artifact paths/order must not change bootstrap draws.
     rng = random.Random(seed)
     means = sorted(
         statistics.fmean(rng.choices(values, k=len(values))) for _ in range(repeats)
@@ -22,6 +23,11 @@ def interval(values, seed=731, repeats=2000):
 
 
 def formatted(values):
+    values = [value for value in values if value is not None]
+    if not values:
+        return "undefined"
+    if len(values) == 1:
+        return f"{values[0]:.4f} [CI unavailable: one seed]"
     ci = interval(values)
     return f"{ci['mean']:.4f} [{ci['low']:.4f}, {ci['high']:.4f}]"
 
@@ -117,7 +123,7 @@ def acceptance(results, failures=()):
     checks = []
     broken = broken_system_measurements()
     base = [r for r in results if r["metadata"].get("level") == "base"]
-    oracles = [r for r in base if r["metadata"]["system"] == "oracle"]
+    oracles = [r for r in results if r["metadata"]["system"] == "oracle"]
     # Independent interpreter error, not oracle-vs-itself probability loss.
     by_seed = defaultdict(list)
     for r in oracles:
@@ -207,6 +213,11 @@ def acceptance(results, failures=()):
                     if b:
                         # Paired normalized skill: the irreducible label variance
                         # cancels in both numerator and denominator.
+                        if (
+                            b["normalized_skill"] is None
+                            or r["normalized_skill"] is None
+                        ):
+                            continue
                         difference = b["normalized_skill"] - r["normalized_skill"]
                         seed_differences[key[0]].append(difference)
                 values = [statistics.fmean(v) for v in seed_differences.values()]

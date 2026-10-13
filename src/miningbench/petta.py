@@ -125,6 +125,13 @@ class Petta:
                 self.link(period)
         self.period = rows[-1][0]
         self.ingest_seconds = time.perf_counter() - ingest_started
+        self.work = {
+            "input_atoms": self.input_count,
+            "label_atoms": 0,
+            "review_rows": 0,
+            "query_expansion_allowance": self.budget,
+            "internal_candidate_updates": None,
+        }
         statements, indices = [], []
         for t, domain in self.domains.items():
             for v in ("1",) if len(domain) == 2 else domain:

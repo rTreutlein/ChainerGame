@@ -24,6 +24,7 @@ class Marginal:
         ]
 
     def predict(self, history):
+        self.work = 0
         self.x = self.vector(history)
         result = {}
         for t, domain in self.domains.items():
@@ -48,11 +49,14 @@ class Marginal:
     def rules(self):
         rules = []
         for t, j in self.selected.items():
-            total = self.total[t]
+            cells = self.counts[t][j]
+            total = [
+                sum(cell[value] for cell in cells)
+                for value in range(len(self.domains[t]))
+            ]
             n = sum(total)
             if n < 8:
                 continue
-            cells = self.counts[t][j]
             gain = (
                 sum(sum(v * v for v in c) / sum(c) for c in cells if sum(c))
                 - sum(v * v for v in total) / n
@@ -98,7 +102,11 @@ class BudgetedMarginal(Marginal):
         if self.weights == weights:
             return
         self.weights = dict(weights)
-        targets = sorted(self.domains, key=lambda t: -weights[t])
+        targets = (
+            list(self.domains)
+            if self.flat
+            else sorted(self.domains, key=lambda t: -weights[t])
+        )
         self.schedule = [(t, j) for t in targets for j in range(len(self.features))]
         if not self.flat:
             from itertools import groupby
@@ -111,50 +119,93 @@ class BudgetedMarginal(Marginal):
 
     def predict(self, history):
         self.active = []
-        # Rotate within equal-priority tiers so a fixed schema prefix cannot
-        # determine which features ever receive evidence. At most budget tables
-        # are selected and read, regardless of the size of the public schema.
+        # Reserve at most one input read per target for its learned incumbent.
+        # The remaining allowance schedules candidate updates. Prediction never
+        # forgets a learned rule merely because another table is being sampled.
+        allowance = max(0, self.budget - len(self.domains))
         tiers = [self.schedule] if self.flat else self.tiers
         for tier in tiers:
-            count = min(self.budget - len(self.active), len(tier))
+            count = min(allowance - len(self.active), len(tier))
             offset = (self.step * count) % len(tier)
             self.active.extend(tier[(offset + i) % len(tier)] for i in range(count))
-            if len(self.active) == self.budget:
+            if len(self.active) == allowance:
                 break
         self.x = {}
-        for _, j in self.active:
-            literal = self.features[j]
-            self.x[j] = int(history[-literal.lag].get((literal.head, literal.args), 0))
+
+        def read(index):
+            if index not in self.x:
+                literal = self.features[index]
+                self.x[index] = int(
+                    history[-literal.lag].get((literal.head, literal.args), 0)
+                )
+            return self.x[index]
+
+        for _, index in self.active:
+            read(index)
         result = {}
-        for t, domain in self.domains.items():
-            eligible = [j for target, j in self.active if target == t]
-            if not eligible:
-                c = self.total[t]
-            else:
-
-                def quality(j):
-                    cells = self.counts[t][j]
-                    return sum(sum(v * v for v in c) / sum(c) for c in cells if sum(c))
-
-                j = max(eligible, key=quality)
-                self.selected[t] = j
-                c = self.counts[t][j][self.x[j]]
-            result[t] = [(v + 0.5) / (sum(c) + len(domain) * 0.5) for v in c]
-        return result
-
-    def learn(self, history, labels):
-        for t, y in labels.items():
-            self.total[t][y] += 1
-        lag_counts = {}
-        for t, j in self.active:
-            self.counts[t][j][self.x[j]][labels[t]] += 1
-            lag = str(self.features[j].lag)
-            lag_counts[lag] = lag_counts.get(lag, 0) + 1
+        for target, domain in self.domains.items():
+            index = self.selected.get(target)
+            counts = (
+                self.total[target]
+                if index is None
+                else self.counts[target][index][read(index)]
+            )
+            result[target] = [
+                (value + 0.5) / (sum(counts) + len(domain) * 0.5) for value in counts
+            ]
         self.work = {
-            "table_updates": len(self.active),
-            "feature_reads": len(self.active),
-            "by_lag": lag_counts,
+            "table_updates": 0,
+            "feature_reads": len(self.x),
+            "candidate_evaluations": 0,
+            "base_rate_updates": 0,
+            "by_lag": {},
             "budget": self.budget,
         }
         self.step += 1
+        return result
+
+    def quality(self, target, index):
+        """Empirical Gini gain on the observations actually sampled for this table."""
+        cells = self.counts[target][index]
+        total = [
+            sum(cell[value] for cell in cells)
+            for value in range(len(self.domains[target]))
+        ]
+        count = sum(total)
+        if not count:
+            return -1.0, 0, -index
+        conditional = (
+            sum(
+                sum(value * value for value in cell) / sum(cell)
+                for cell in cells
+                if sum(cell)
+            )
+            / count
+        )
+        marginal = sum(value * value for value in total) / count**2
+        return conditional - marginal, count, -index
+
+    def learn(self, history, labels):
+        for target, value in labels.items():
+            self.total[target][value] += 1
+        candidates = {target: {index} for target, index in self.selected.items()}
+        lag_counts = {}
+        for target, index in self.active:
+            self.counts[target][index][self.x[index]][labels[target]] += 1
+            candidates.setdefault(target, set()).add(index)
+            lag = str(self.features[index].lag)
+            lag_counts[lag] = lag_counts.get(lag, 0) + 1
+        for target, indices in candidates.items():
+            ranked = [(self.quality(target, index), index) for index in indices]
+            quality, index = max(ranked)
+            if quality[0] > 0:
+                self.selected[target] = index
+            else:
+                self.selected.pop(target, None)
+        self.work.update(
+            table_updates=len(self.active),
+            candidate_evaluations=sum(len(indices) for indices in candidates.values()),
+            base_rate_updates=len(labels),
+            by_lag=lag_counts,
+        )
         return []

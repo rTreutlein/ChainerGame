@@ -9,7 +9,7 @@ import resource
 import subprocess
 import time
 
-from .world import World, serial_sample
+from .world import World, serial_sample, rng_for
 from .systems import Marginal, BudgetedMarginal
 from .scoring import RunningAverage, CostMeter, losses, recovery, association_scores
 from .truth import interpret, conditional
@@ -29,6 +29,15 @@ def source_hash():
         digest.update(p.name.encode())
         digest.update(p.read_bytes())
     return digest.hexdigest()
+
+
+def is_new_entity_context(target, row):
+    """The scored binding context must actually contain only holdout entities."""
+    observed = {head: args[0] for (head, args), value in row.items() if value and args}
+    new_entities = {"e4", "e5", "e6", "e7"}
+    return all(
+        observed.get(target + "_" + role) in new_entities for role in ("At", "Did")
+    )
 
 
 def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
@@ -69,8 +78,13 @@ def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
     elif system == "marginal":
         learner = Marginal(world.features, world.domains)
     elif system in ("budgeted", "budgeted-flat"):
+        reference_features = list(world.features)
+        rng_for(config.seed, "budgeted-schema").shuffle(reference_features)
+        metadata["reference_feature_order_sha256"] = hashlib.sha256(
+            repr(reference_features).encode()
+        ).hexdigest()
         learner = BudgetedMarginal(
-            world.features, world.domains, budget, flat=system == "budgeted-flat"
+            reference_features, world.domains, budget, flat=system == "budgeted-flat"
         )
     elif system == "oracle":
         learner = None
@@ -141,6 +155,15 @@ def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
                 )
                 mining_times.add(mining_seconds)
                 scores = {t: losses(predictions[t], q) for t, q in sample["q"].items()}
+                held_targets = [
+                    target
+                    for target in world.domains
+                    if sample["holdout"]
+                    and (
+                        world.types[target] != "binding"
+                        or is_new_entity_context(target, sample["history"][-1])
+                    )
+                ]
                 for t, score in scores.items():
                     by_type[world.types[t]].add(score)
                     windows[world.types[t]].add(score)
@@ -148,7 +171,7 @@ def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
                     base_scores.add(losses(prior[sample["phase"]][t], sample["q"][t]))
                     weighted_error += relevance[t] * score["brier"]
                     weighted_mass += relevance[t]
-                    if sample["holdout"]:
+                    if t in held_targets:
                         holdout_scores.add(score)
                         holdout_by_type[world.types[t]].add(score)
                     if learner is None:
@@ -175,10 +198,11 @@ def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
                     "events": step_events,
                     "relevance": relevance,
                     "holdout": sample["holdout"],
+                    "holdout_scored_targets": held_targets,
                 }
                 raw.write(json.dumps(row) + "\n")
                 raw.flush()
-                if learner and isinstance(learner.work, dict) and not sample["holdout"]:
+                if learner and isinstance(learner.work, dict):
                     for key, value in learner.work.items():
                         if isinstance(value, (int, float)):
                             work_totals[key] = work_totals.get(key, 0) + value
@@ -242,12 +266,20 @@ def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
                 out / "samples.jsonl",
             ),
             "baserate_scores": base_scores.result(),
-            "normalized_skill": 1
-            - all_scores.result()["brier"] / base_scores.result()["brier"],
+            "normalized_skill": (
+                1 - all_scores.result()["brier"] / base_scores.result()["brier"]
+                if base_scores.result()["brier"] > 0
+                else None
+            ),
             "relevance_weighted_brier": weighted_error / weighted_mass,
             "holdout_scores": holdout_scores.result(),
             "holdout_by_type": {
                 kind: score.result()
+                for kind, score in holdout_by_type.items()
+                if score.count
+            },
+            "holdout_scored_predictions_by_type": {
+                kind: score.count
                 for kind, score in holdout_by_type.items()
                 if score.count
             },

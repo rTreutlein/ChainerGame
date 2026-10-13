@@ -298,15 +298,13 @@ class CostMeter:
 
 
 def association_scores(learned, planted, world, phase, sample_path=None):
-    from .truth import conditional
+    from .truth import conditional, numeric_rule_value
 
     sufficient = sufficient_rules(learned, planted, world=world)
     numeric = [
         rule
         for rule in learned
-        if rule not in sufficient
-        and not rule.formula
-        and world.types[rule.target] == "numeric"
+        if rule not in sufficient and world.types[rule.target] == "numeric"
     ]
     conditional_totals = {rule: [0.0, 0] for rule in numeric}
     if sample_path is not None and numeric:
@@ -322,13 +320,22 @@ def association_scores(learned, planted, world, phase, sample_path=None):
                     for row in sample["history"]
                 ]
                 for rule in numeric:
-                    if world.holds(rule, history):
-                        index = world.domains[rule.target].index(rule.value)
-                        conditional_totals[rule][0] += sample["q"][rule.target][index]
+                    value = numeric_rule_value(
+                        rule, history, world.config.numeric_width, phase
+                    )
+                    if value is not None:
+                        probabilities = sample["q"][rule.target]
+                        probability = (
+                            probabilities[value]
+                            if isinstance(value, int)
+                            and 0 <= value < len(probabilities)
+                            else 0
+                        )
+                        conditional_totals[rule][0] += probability
                         conditional_totals[rule][1] += 1
     rows = []
     for rule in learned:
-        if rule in sufficient or rule.formula:
+        if rule in sufficient:
             continue
         reference = "iid_population"
         if rule in conditional_totals and sample_path is not None:

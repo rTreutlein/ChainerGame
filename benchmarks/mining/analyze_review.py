@@ -13,7 +13,7 @@ from pathlib import Path
 import statistics
 
 from miningbench.report import report, interval, formatted, separate_runtime_cohorts
-from miningbench.runner import source_hash, revision
+from miningbench.runner import source_hash, revision, is_new_entity_context
 from miningbench.scoring import (
     losses,
     CostMeter,
@@ -39,6 +39,7 @@ def main():
             "directed",
             "directed-bounded",
             "directed-entity-final",
+            "directed-fair",
         ) and json.loads(path.read_text())["metadata"]["system"].startswith("budgeted"):
             continue
         result = json.loads(path.read_text())
@@ -49,6 +50,7 @@ def main():
             "directed-entity-final",
             "petta-entity-final",
             "directed-fair",
+            "directed-audited",
         ):
             continue
         if path.parent.parent.name == "pure" and result["metadata"]["config"][
@@ -63,6 +65,7 @@ def main():
             "directed-bounded",
             "directed-entity-final",
             "directed-fair",
+            "directed-audited",
         ):
             # These are a distinct six-target cohort, not extra independent
             # seeds for the single-type base experiment.
@@ -74,12 +77,45 @@ def main():
             name: CostMeter(result["metadata"]["config"]["samples"])
             for name in ("cost", "mining_cost", "feedback_cost")
         }
+        config = result["metadata"]["config"]
+        world = World(Config(**config))
+        work_totals = {}
         held = {}
+        held_all = RunningAverage()
         live, negative_rates = {}, {}
         domains = result["metadata"]["domains"]
         label_counts = {target: [0] * len(domain) for target, domain in domains.items()}
-        for line in (path.parent / "steps.jsonl").open():
+        for line, sample_line in zip(
+            (path.parent / "steps.jsonl").open(),
+            (path.parent / "samples.jsonl").open(),
+            strict=True,
+        ):
             step = json.loads(line)
+            work = step.get("work_units", 0)
+            if isinstance(work, dict):
+                work = dict(work)
+                if step.get("holdout"):
+                    # Older artifacts retained the previous learn() counters.
+                    # The recorded holdout protocol performs prediction only.
+                    assert not step["events"]
+                    if result["metadata"]["system"].startswith("petta"):
+                        work.update(
+                            input_atoms=len(world.atoms), label_atoms=0, review_rows=0
+                        )
+                    else:
+                        work.update(
+                            table_updates=0,
+                            candidate_evaluations=0,
+                            base_rate_updates=0,
+                            by_lag={},
+                        )
+                for key, value in work.items():
+                    if isinstance(value, (int, float)):
+                        work_totals[key] = work_totals.get(key, 0) + value
+                    elif key == "by_lag":
+                        for lag, count in value.items():
+                            name = "lag_" + lag
+                            work_totals[name] = work_totals.get(name, 0) + count
             if not step.get("holdout"):
                 for target, value in step["label"].items():
                     label_counts[target][value] += 1
@@ -98,9 +134,18 @@ def main():
                     if tv[0] == "CTV":
                         negative_rates[name] = float(tv[2][1])
             if step.get("holdout"):
+                observed = {
+                    (head, tuple(args)): value
+                    for head, args, value in json.loads(sample_line)["history"][-1]
+                }
                 for target, score in step["scores"].items():
                     kind = result["metadata"]["types"][target]
+                    if kind == "binding" and not is_new_entity_context(
+                        target, observed
+                    ):
+                        continue
                     held.setdefault(kind, RunningAverage()).add(score)
+                    held_all.add(score)
             for name, field in (
                 ("cost", "total_seconds"),
                 ("mining_cost", "mining_path_seconds"),
@@ -111,8 +156,11 @@ def main():
         result["holdout_by_type"] = {
             kind: score.result() for kind, score in held.items()
         }
-        config = result["metadata"]["config"]
-        world = World(Config(**config))
+        result["holdout_scores"] = held_all.result()
+        result["holdout_scored_predictions_by_type"] = {
+            kind: score.count for kind, score in held.items()
+        }
+        result["work_totals"] = work_totals
         rules = [
             Rule(
                 **dict(
@@ -331,6 +379,8 @@ def main():
         "analysis_commit": revision(Path(__file__).resolve().parents[2]),
         "recomputed": [
             "cost slopes after 32 steps",
+            "holdout work counts from the prediction-only protocol",
+            "binding holdout scores restricted to observed new-entity contexts",
             "numeric finite-history association calibration",
             "recovery threshold in the observed outcome channel",
             "CTV exports replayed from raw verdicts, preserving the pooled complement",
