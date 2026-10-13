@@ -6,6 +6,7 @@ successful files are reused only with the same source hash and arguments.
 """
 import argparse
 import concurrent.futures
+import fnmatch
 import hashlib
 import json
 import os
@@ -39,10 +40,14 @@ def jobs(group):
 
 
 def main():
+    global OUT
     parser = argparse.ArgumentParser()
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--group", choices=("main", "growth", "all"), default="all")
+    parser.add_argument("--out", type=Path, default=OUT)
+    parser.add_argument("--case-pattern", default="*")
     args = parser.parse_args()
+    OUT = args.out
     OUT.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256()
     for path in sorted((ROOT/"src/supplynet").glob("*.py")):
@@ -50,7 +55,7 @@ def main():
     source = digest.hexdigest()
     provenance = {"source_sha256": source, "chainer_commit": subprocess.check_output(["git", "-C", "/nexus/Dev/OpenCog/NL2PLN_Project/PeTTaChainer", "rev-parse", "HEAD"], text=True).strip(),
                   "game_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
-                  "group": args.group, "jobs": args.jobs, "started": time.time()}
+                  "group": args.group, "jobs": args.jobs, "case_pattern": args.case_pattern, "started": time.time()}
     (OUT/f"manifest-{args.group}.json").write_text(json.dumps(provenance, indent=2)+"\n")
 
     def run(job):
@@ -79,7 +84,7 @@ def main():
         print(name, process.returncode, round(status["wall_seconds"], 1), flush=True)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        list(pool.map(run, jobs(args.group)))
+        list(pool.map(run, (job for job in jobs(args.group) if fnmatch.fnmatchcase(job[0],args.case_pattern))))
 
 
 if __name__ == "__main__":
