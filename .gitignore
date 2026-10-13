@@ -1,4 +1,5 @@
 __pycache__/
+benchmarks/supplynet_stage5/scratch/
 *.py[cod]
 *.egg-info/
 .venv/

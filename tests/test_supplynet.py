@@ -2,9 +2,13 @@ import itertools
 import os
 import random
 import unittest
+from unittest.mock import patch
 from dataclasses import replace
+from types import SimpleNamespace
+import json
 
 from supplynet import metta
+from supplynet import lookahead
 from supplynet.backends import GreedyBackend, LearnedReferenceBackend, PeTTaChainerBackend, PriorBackend, ReferenceBackend
 from supplynet.decisions import Problem, Values, best, expected_utilities, factored_utilities, greedy, options, utility
 from supplynet.game import GameConfig, run_game, stage_rates
@@ -27,6 +31,145 @@ from supplynet.world import (
     production,
     sample_period,
 )
+
+
+class LookaheadTests(unittest.TestCase):
+    def setUp(self):
+        self.cell = lookahead.network(1).cell
+        self.values = Values()
+        self.rates = Rates(persist=0.7)
+        self.choices = options(self.cell, 2)
+
+    def test_transition_and_repair_probability(self):
+        state = lookahead.State(True, (True, False, True), (False, True), True)
+        for action in self.choices:
+            states = list(lookahead.transition(self.cell, self.rates, state, action))
+            self.assertAlmostEqual(sum(w for s, w in states), 1.0)
+            for i, (site, kind) in enumerate(self.cell.sites.items()):
+                expected = self.rates.degraded_rate(kind, float(state.degraded[i] and site not in action.repairs))
+                self.assertAlmostEqual(sum(w for s, w in states if s.degraded[i]), expected)
+            arriving = lookahead.produced(self.cell, state, action)[MINE] and not state.blocked[int(action.reroute)]
+            self.assertTrue(all(s.fuel == arriving for s, w in states))
+
+    def test_expectimax_and_fixed_pairs_match_independent_enumeration(self):
+        # Independent product calculation, including the shared storm which
+        # makes the two next route blocks correlated.
+        state = lookahead.State(False, (True, False, False), (False, True), True)
+        distributions = {a: list(lookahead.transition(self.cell, self.rates, state, a)) for a in self.choices}
+        pairs, feedback = lookahead.pair_values(self.cell, self.values, state, self.choices, distributions)
+        for first in self.choices:
+            totals = dict.fromkeys(self.choices, 0.0)
+            adaptive = 0.0
+            current = production(self.cell, dict(zip(self.cell.sites, state.degraded)), first.stock,
+                                 {"plant-1": True}, False, True, first.repairs)
+            arriving = current[MINE] and not state.blocked[int(first.reroute)]
+            for bits in itertools.product((False, True), repeat=6):
+                storm, rf, ra, *degraded = bits
+                p = self.rates.storm["coastal"]
+                weight = p if storm else 1-p
+                for blocked, kind in ((rf, "exposed"), (ra, "sheltered")):
+                    p = self.rates.block_rate(kind, storm)
+                    weight *= p if blocked else 1-p
+                for i, (site, kind) in enumerate(self.cell.sites.items()):
+                    p = self.rates.degrade[kind] if site in first.repairs or not state.degraded[i] else self.rates.degraded_persist
+                    weight *= p if degraded[i] else 1-p
+                rewards = {}
+                for second in self.choices:
+                    output = production(self.cell, dict(zip(self.cell.sites, degraded)), second.stock,
+                                        {"plant-1": True}, not arriving, True, second.repairs)
+                    value = sum(self.values.output[self.cell.sites[s]] for s, on in output.items() if on)
+                    value += self.values.fuel * (output[MINE] and not (ra if second.reroute else rf))
+                    rewards[second] = value-self.values.cost_of(second)
+                    totals[second] += weight*rewards[second]
+                adaptive += weight*max(rewards.values())
+            immediate = sum(self.values.output[self.cell.sites[s]] for s, on in current.items() if on)-self.values.cost_of(first)
+            self.assertAlmostEqual(feedback[first], immediate+adaptive)
+            for second in self.choices:
+                self.assertAlmostEqual(pairs[first, second], immediate+totals[second])
+                self.assertLessEqual(pairs[first, second], feedback[first]+1e-10)
+
+    def test_repair_now_tradeoff_and_no_terminal_repair_proxy(self):
+        repair = Action(repairs=("mine",))
+        state = lookahead.State(False, (True, False, False), (False, False), True)
+        pairs, feedback = lookahead.pair_values(self.cell, self.values, state, self.choices,
+            {a: list(lookahead.transition(self.cell, self.rates, state, a)) for a in self.choices})
+        self.assertGreater(feedback[repair], feedback[Action()])
+        self.assertLess(lookahead.reward(self.cell, self.values, state, repair), lookahead.reward(self.cell, self.values, state, Action()))
+        altered = replace(self.values, repair={"mine": 9999, "power": 9999, "plant": 9999})
+        other, _ = lookahead.pair_values(self.cell, altered, state, self.choices,
+            {a: list(lookahead.transition(self.cell, self.rates, state, a)) for a in self.choices})
+        self.assertEqual(pairs, other)
+        # A healthy mine gains nothing from premature repair.
+        healthy = replace(state, degraded=(False, False, False))
+        _, qs = lookahead.pair_values(self.cell, self.values, healthy, self.choices,
+            {a: list(lookahead.transition(self.cell, self.rates, healthy, a)) for a in self.choices})
+        self.assertLess(qs[repair], qs[Action()])
+        # With only two crews, restoring the degraded plant is worth more
+        # next period than rerouting fuel to avoid a later stock cost. Stage
+        # 4's terminal proxies tie these and choose the reroute first.
+        tight = lookahead.State(False, (False, False, True), (True, False), False)
+        _, qs = lookahead.pair_values(self.cell, self.values, tight, self.choices,
+            {a: list(lookahead.transition(self.cell, self.rates, tight, a)) for a in self.choices})
+        reference = best(qs)
+        myopic = best(lookahead.myopic_values(self.cell, self.values, tight, self.choices))
+        self.assertEqual(reference, Action(stock=True, repairs=("plant-1",)))
+        self.assertEqual(myopic, Action(stock=True, reroute=True))
+        self.assertAlmostEqual(qs[reference]-qs[myopic], 0.5776)
+
+    def test_proposals_respect_cap_and_are_feasible(self):
+        for cap in (1, 8, 16, 32, 256):
+            calls = []
+            def evaluate(pairs):
+                calls.extend(pairs)
+                return {p: p[0].units + p[1].units for p in pairs}
+            proposed = lookahead.propose_pairs(self.choices, self.values, evaluate, cap)
+            self.assertLessEqual(len(calls), cap)
+            self.assertEqual(len(calls), len(set(calls)))
+            self.assertEqual(set(calls), set(proposed))
+            self.assertTrue(all(a in self.choices and b in self.choices for a, b in calls))
+
+    def test_receding_reference_and_myopic_gain(self):
+        config = GameConfig(seed=3, rounds=5, stage=5, plants=1)
+        rows = []
+        result = lookahead.run(config, "reference", on_round=rows.append)
+        self.assertEqual(result["regret"], 0)
+        self.assertGreater(result["reference_seconds"], 0)
+        self.assertEqual(result["next_states"], 64)
+        self.assertTrue(all(r["lookahead_gain"] >= -1e-10 for r in rows))
+        self.assertEqual(lookahead.run(config, "myopic")["lookahead_gain"], 0)
+
+    def test_unavailable_pair_values_are_reported_without_a_summary_crash(self):
+        output = {"chosen": 0, "candidate_pairs": 1, "context_bound": 1, "decision_queries": 1,
+                  "decision_answered": 0, "pair_scores": [[0, 0, None]], "unsupported": ["Assuming"]}
+        child = SimpleNamespace(returncode=0, stderr="", stdout=json.dumps(output))
+        with patch("supplynet.lookahead.subprocess.run", return_value=child):
+            result = lookahead.run(GameConfig(seed=1, rounds=1, stage=5, plants=1), "mm2")
+        self.assertEqual(result["decision_answered"], 0)
+        self.assertEqual(result["unsupported"], ["Assuming"])
+        self.assertNotIn("pair_mean_error", result)
+
+    @unittest.skipUnless(os.environ.get("SUPPLYNET_LIVE_PETTACHAINER") == "1", "set SUPPLYNET_LIVE_PETTACHAINER=1")
+    def test_live_lookahead_choice_and_bounded_contexts(self):
+        rows = []
+        result = lookahead.run(GameConfig(seed=1, rounds=1, stage=5, plants=1, budget=400),
+                               "pettachainer", python_path=os.environ.get("PETTACHAINER_PYTHONPATH"), on_round=rows.append)
+        self.assertEqual(result["regret"], 0)
+        self.assertLessEqual(result["context_bound"], 32)
+        self.assertGreater(result["decision_answered"], 0)
+        self.assertEqual(len(rows[0]["pair_scores"]), result["candidate_pairs"])
+        self.assertLess(result["pair_max_error"], 1e-6)
+        # Healthy current production must stay certain when it fuels later
+        # production. This catches contradictory negative alternative rules.
+        healthy = lookahead.run(GameConfig(seed=2, rounds=1, stage=5, plants=1, budget=50),
+                                 "pettachainer", python_path=os.environ.get("PETTACHAINER_PYTHONPATH"))
+        self.assertLess(healthy["pair_max_error"], 1e-6)
+
+    @unittest.skipUnless(os.environ.get("SUPPLYNET_LIVE_PROBLOG") == "1", "set SUPPLYNET_LIVE_PROBLOG=1")
+    def test_live_problog_two_stage_matches_reference(self):
+        result = lookahead.run(GameConfig(seed=2, rounds=1, stage=5, plants=1), "problog")
+        self.assertEqual(result["problog_answered"], 1)
+        self.assertLess(result["problog_reference_max_error"], 1e-8)
+        self.assertLess(result["regret"], 1e-8)
 
 
 def brute_force_posterior(network, rates, before, periods, observations, actions=None, utility=None):

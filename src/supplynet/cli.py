@@ -14,21 +14,22 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="supplynet")
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="play rounds of a stage with one reasoner")
-    run.add_argument("--stage", choices=("1", "2", "3", "4", "scale"), default="1")
+    run.add_argument("--stage", choices=("1", "2", "3", "4", "5", "scale"), default="1")
     run.add_argument("--cycle", choices=("timed", "untimed"), default="timed", help="stage 3: the fuel loop through time or within a period")
     run.add_argument(
         "--backend",
-        choices=("reference", "learned-reference", "local", "prior", "greedy", "beam", "pettachainer", "mm2", "nars", "problog"),
+        choices=("reference", "learned-reference", "local", "prior", "greedy", "beam", "myopic", "openloop", "pettachainer", "mm2", "nars", "problog"),
         default="reference",
         help="local: stage scale only; nars, learned-reference: stages 1-3; greedy, beam: stage 4 (exact beliefs; single actions ranked alone, or the extend proposer); "
              "mm2: the PeTTaChainer harness on mm2_chainer.petta",
     )
     decide = run.add_argument_group("stage 4")
-    decide.add_argument("--plants", type=int, default=2, help="stages 3-4: plants in the cell")
+    decide.add_argument("--plants", type=int, help="plants in the cell (default 2; stage 5: 1)")
     decide.add_argument("--capacity", type=int, default=2, help="action units per period")
-    decide.add_argument("--proposer", choices=("extend", "exhaustive"), default="extend",
+    decide.add_argument("--proposer", choices=("extend", "exhaustive", "open"), default="extend",
                         help="pettachainer/mm2: which joint actions are asked (backends.PeTTaChainerBackend)")
     decide.add_argument("--beam", type=int, default=2, help="pettachainer/mm2 with --proposer extend: options extended per layer")
+    decide.add_argument("--pair-cap", type=int, default=32, help="stage 5: maximum candidate pairs, including proposal probes")
     run.add_argument("--mm2-path", default=os.environ.get("MM2_CHAINER_PYTHONPATH"), help="the directory holding mm2_chainer")
     run.add_argument(
         "--learned-rules",
@@ -73,9 +74,30 @@ def main(argv=None):
         parser.error("--backend nars, --backend learned-reference and --learned-rules run stages 1-3")
     if args.stage == "4" and (args.backend in ("nars", "learned-reference", "local") or args.learned_rules):
         parser.error("stage 4 runs reference, prior, greedy, pettachainer, mm2 and problog with given rates (docs/supply_network.md)")
-    if args.backend in ("greedy", "beam") and args.stage != "4":
-        parser.error("--backend greedy and --backend beam need --stage 4")
+    if args.backend in ("greedy", "beam") and args.stage not in ("4", "5"):
+        parser.error("--backend greedy and --backend beam need --stage 4 or 5")
+    if args.backend in ("myopic", "openloop") and args.stage != "5":
+        parser.error("--backend myopic and --backend openloop need --stage 5")
+    if args.proposer == "open" and args.stage != "5":
+        parser.error("--proposer open needs --stage 5")
     on_round = (lambda record: print(json.dumps(record), flush=True)) if args.stream else None
+    if args.stage == "5":
+        from . import lookahead
+        if args.backend in ("nars", "learned-reference", "local") or args.learned_rules or args.mine_rules:
+            parser.error("stage 5 uses given rates; NARS has no comparable joint expected-utility planner")
+        if (args.plants is not None and not 0 <= args.plants <= 3) or not 1 <= args.capacity <= 3 or args.pair_cap < 1 or args.beam < 1:
+            parser.error("stage 5 exact sizes: plants 0..3, capacity 1..3, pair-cap and beam positive")
+        if args.regions not in (None, 1):
+            parser.error("stage 5 has one region")
+        config = GameConfig(seed=args.seed, history=30 if args.history is None else args.history,
+                            rounds=30 if args.rounds is None else args.rounds, stage=5, plants=1 if args.plants is None else args.plants,
+                            budget=100 if args.budget is None else args.budget, values=Values(capacity=args.capacity))
+        if config.rounds < 1 or config.history < 1 or config.budget < 1:
+            parser.error("stage 5 rounds, history and budget must be positive")
+        path = args.mm2_path if args.backend == "mm2" else args.pettachainer_path
+        print(json.dumps(lookahead.run(config, args.backend, args.proposer, args.pair_cap, args.beam, path,
+                                     args.problog_engine, args.problog_timeout, on_round)), flush=True)
+        return
     if args.stage == "scale":
         backend = {
             "reference": lambda: ReferenceBackend(scale.Knowledge),
@@ -120,7 +142,7 @@ def main(argv=None):
         100 if args.budget is None else args.budget,
         int(args.stage),
         args.cycle,
-        args.plants,
+        2 if args.plants is None else args.plants,
         Values(capacity=args.capacity),
     )
     print(json.dumps({**run_game(config, backend, on_round=on_round), "learned_rules": learned}), flush=True)
