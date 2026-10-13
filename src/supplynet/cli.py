@@ -18,7 +18,7 @@ def main(argv=None):
     run.add_argument("--cycle", choices=("timed", "untimed"), default="timed", help="stage 3: the fuel loop through time or within a period")
     run.add_argument(
         "--backend",
-        choices=("reference", "learned-reference", "local", "prior", "greedy", "beam", "myopic", "openloop", "pettachainer", "mm2", "nars", "problog"),
+        choices=("reference", "learned-reference", "local", "prior", "greedy", "beam", "myopic", "exact-pairs", "pettachainer", "mm2", "nars", "problog"),
         default="reference",
         help="local: stage scale only; nars, learned-reference: stages 1-3; greedy, beam: stage 4 (exact beliefs; single actions ranked alone, or the extend proposer); "
              "mm2: the PeTTaChainer harness on mm2_chainer.petta",
@@ -30,6 +30,7 @@ def main(argv=None):
                         help="pettachainer/mm2: which joint actions are asked (backends.PeTTaChainerBackend)")
     decide.add_argument("--beam", type=int, default=2, help="pettachainer/mm2 with --proposer extend: options extended per layer")
     decide.add_argument("--pair-cap", type=int, default=64, help="stage 5: maximum candidate pairs, including proposal probes")
+    run.add_argument("--mm2-python", default=os.environ.get("MM2_CHAINER_PYTHON"), help="stage 5: interpreter for the MM2 capability worker (default: current interpreter)")
     run.add_argument("--mm2-path", default=os.environ.get("MM2_CHAINER_PYTHONPATH"), help="the directory holding mm2_chainer")
     run.add_argument(
         "--learned-rules",
@@ -76,8 +77,8 @@ def main(argv=None):
         parser.error("stage 4 runs reference, prior, greedy, pettachainer, mm2 and problog with given rates (docs/supply_network.md)")
     if args.backend in ("greedy", "beam") and args.stage not in ("4", "5"):
         parser.error("--backend greedy and --backend beam need --stage 4 or 5")
-    if args.backend in ("myopic", "openloop") and args.stage != "5":
-        parser.error("--backend myopic and --backend openloop need --stage 5")
+    if args.backend in ("myopic", "exact-pairs") and args.stage != "5":
+        parser.error("--backend myopic and --backend exact-pairs need --stage 5")
     if args.proposer == "open" and args.stage != "5":
         parser.error("--proposer open needs --stage 5")
     on_round = (lambda record: print(json.dumps(record), flush=True)) if args.stream else None
@@ -96,7 +97,7 @@ def main(argv=None):
             parser.error("stage 5 rounds, history and budget must be positive")
         path = args.mm2_path if args.backend == "mm2" else args.pettachainer_path
         print(json.dumps(lookahead.run(config, args.backend, args.proposer, args.pair_cap, args.beam, path,
-                                     args.problog_engine, args.problog_timeout, on_round)), flush=True)
+                                     args.problog_engine, args.problog_timeout, on_round, mm2_python=args.mm2_python)), flush=True)
         return
     if args.stage == "scale":
         backend = {

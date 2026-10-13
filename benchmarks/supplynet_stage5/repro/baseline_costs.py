@@ -5,6 +5,7 @@ expectimax. Omit that scoring pass, verify every action against the full
 run, and add belief construction time to the original decision timings.
 """
 import json
+import sys
 from pathlib import Path
 import time
 from unittest.mock import patch
@@ -12,7 +13,7 @@ from supplynet.game import GameConfig
 from supplynet.lookahead import Oracle,run
 from supplynet.world import Action
 
-root=Path('/nexus/Dev/OpenCog/bench/results/supplynet-stage5/partial-network')
+root=Path(sys.argv[1]) if len(sys.argv)>1 else Path('/nexus/Dev/OpenCog/bench/results/supplynet-stage5/review-fixes')
 belief=Oracle.belief
 samples=[]
 def timed(model,*args):

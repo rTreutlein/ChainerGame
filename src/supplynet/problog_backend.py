@@ -231,14 +231,14 @@ def _infer(text: str, queries: list[str], engine: str, scratch: str, connection)
         connection.send(("failed", None, {"error": f"{type(error).__name__}: {str(error)[:300]}"}))
 
 
-def solve(text: str, queries: list[str], engine: str, timeout: float) -> tuple[list[float] | None, dict]:
+def solve(text: str, queries: list[str], engine: str, timeout: float, scratch_dir=None) -> tuple[list[float] | None, dict]:
     """The probabilities of ``queries`` under the program ``text`` (None
     unless answered) and the run's record: its outcome ("answered",
     "timeout" or "failed"), wall seconds, statements, and the child's phases
     or error."""
     context = multiprocessing.get_context("fork")
     receive, send = context.Pipe(duplex=False)
-    with tempfile.TemporaryDirectory(prefix="problog-") as scratch:
+    with tempfile.TemporaryDirectory(prefix="problog-", dir=scratch_dir) as scratch:
         child = context.Process(target=_infer, args=(text, queries, engine, scratch, send), daemon=True)
         started = time.perf_counter()
         child.start()

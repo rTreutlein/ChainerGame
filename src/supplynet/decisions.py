@@ -32,7 +32,7 @@ class Values:
 
     def cost_of(self, action: Action) -> float:
         return (self.cost["stock"] * action.stock + self.cost["reroute"] * action.reroute
-                + self.cost["repair"] * len(action.repairs) + self.cost.get("inspect", 0.5) * len(action.inspections))
+                + self.cost["repair"] * len(action.repairs) + self.cost["inspect"] * len(action.inspections))
 
 
 def options(cell: Cell, capacity: int, inspect: bool = False) -> tuple[Action, ...]:
@@ -43,8 +43,7 @@ def options(cell: Cell, capacity: int, inspect: bool = False) -> tuple[Action, .
     result = []
     for size in range(capacity + 1):
         for chosen in itertools.combinations(singles, size):
-            action = combine(chosen)
-            result.append(action)
+            result.append(combine(chosen))
     return tuple(result)
 
 

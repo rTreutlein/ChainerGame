@@ -11,7 +11,7 @@ import time
 from . import metta
 from .decisions import Problem, Values, options
 from .lookahead import Decision, Parameters, propose_pairs
-from .world import Action, Cell, Network, Observation, Period, Rates, Route
+from .world import Action, Cell, Network, Rates, Route
 
 
 def deserialize(payload):
@@ -25,14 +25,6 @@ def deserialize(payload):
     problem = Problem(p['period'],p['previous'],p['inputs'],p['mine_before'],p['fuel_before'],options(cell,values.capacity,inspect=True),values)
     decision = Decision(problem,**{k:v for k,v in payload['decision'].items() if k!='problem'})
     return net,Rates(**payload['rates']),values,Parameters(**payload['parameters']),decision
-
-
-def observation(d):
-    return Observation(**{**d,'late':{(s,t):v for s,t,v in d['late']}})
-
-
-def period(d):
-    return Period(**{**d,'repairing':tuple(d['repairing'])})
 
 
 def action_facts(cell, action, time, decision):
@@ -130,42 +122,6 @@ def decide(payload):
                     'open_answered':0,'worker_setup_seconds':time.perf_counter()-started,
                     'unsupported':missing+(['Assuming returned no answers'] if not rows[0] else []),
                     'backend_unavailable':True,'pair_scores':[[0,0,None]]}
-    if payload['backend']=='mm2':
-        from .backends import PeTTaChainerBackend
-        belief = PeTTaChainerBackend(payload.get('python_path'),module='mm2_chainer.petta')
-        # mm2 rejects even identical repeated proof IDs. Delayed reports
-        # legitimately repeat already labelled history facts; deduplicate IDs.
-        from .problog_backend import parse
-        add = belief._handler.add_atoms_no_check
-        seen = {}
-        def unique_add(atoms):
-            fresh = []
-            for atom in atoms:
-                key = repr(parse(atom)[1])
-                if key in seen:
-                    if seen[key]!=atom: raise ValueError('changed repeated proof '+key)
-                else:
-                    seen[key] = atom
-                    fresh.append(atom)
-            if fresh: add(fresh)
-        belief._handler.add_atoms_no_check = unique_add
-        belief.begin(net,rates,[(period(p),observation(o)) for p,o in payload['history']])
-        resolutions = {p['name']:(p,o) for p,o in payload['resolved']}
-        taken = {t:Action(**{**a,'repairs':tuple(a['repairs']),'inspections':tuple(a['inspections'])}) for t,a in payload['actions']}
-        keys = [('Storm',cell.fuel_route.region,decision.problem.period),*(('Degraded',s,decision.problem.period) for s in cell.sites),*(('Blocked',r.name,decision.problem.period) for r in net.routes),('Blocked',decision.problem.fuel_before,decision.problem.previous)]
-        for od in payload['observations']:
-            obs = observation(od)
-            if obs.period==decision.problem.period and payload['extra_facts']: belief._handler.add_atoms_no_check(payload['extra_facts'])
-            beliefs = belief.beliefs(obs,keys if obs.period==decision.problem.period else [],payload['budget'])
-            if obs.period in taken: belief.act(obs.period,taken[obs.period])
-            if obs.previous in resolutions:
-                p,o = resolutions[obs.previous]
-                belief.resolve(period(p),observation(o))
-        obs = observation(payload['observations'][-1])
-        beliefs.update({('Blocked',s,obs.period):float(v) for s,v in obs.inspected.items()})
-        beliefs.update({('Degraded',s,obs.period):float(v) for s,v in obs.degraded.items()})
-        payload['marginals'] = [[k,s,beliefs.get((k,s,decision.problem.period),.5)] for k,s,t in keys if t==decision.problem.period]
-        payload['fuel'] = float(decision.problem.mine_before)*(1-beliefs.get(('Blocked',decision.problem.fuel_before,decision.problem.previous),.5))
     module = 'mm2_chainer.petta' if payload['backend']=='mm2' else 'pettachainer'
     c = importlib.import_module(module).PeTTaChainer()
     clock = c.timing() if hasattr(c,'timing') else None

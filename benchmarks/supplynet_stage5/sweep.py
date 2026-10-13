@@ -15,21 +15,22 @@ import subprocess
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
-OUT = Path("/nexus/Dev/OpenCog/bench/results/supplynet-stage5/partial-network")
+OUT = Path("/nexus/Dev/OpenCog/bench/results/supplynet-stage5/review-fixes")
 PETTA = "/nexus/Dev/OpenCog/NL2PLN_Project/PeTTaChainer/.venv/bin/python"
+MM2_PYTHON = os.environ.get("MM2_CHAINER_PYTHON", "/nexus/Dev/OpenCog/NL2PLN_Project/mm2-chainer/.venv/bin/python")
 CAPPED = "/nexus/Dev/OpenCog/bench/capped"
 
 
 def jobs(group):
     if group in ("all", "main"):
         for seed in range(1, 5):
-            for backend in ("reference", "myopic", "greedy", "prior", "openloop", "beam", "problog"):
+            for backend in ("reference", "myopic", "greedy", "prior", "exact-pairs", "beam", "problog"):
                 yield f"{backend}-s{seed}", PETTA, ["--backend", backend, "--seed", str(seed)]
             for budget in (50, 100, 200, 400):
                 yield f"pettachainer-extend-b{budget}-s{seed}", PETTA, ["--backend", "pettachainer", "--budget", str(budget), "--seed", str(seed)]
             yield f"pettachainer-open-b200-s{seed}", PETTA, ["--backend", "pettachainer", "--proposer", "open", "--budget", "200", "--seed", str(seed)]
         for seed in range(1, 5):
-            yield f"mm2-s{seed}", PETTA, ["--backend", "mm2", "--mm2-path", "/nexus/Dev/OpenCog/NL2PLN_Project/mm2-chainer/python", "--seed", str(seed)]
+            yield f"mm2-s{seed}", PETTA, ["--backend", "mm2", "--mm2-python", MM2_PYTHON, "--mm2-path", "/nexus/Dev/OpenCog/NL2PLN_Project/mm2-chainer/python", "--seed", str(seed)]
     if group in ("all", "growth"):
         for cap in (16, 32, 64, 128, 256):
             for proposer in ("extend", "open", "exhaustive"):
@@ -46,6 +47,7 @@ def main():
     parser.add_argument("--group", choices=("main", "growth", "all"), default="all")
     parser.add_argument("--out", type=Path, default=OUT)
     parser.add_argument("--case-pattern", default="*")
+    parser.add_argument("--exclude-case-pattern", default="")
     args = parser.parse_args()
     OUT = args.out
     OUT.mkdir(parents=True, exist_ok=True)
@@ -55,7 +57,7 @@ def main():
     source = digest.hexdigest()
     provenance = {"source_sha256": source, "chainer_commit": subprocess.check_output(["git", "-C", "/nexus/Dev/OpenCog/NL2PLN_Project/PeTTaChainer", "rev-parse", "HEAD"], text=True).strip(),
                   "game_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
-                  "group": args.group, "jobs": args.jobs, "case_pattern": args.case_pattern, "started": time.time()}
+                  "group": args.group, "jobs": args.jobs, "case_pattern": args.case_pattern, "exclude_case_pattern": args.exclude_case_pattern, "started": time.time()}
     (OUT/f"manifest-{args.group}.json").write_text(json.dumps(provenance, indent=2)+"\n")
 
     def run(job):
@@ -84,7 +86,7 @@ def main():
         print(name, process.returncode, round(status["wall_seconds"], 1), flush=True)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        list(pool.map(run, (job for job in jobs(args.group) if fnmatch.fnmatchcase(job[0],args.case_pattern))))
+        list(pool.map(run, (job for job in jobs(args.group) if fnmatch.fnmatchcase(job[0],args.case_pattern) and not fnmatch.fnmatchcase(job[0],args.exclude_case_pattern))))
 
 
 if __name__ == "__main__":

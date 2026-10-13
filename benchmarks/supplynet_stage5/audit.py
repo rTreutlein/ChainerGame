@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 from sweep import jobs
 
-root=Path(sys.argv[1]) if len(sys.argv)>1 else Path('/nexus/Dev/OpenCog/bench/results/supplynet-stage5/partial-network')
+root=Path(sys.argv[1]) if len(sys.argv)>1 else Path('/nexus/Dev/OpenCog/bench/results/supplynet-stage5/review-fixes')
 source=hashlib.sha256()
 for p in sorted((Path(__file__).resolve().parents[2]/'src/supplynet').glob('*.py')):
     source.update(p.name.encode()+p.read_bytes())
@@ -32,6 +32,9 @@ for name,python,args in jobs('all'):
     assert [r['round'] for r in rows[:-1]]==list(range(1,count+1)),name
     assert all(r['type']=='round' and r['reference_seconds']>0 for r in rows[:-1]),name
     if summary['backend']=='pettachainer':
+        assert all(len(r['belief_errors'])==7+summary['plants'] for r in rows[:-1]),name
+        assert all(abs(r['belief_max_error']-max(e['error'] for e in r['belief_errors']))<1e-12 for r in rows[:-1]),name
+        assert all('own_belief_lookahead_gain' in r for r in rows[:-1]),name
         assert all(r['candidate_pairs']<=summary['pair_cap'] for r in rows[:-1]),name
         assert all(r['context_bound']<=summary['pair_cap']+2 for r in rows[:-1]),name
     if summary['backend']=='problog':

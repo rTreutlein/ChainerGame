@@ -213,6 +213,12 @@ class LookaheadTests(unittest.TestCase):
         self.assertGreater(result['decision_answered'],0)
         self.assertEqual(len(rows[0]['pair_scores']),rows[0]['candidate_pairs'])
         self.assertTrue(all(r['posterior_support']>1 for r in rows))
+        for row in rows:
+            self.assertEqual(len(row['belief_errors']),8)
+            self.assertEqual(row['belief_max_error'],max(e['error'] for e in row['belief_errors']))
+            self.assertAlmostEqual(row['own_myopic_true_gain'],row['own_myopic_regret']-row['regret'])
+            self.assertGreater(row['control_seconds'],0)
+            self.assertIn('own_belief_lookahead_gain',row)
 
     @unittest.skipUnless(os.environ.get('SUPPLYNET_LIVE_PETTACHAINER')=='1','set SUPPLYNET_LIVE_PETTACHAINER=1')
     def test_live_known_snapshot_pairs_match_exact_sums(self):
@@ -230,6 +236,25 @@ class LookaheadTests(unittest.TestCase):
                 self.assertEqual(result['decision_answered'],64)
                 for a,b,value in result['pair_scores']:
                     self.assertAlmostEqual(value,exact[self.model.first[a],self.model.second[b]],places=6)
+
+    @unittest.skipUnless(os.environ.get('SUPPLYNET_LIVE_PETTACHAINER')=='1','set SUPPLYNET_LIVE_PETTACHAINER=1')
+    @unittest.expectedFailure
+    def test_live_expected_gap_shared_mine_carry_positive_not_alias(self):
+        from pettachainer import PeTTaChainer
+        c = PeTTaChainer()
+        for head in ('Fuel','Operational'):
+            c.set_complete_predicate(head)
+        c.add_atoms_no_check([
+            '(: d (D now) (STV 0.5 1))',
+            '(: (no_inverse carry) (Implication (D now) (D later)) (CTV (STV 0.75 1) (STV 0.08 1)))',
+            '(: (no_inverse fuel) (Implication (Not (D now)) (Fuel later)) (STV 1 1))',
+            '(: (no_inverse operational) (Implication (Not (D later)) (Operational mine later)) (STV 1 1))',
+        ])
+        rows = c.query_many_refs([
+            '(: $p (And (Fuel later) (Operational mine later)) $tv)',
+        ],steps=400)
+        self.assertTrue(rows[0])  # Expected gap: shared ancestor/Not alias.
+        self.assertAlmostEqual(float(rows[0][0].tv[1]),.46,places=6)
 
     @unittest.skipUnless(os.environ.get('SUPPLYNET_LIVE_PROBLOG')=='1','set SUPPLYNET_LIVE_PROBLOG=1')
     def test_live_problog_two_stage_matches_reference(self):

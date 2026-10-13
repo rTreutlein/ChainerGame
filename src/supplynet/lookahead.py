@@ -336,11 +336,10 @@ class ProbLogPlanning:
     probabilities. It receives observations, rates and labelled history, not
     the reference's posterior or transition weights."""
     def __init__(self, net, rates, values, history, parameters, engine, timeout):
-        import tempfile
         from .problog_backend import ProblogBackend, solve, summary
         scratch = Path(__file__).resolve().parents[2]/'benchmarks/supplynet_stage5/scratch'
         scratch.mkdir(exist_ok=True)
-        tempfile.tempdir = str(scratch)
+        self.scratch = scratch
         self.backend = ProblogBackend(engine=engine,timeout=timeout)
         self.backend.begin(net,rates,history)
         self.model = Oracle(net,rates,values,parameters)
@@ -365,7 +364,7 @@ class ProbLogPlanning:
                 body = ', '.join(atom if (state>>i)&1 else '\\+'+atom for i,atom in enumerate(atoms))
                 lines += [f'{name} :- {body}.',f'query({name}).']
                 queries.append(name)
-            probabilities,record = solve('\n'.join(lines),queries,engine,timeout)
+            probabilities,record = solve('\n'.join(lines),queries,engine,timeout,scratch_dir=self.scratch)
             self.records.append(record)
             if probabilities is None:
                 self.available = False
@@ -395,7 +394,7 @@ class ProbLogPlanning:
             name = f'previous_{state}'
             lines += [f"{name} :- {', '.join(literals)}.",f'query({name}).']
             queries.append(name)
-        probabilities,record = solve(backend.program([])+'\n'+'\n'.join(lines),queries,backend.engine,backend.timeout)
+        probabilities,record = solve(backend.program([])+'\n'+'\n'.join(lines),queries,backend.engine,backend.timeout,scratch_dir=self.scratch)
         self.records.append(record)
         if probabilities is None: return None
         repaired = tuple(sorted(expr[1] for expr,value in backend.facts.get(decision.problem.previous,()) if expr[0]=='Repairing' and value))
@@ -407,7 +406,7 @@ class ProbLogPlanning:
 
 
 def run(config, backend, proposer='extend', pair_cap=64, beam=2, python_path=None,
-        problog_engine='ddnnf', problog_timeout=15, on_round=None, parameters=Parameters()):
+        problog_engine='ddnnf', problog_timeout=15, on_round=None, parameters=Parameters(), mm2_python=None):
     setup_start = time.perf_counter()
     net, rates = network(config.seed,config.plants), Rates(persist=0.7)
     cell,values = net.cell,config.values
@@ -427,8 +426,7 @@ def run(config, backend, proposer='extend', pair_cap=64, beam=2, python_path=Non
     belief_backend = None
     problog = None
     if backend in ('pettachainer','mm2'):
-        # MM2's compiled ABI differs. Its worker independently builds the
-        # observed-history belief KB in its matching interpreter each round.
+        # MM2's capability probe runs in the caller-selected interpreter.
         if backend=='pettachainer':
             from .backends import PeTTaChainerBackend
             belief_backend = PeTTaChainerBackend(python_path)
@@ -446,9 +444,6 @@ def run(config, backend, proposer='extend', pair_cap=64, beam=2, python_path=Non
     paid = ()
     receipt = None
     rounds = []
-    observations = []
-    resolved = []
-    actions = []
     setup_seconds = time.perf_counter()-setup_start
     for index in range(config.rounds):
         previous = timeline[-1]
@@ -483,8 +478,8 @@ def run(config, backend, proposer='extend', pair_cap=64, beam=2, python_path=Non
             action = myopic
         elif backend=='greedy':
             action = greedy(myopic_values,values.capacity)
-        elif backend in ('openloop','beam'):
-            evaluated = pairs if backend=='openloop' else propose_pairs(model.first,model.second,values,lambda ps:{x:pairs[x] for x in ps},pair_cap,beam)
+        elif backend in ('exact-pairs','beam'):
+            evaluated = pairs if backend=='exact-pairs' else propose_pairs(model.first,model.second,values,lambda ps:{x:pairs[x] for x in ps},pair_cap,beam)
             action = max(evaluated,key=evaluated.get)[0]
             details['candidate_pairs'] = len(evaluated)
         elif backend=='problog':
@@ -519,19 +514,25 @@ def run(config, backend, proposer='extend', pair_cap=64, beam=2, python_path=Non
                 pp,_,_ = model.evaluate(wp,replace(decision,inspected={}))
                 action = max(pp,key=pp.get)[0]
             else:
-                observed_keys = [('Storm',cell.fuel_route.region),*(('Blocked',r.name) for r in cell.fuel_routes),*(('Degraded',s) for s in model.sites)]
-                differences = [abs(marginal[k]-float(weights@((model.current>>i)&1))) for i,k in enumerate(observed_keys)] if marginal else []
-                if differences: details['belief_mean_error'] = sum(differences)/len(differences)
+                if marginal:
+                    core_keys = [('Storm',cell.fuel_route.region),*(('Blocked',r.name) for r in cell.fuel_routes),*(('Degraded',s) for s in model.sites)]
+                    exact = {k:float(weights@((model.current>>i)&1)) for i,k in enumerate(core_keys)}
+                    for route in model.shipping:
+                        exact['Blocked',route.name] = float(obs.inspected[route.name]) if route.name in obs.inspected else exact['Storm',route.region]*rates.block_given_storm[route.kind]+(1-exact['Storm',route.region])*rates.block_without_storm
+                    errors = [{'kind':k,'subject':subject,'pln':marginal[k,subject],'exact':v,'error':abs(marginal[k,subject]-v)} for (k,subject),v in exact.items()]
+                    details['belief_errors'] = errors
+                    details['belief_core_mean_error'] = sum(abs(marginal[k]-exact[k]) for k in core_keys)/len(core_keys)
+                    details['belief_mean_error'] = sum(e['error'] for e in errors)/len(errors)
+                    details['belief_worst_key'] = max(errors,key=lambda e:e['error'])
+                    details['belief_max_error'] = details['belief_worst_key']['error']
                 # Only noisy observations, labelled past history and the
                 # chainer's own marginals cross the worker boundary.
                 payload = {'network':asdict(net),'rates':asdict(rates),'values':asdict(values),
                            'parameters':asdict(parameters),'decision':asdict(decision),'marginals':[[k[0],k[1],v] for k,v in marginal.items() if k!='fuel'],
                            'fuel':marginal.get('fuel',0.5),'backend':backend,'python_path':python_path,
                            'budget':config.budget,'pair_cap':pair_cap,'beam':beam,'proposer':proposer,
-                           'history':[[asdict(a),as_observation(b)] for a,b in history] if backend=='mm2' else [],
-                           'observations':observations+[as_observation(obs)] if backend=='mm2' else [],
-                           'extra_facts':extra, 'actions':actions, 'resolved':resolved}
-                executable = '/nexus/Dev/OpenCog/NL2PLN_Project/mm2-chainer/.venv/bin/python' if backend=='mm2' else sys.executable
+                           'extra_facts':extra}
+                executable = (mm2_python or sys.executable) if backend=='mm2' else sys.executable
                 child = subprocess.run([executable,'-m','supplynet.lookahead_worker'],input=json.dumps(payload),text=True,capture_output=True,timeout=180)
                 if child.returncode: raise RuntimeError(child.stderr[-4000:])
                 details.update(json.loads(child.stdout.splitlines()[-1]))
@@ -543,8 +544,27 @@ def run(config, backend, proposer='extend', pair_cap=64, beam=2, python_path=Non
                 candidates = {model.first[a] for a,b,v in details['pair_scores']}
                 details['proposal_regret'] = qs[reference]-max(qs[a] for a in candidates)
         seconds = time.perf_counter()-start
-        if backend in ('reference','openloop','beam'): seconds += reference_seconds
+        if backend in ('reference','exact-pairs','beam'): seconds += reference_seconds
         if backend in ('myopic','greedy'): seconds += myopic_seconds
+        if backend=='pettachainer':
+            # Attribution is post-decision instrumentation, excluded from the
+            # agent's decision cost. It cannot affect proposals or enactment.
+            control_start = time.perf_counter()
+            own_pairs,own_qs,_ = model.evaluate(model.factored(marginal,problem.mine_before),decision)
+            own_myopic = best(model.myopic(model.factored(marginal,problem.mine_before),decision))
+            own_all = max(own_pairs,key=own_pairs.get)[0]
+            proposed = [(model.first[a],model.second[b]) for a,b,_ in details['pair_scores']]
+            own_proposed = max(proposed,key=own_pairs.get)[0]
+            details.update(own_myopic_action=describe(own_myopic),own_exact_pairs_action=describe(own_all),
+                           own_exact_proposed_action=describe(own_proposed),
+                           own_myopic_regret=qs[reference]-qs[own_myopic],
+                           own_exact_pairs_regret=qs[reference]-qs[own_all],
+                           own_exact_proposed_regret=qs[reference]-qs[own_proposed],
+                           own_belief_lookahead_gain=own_qs[action]-own_qs[own_myopic],
+                           own_belief_exact_pairs_gain=own_qs[own_all]-own_qs[own_myopic],
+                           own_belief_exact_proposed_gain=own_qs[own_proposed]-own_qs[own_myopic],
+                           own_myopic_true_gain=qs[action]-qs[own_myopic],
+                           control_seconds=time.perf_counter()-control_start)
         # Physical enactment is stage 4's, using the observed stored buffer.
         effective = replace(action,stock=action.stock or bank)
         p = timeline[-1] = enact(net,p,previous,effective)
@@ -565,14 +585,11 @@ def run(config, backend, proposer='extend', pair_cap=64, beam=2, python_path=Non
         knowledge.act(p.name,effective)
         if belief_backend is not None: belief_backend.act(p.name,effective)
         if problog is not None: problog.backend.act(p.name,effective)
-        observations.append(as_observation(obs))
-        actions.append([p.name,asdict(effective)])
         # The previous period resolves only AFTER the current decision.
         if previous.name in knowledge.window:
             knowledge.resolve(previous)
             if belief_backend is not None: belief_backend.resolve(previous,prev_observation)
             if problog is not None: problog.backend.resolve(previous,prev_observation)
-            resolved.append([asdict(previous),as_observation(prev_observation)])
         paid = action.inspections
         receipt = (action.via(cell),p.blocked[action.via(cell)]) if action.stock else None
         bank = bool(action.stock and not p.blocked[action.via(cell)])
@@ -585,7 +602,7 @@ def run(config, backend, proposer='extend', pair_cap=64, beam=2, python_path=Non
               'myopic_suboptimal_fraction':sum(r['myopic_suboptimal'] for r in rounds)/len(rounds),
               'unsupported':sorted({s for r in rounds for s in r.get('unsupported',[])}),
               'backend_unavailable':any(r.get('backend_unavailable',False) for r in rounds)}
-    fields = {'retrospective_branches','belief_mean_error','feedback_value_gap','regret','lookahead_gain','myopic_regret','utility','decision_seconds','reference_seconds','observation_branches','posterior_support',
+    fields = {'belief_core_mean_error','belief_max_error','own_myopic_regret','own_exact_pairs_regret','own_exact_proposed_regret','own_belief_lookahead_gain','own_belief_exact_pairs_gain','own_belief_exact_proposed_gain','own_myopic_true_gain','control_seconds','retrospective_branches','belief_mean_error','feedback_value_gap','regret','lookahead_gain','myopic_regret','utility','decision_seconds','reference_seconds','observation_branches','posterior_support',
               'paid_inspections','candidate_pairs','decision_queries','decision_answered','open_answered','context_bound','worker_setup_seconds',
               'chainer_wall_seconds','chainer_inference_seconds','chainer_overhead_seconds','pair_mean_error','pair_max_error','proposal_regret',
               'problog_reference_max_error'}
@@ -597,10 +614,3 @@ def run(config, backend, proposer='extend', pair_cap=64, beam=2, python_path=Non
     result['late_decision_seconds'] = sum(r['decision_seconds'] for r in rounds[-10:])/len(rounds[-10:])
     if problog is not None: result.update(problog.summary())
     return result
-
-
-def as_observation(obs):
-    # JSON cannot encode tuple keys for delayed shipments.
-    d = asdict(obs)
-    d['late'] = [[s,t,v] for (s,t),v in obs.late.items()]
-    return d
