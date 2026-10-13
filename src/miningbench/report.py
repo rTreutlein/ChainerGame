@@ -71,7 +71,13 @@ def broken_system_measurements():
     growing = CostMeter(1024)
     for step in range(1024):
         growing.add(step + 1)
+    from itertools import islice
+
+    stopped_steps = sum(
+        1 for _ in islice(World(Config(samples=1024, kinds=("single",))).stream(), 32)
+    )
     return {
+        "completion": float(stopped_steps >= 1024),
         "oracle": max(errors),
         "gap": statistics.fmean(leaked_gaps),
         "xor": recovery(world.rules[0], world.rules[0], world.types)["all"]["recall"],
@@ -80,7 +86,34 @@ def broken_system_measurements():
     }
 
 
-def acceptance(results):
+def separate_runtime_cohorts(results, failures=()):
+    commits = {
+        row["metadata"]["petta_commit"]
+        for row in results
+        if "petta_commit" in row["metadata"]
+    }
+    commits.update(
+        failure["petta_commit"] for failure in failures if failure.get("petta_commit")
+    )
+    if len(commits) <= 1:
+        return results, failures
+    separated = []
+    for row in results:
+        metadata = dict(row["metadata"])
+        if "petta_commit" in metadata and "@" not in metadata["system"]:
+            metadata["system"] += "@" + metadata["petta_commit"][:8]
+        separated.append(dict(row, metadata=metadata))
+    separated_failures = []
+    for failure in failures:
+        row = dict(failure)
+        if row.get("petta_commit") and "@" not in row["system"]:
+            row["system"] += "@" + row["petta_commit"][:8]
+        separated_failures.append(row)
+    return separated, separated_failures
+
+
+def acceptance(results, failures=()):
+    results, failures = separate_runtime_cohorts(results, failures)
     checks = []
     broken = broken_system_measurements()
     base = [r for r in results if r["metadata"].get("level") == "base"]
@@ -142,7 +175,10 @@ def acceptance(results):
             "marginal leaks the planted XOR rules",
         )
     )
-    systems = sorted({r["metadata"]["system"] for r in results})
+    systems = sorted(
+        {r["metadata"]["system"] for r in results}
+        | {failure["system"] for failure in failures}
+    )
     for system in systems:
         if system != "oracle":
             baseline = {
@@ -196,20 +232,56 @@ def acceptance(results):
                 r["mining_cost"]["relative_growth"]
             )
         values = [max(v) for v in seed_growth.values()]
+        cost_check = gate(
+            f"{system}: fitted constant-cost screen",
+            values,
+            0.5,
+            "below",
+            [broken["growth"]] * 10,
+            "miner revisits all previous samples each step (linear cost series)",
+        )
+        completed = {
+            (
+                row["metadata"].get("level"),
+                row["metadata"]["config"]["seed"],
+                tuple(row["metadata"]["config"]["kinds"]),
+            )
+            for row in long
+        }
+        censored = [
+            failure
+            for failure in failures
+            if failure["system"] == system
+            and failure["level"] in ("long", "deep_lags")
+            and (failure["level"], failure["seed"], tuple(failure["kinds"]))
+            not in completed
+        ]
+        if censored:
+            cost_check["evidence"] = {
+                "completed_stream_fit": cost_check["evidence"],
+                "uncompleted_long_attempts": len(censored),
+            }
+            if cost_check["status"] == "PASS":
+                cost_check["status"] = "UNMEASURED"
+        checks.append(cost_check)
+        completion = {row["metadata"]["config"]["seed"]: 1.0 for row in long}
+        for failure in censored:
+            completion[failure["seed"]] = 0.0
         checks.append(
             gate(
-                f"{system}: fitted constant-cost screen",
-                values,
-                0.5,
-                "below",
-                [broken["growth"]] * 10,
-                "miner revisits all previous samples each step (linear cost series)",
+                f"{system}: long-stream completion",
+                list(completion.values()),
+                0.99,
+                "above",
+                [broken["completion"]] * 10,
+                "system stops after 32 of 1024 decisions",
             )
         )
     return checks
 
 
 def report(results, failures=()):
+    results, failures = separate_runtime_cohorts(results, failures)
     groups = defaultdict(list)
     for r in results:
         for kind in r["by_type"]:
@@ -310,7 +382,7 @@ def report(results, failures=()):
                 f"| {f['level']} | {f['system']} | {', '.join(f['kinds'])} | "
                 f"{f['seed']} | {f['returncode']} | {f['completed_steps']} |"
             )
-    checks = acceptance(results)
+    checks = acceptance(results, failures)
     lines += [
         "",
         "## Acceptance",

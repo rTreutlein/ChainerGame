@@ -101,6 +101,7 @@ def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
     recovery_points = []
     by_type = {k: RunningAverage() for k in sorted(set(world.types.values()))}
     windows = {k: RunningAverage() for k in by_type}
+    holdout_by_type = {k: RunningAverage() for k in by_type}
     digest = hashlib.sha256()
     started = time.perf_counter()
     try:
@@ -149,6 +150,7 @@ def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
                     weighted_mass += relevance[t]
                     if sample["holdout"]:
                         holdout_scores.add(score)
+                        holdout_by_type[world.types[t]].add(score)
                     if learner is None:
                         oracle_max_error = max(
                             oracle_max_error,
@@ -244,6 +246,11 @@ def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
             - all_scores.result()["brier"] / base_scores.result()["brier"],
             "relevance_weighted_brier": weighted_error / weighted_mass,
             "holdout_scores": holdout_scores.result(),
+            "holdout_by_type": {
+                kind: score.result()
+                for kind, score in holdout_by_type.items()
+                if score.count
+            },
             "work_totals": work_totals,
             "fixed_update_budget": budget if system.startswith("budgeted") else None,
             "oracle_independent_max_error": oracle_max_error

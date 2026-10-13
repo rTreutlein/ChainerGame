@@ -24,7 +24,11 @@ for path in provenance["runs"]:
         or config["targets"] != 1
     ):
         continue
-    key = (metadata["system"], config["kinds"][0], config["seed"])
+    key = (
+        provenance.get("run_systems", {}).get(path, metadata["system"]),
+        config["kinds"][0],
+        config["seed"],
+    )
     if (
         key not in selected
         or config["samples"] > selected[key]["metadata"]["config"]["samples"]
@@ -43,6 +47,9 @@ colors = {
     "petta": "#cc6677",
     "petta-link-first": "#aa4499",
 }
+for system, _, _ in selected:
+    if system not in colors:
+        colors[system] = colors.get(system.split("@")[0], "#777777")
 fig, axes = plt.subplots(2, 5, figsize=(16, 6), sharex=True)
 for ax, kind in zip(axes.flat, kinds):
     for system, color in colors.items():

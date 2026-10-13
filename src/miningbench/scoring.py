@@ -76,14 +76,35 @@ def normal_form(rules):
     equality. Relational literals preserve shared variables under alpha renaming;
     numeric formulas use the documented template vocabulary, not sampled equality.
     """
-    groups = {}
+    expanded = []
     for rule in rules:
+        quantified = any(
+            argument.startswith("$")
+            for literal in rule.body
+            for argument in literal.args
+        )
+        if rule.condition == "not_body" and not quantified:
+            expanded.extend(
+                replace(
+                    rule,
+                    body=(replace(literal, negative=not literal.negative),),
+                    condition="",
+                )
+                for literal in rule.body
+            )
+        else:
+            expanded.append(rule)
+    groups = {}
+    for rule in expanded:
         t, v, f, body = canonical(rule)
         cube = frozenset(body)
         if any(
             replace(literal, negative=not literal.negative) in cube for literal in cube
         ):
-            continue
+            if rule.condition != "not_body":
+                continue
+            cube = frozenset()
+            f = (f[0], "")
         groups.setdefault((t, v, f), set()).add(cube)
     output = set()
     for key, cubes in groups.items():
@@ -121,29 +142,44 @@ def normal_form(rules):
 SUFFICIENCY_MARGIN = 0.1
 
 
-def sufficient_rules(learned, planted, margin=SUFFICIENCY_MARGIN):
+def sufficient_rules(learned, planted, margin=SUFFICIENCY_MARGIN, world=None):
     thresholds = {}
     for rule in planted:
-        thresholds[rule.target] = min(thresholds.get(rule.target, 1.0), rule.strength)
+        strength = rule.strength
+        if world is not None:
+            noise = world.config.observation_noise
+            if world.types[rule.target] == "numeric":
+                strength *= 1 - noise
+                strength += (1 - strength) / len(world.domains[rule.target])
+            else:
+                strength = noise + (1 - 2 * noise) * strength
+        thresholds[rule.target] = min(thresholds.get(rule.target, 1.0), strength)
     return [r for r in learned if r.strength >= thresholds.get(r.target, 1.0) - margin]
 
 
 def recovery(learned, planted, types, world=None, phase=0):
-    sufficient = sufficient_rules(learned, planted)
+    sufficient = sufficient_rules(learned, planted, world=world)
     a, b = normal_form(sufficient), normal_form(planted)
+    weights = {}
     if world is not None:
-        from .truth import numeric_contexts, numeric_rule_value
+        from .truth import numeric_matching_contexts, numeric_rule_value
 
         for target, kind in types.items():
             if kind != "numeric":
                 continue
             # A rule denotes a set of reachable (context, prediction) pairs.
             # This admits grounded wall transitions and formula refinements.
-            for rules, normalized in ((sufficient, a), (planted, b)):
+            for normalized in (a, b):
                 normalized.difference_update(
                     {item for item in normalized if item[0] == target}
                 )
-                for index, history in enumerate(numeric_contexts(world, target)):
+            relevant = [
+                rule for rule in sufficient + list(planted) if rule.target == target
+            ]
+            for index, (history, weight) in enumerate(
+                numeric_matching_contexts(world, target, relevant)
+            ):
+                for rules, normalized in ((sufficient, a), (planted, b)):
                     for rule in rules:
                         if rule.target != target:
                             continue
@@ -151,16 +187,20 @@ def recovery(learned, planted, types, world=None, phase=0):
                             rule, history, world.config.numeric_width, phase
                         )
                         if value is not None:
-                            normalized.add((target, str(value), "reachable", index))
+                            key = (target, str(value), "reachable", index)
+                            normalized.add(key)
+                            weights[key] = weight
 
     def score(x, y):
-        n = len(x & y)
+        n = math.fsum(weights.get(item, 1.0) for item in x & y)
+        learned_count = math.fsum(weights.get(item, 1.0) for item in x)
+        planted_count = math.fsum(weights.get(item, 1.0) for item in y)
         return {
-            "precision": n / len(x) if x else 0.0,
-            "recall": n / len(y) if y else 1.0,
+            "precision": n / learned_count if x else 0.0,
+            "recall": n / planted_count if y else 1.0,
             "matched": n,
-            "learned": len(x),
-            "planted": len(y),
+            "learned": learned_count,
+            "planted": planted_count,
             "equivalent": x == y,
         }
 
@@ -260,7 +300,7 @@ class CostMeter:
 def association_scores(learned, planted, world, phase, sample_path=None):
     from .truth import conditional
 
-    sufficient = sufficient_rules(learned, planted)
+    sufficient = sufficient_rules(learned, planted, world=world)
     numeric = [
         rule
         for rule in learned

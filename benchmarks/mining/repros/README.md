@@ -63,8 +63,8 @@ PeTTa's rule language can express when a client supplies a rule:
 - Across a link, current candidate generation reads one earlier feature rather
   than a conjunction spread over several periods; lag-3 search is absent.
 - Numeric coordinates are symbols to the miner. No order, offset, velocity or
-  wall-exception formulas are proposed. Coordinate-specific implications are
-  counted as structurally different from a learned affine formula.
+  wall-exception formulas are proposed. Coordinate-specific implications receive reachable-context behavioural
+  credit in v2; they do not establish discovery of a general affine formula.
 - The API supplies no directed target priority queue, action-relevance filtering,
   residual-split telemetry or auditable bounded-work counters. The benchmark
   records missing instrumentation rather than certifying the proposed design.

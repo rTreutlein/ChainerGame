@@ -36,6 +36,7 @@ def main():
     parser.add_argument("--seconds", type=int, default=600)
     parser.add_argument("--stress-seconds", type=int, default=1800)
     parser.add_argument("--required-petta-commit")
+    parser.add_argument("--keep-timeouts", action="store_true")
     args = parser.parse_args()
     if not os.environ.get("MININGBENCH_CAPPED"):
         parser.error("launch the coordinator through capped with MININGBENCH_CAPPED=1")
@@ -57,6 +58,27 @@ def main():
             done.add(
                 (meta.get("level"), config["kinds"][0], config["seed"], meta["system"])
             )
+    if args.keep_timeouts:
+        for path in args.evidence.rglob("status.json"):
+            status = json.loads(path.read_text())
+            world_path = path.parent / "world.json"
+            if status["returncode"] != 124 or not world_path.exists():
+                continue
+            metadata = json.loads(world_path.read_text())
+            if (
+                args.required_petta_commit
+                and metadata.get("petta_commit") != args.required_petta_commit
+            ):
+                continue
+            if len(status["kinds"]) == 1:
+                done.add(
+                    (
+                        status["level"],
+                        status["kinds"][0],
+                        status["seed"],
+                        status["system"],
+                    )
+                )
     tasks = [
         (level, kind, seed, system)
         for level in args.levels
@@ -120,7 +142,7 @@ def main():
             "--slots",
             "1",
             "--peak-mb",
-            "6000" if stress else "1500",
+            "15000" if kind == "numeric" else "6000" if stress else "1500",
             "timeout",
             "--kill-after=10",
             str(args.stress_seconds if stress else args.seconds),

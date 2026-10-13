@@ -102,6 +102,11 @@ def main():
                 item["completed_steps"] = (
                     sum(1 for _ in trace.open()) if trace.exists() else 0
                 )
+                world_path = p.parent / "world.json"
+                if world_path.exists():
+                    item["petta_commit"] = json.loads(world_path.read_text()).get(
+                        "petta_commit"
+                    )
                 failures.append(item)
         text, checks = report(results, failures)
         (a.path / "report.md").write_text(text)

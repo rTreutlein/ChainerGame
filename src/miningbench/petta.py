@@ -217,26 +217,24 @@ class Petta:
         return events
 
     def rules(self):
-        # A probabilistic planted rule can have strength below 0.5. Recovery
-        # asks which condition raises its target rate, not which label wins.
-        rules = []
-        for name, r in self.live.items():
-            counts = self.label_counts[r.target]
-            baseline = counts[self.domains[r.target].index(r.value)] / max(
-                1, sum(counts)
-            )
-            other = self.negative_rates.get(name, baseline)
-            if r.strength > other:
-                rules.append(r)
-            if name in self.negative_rates and other > r.strength:
-                # CTV's negative branch conditions on NOT(the whole body).
-                # De Morgan gives one disjunct per negated literal.
-                rules.extend(
-                    replace(
-                        r,
-                        body=(replace(literal, negative=not literal.negative),),
-                        strength=other,
-                    )
-                    for literal in r.body
-                )
-        return rules
+        return export_rules(
+            self.live, self.negative_rates, self.label_counts, self.domains
+        )
+
+
+def export_rules(live, negative_rates, label_counts, domains):
+    """Export calibrated events, preserving a CTV's whole negative condition.
+
+    A pooled P(Y | NOT(A AND B)) is not P(Y | NOT A) for each disjunct.
+    Ground complements are expanded only during sufficient-rule DNF matching.
+    """
+    rules = []
+    for name, rule in live.items():
+        counts = label_counts[rule.target]
+        baseline = counts[domains[rule.target].index(rule.value)] / max(1, sum(counts))
+        other = negative_rates.get(name, baseline)
+        if rule.strength > other:
+            rules.append(rule)
+        elif name in negative_rates and other > rule.strength:
+            rules.append(replace(rule, strength=other, condition="not_body"))
+    return rules

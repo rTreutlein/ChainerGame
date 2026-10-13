@@ -220,8 +220,14 @@ class RuleExtractionTest(unittest.TestCase):
         a.negative_rates = {"h": 0.1}
         self.assertEqual(a.rules(), list(a.live.values()))
         a.negative_rates = {"h": 0.6}
-        self.assertEqual(a.rules()[0].body, (Literal("A", negative=True),))
+        self.assertEqual(a.rules()[0].body, (Literal("A"),))
+        self.assertEqual(a.rules()[0].condition, "not_body")
         self.assertEqual(a.rules()[0].strength, 0.6)
+        a.live = {
+            "h": Rule("Y", (Literal("A", ("$x",)), Literal("B", ("$x",))), strength=0.3)
+        }
+        self.assertEqual(a.rules()[0].condition, "not_body")
+        self.assertEqual(a.rules()[0].body, a.live["h"].body)
 
 
 class ReviewRegressionTest(unittest.TestCase):
@@ -240,6 +246,14 @@ class ReviewRegressionTest(unittest.TestCase):
             recovery(learned[:2], [conjunction], {"Y": "and2"})["all"]["recall"], 0
         )
 
+    def test_observation_noise_does_not_reject_calibrated_sufficient_rule(self):
+        world = World(Config(kinds=("and2",), observation_noise=0.2))
+        learned = replace(world.rules[0][0], strength=0.8)
+        weak = Rule(learned.target, (learned.body[0],), strength=0.5)
+        result = recovery([weak, learned], world.rules[0], world.types, world)
+        self.assertEqual(result["all"]["recall"], 1)
+        self.assertEqual(result["all"]["precision"], 1)
+
     def test_exact_association_calibration(self):
         from miningbench.truth import conditional
         from miningbench.scoring import association_scores
@@ -249,6 +263,29 @@ class ReviewRegressionTest(unittest.TestCase):
         self.assertEqual(conditional(w, rule), 0.5)
         score = association_scores([rule], w.rules[0], w, 0)
         self.assertAlmostEqual(score["mean_squared_error"], 0.04**2)
+
+    def test_complement_association_retains_pooled_conditional_probability(self):
+        from miningbench.truth import conditional
+
+        world = World(Config(kinds=("xor",)))
+        a, b = Literal("T0_xor_F0"), Literal("T0_xor_F1")
+        complement = Rule("T0_xor", (a, b), strength=2 / 3, condition="not_body")
+        self.assertAlmostEqual(conditional(world, complement), 2 / 3)
+        self.assertEqual(
+            conditional(world, Rule("T0_xor", (replace(a, negative=True),))), 0.5
+        )
+        self.assertEqual(
+            normal_form([complement]),
+            normal_form(
+                [
+                    Rule("T0_xor", (replace(a, negative=True),)),
+                    Rule("T0_xor", (replace(b, negative=True),)),
+                ]
+            ),
+        )
+        relational = World(Config(kinds=("binding",)))
+        unequal = replace(relational.rules[0][0], condition="not_body")
+        self.assertEqual(conditional(relational, unequal), 0)
 
     def test_numeric_association_uses_exact_probabilities_over_observed_histories(self):
         from miningbench.scoring import association_scores
@@ -314,6 +351,19 @@ class ReviewRegressionTest(unittest.TestCase):
             recovery(w.rules[0], w.rules[0], w.types, w)["all"]["recall"], 1
         )
 
+    def test_numeric_extra_observation_gets_partial_behavioural_credit(self):
+        world = World(Config(kinds=("numeric",), distractors=1))
+        learned = [
+            replace(rule, body=rule.body + (Literal("D0"),)) for rule in world.rules[0]
+        ]
+        score = recovery(learned, world.rules[0], world.types, world)
+        self.assertEqual(score["all"]["precision"], 1)
+        self.assertEqual(score["all"]["recall"], 0.5)
+        lagged = [Rule("T0_numeric", (Literal("T0_numeric_Pos", ("0",), lag=2),), "1")]
+        score = recovery(lagged, world.rules[0], world.types, world)
+        self.assertGreater(score["all"]["precision"], 0)
+        self.assertLess(score["all"]["precision"], 1)
+
     def test_oracle_independent_interpreter_and_broken_oracle(self):
         from miningbench.truth import interpret
 
@@ -354,6 +404,12 @@ class ReviewRegressionTest(unittest.TestCase):
             self.assertEqual(set(learner.work["by_lag"]), {"1"})
             if sample["step"] >= 32:
                 self.assertTrue(sample["holdout"])
+        self.assertTrue(
+            all(
+                not literal.args or literal.args[0] not in ("e4", "e5", "e6", "e7")
+                for literal in w.features
+            )
+        )
         early = list(w.stream())[0]["history"][-1]
         late = list(w.stream())[-1]["history"][-1]
         self.assertTrue(
@@ -437,6 +493,30 @@ class ReviewRegressionTest(unittest.TestCase):
                     if level == "long":
                         row["metadata"]["config"]["samples"] = 1024
                     fixtures.append(row)
+        censored = [
+            {
+                "level": "deep_lags",
+                "seed": seed,
+                "system": "marginal",
+                "kinds": ["xor"],
+                "returncode": 124,
+                "completed_steps": 32,
+            }
+            for seed in range(1, 11)
+        ]
+        incomplete_checks = acceptance(fixtures, censored)
+        completion = next(
+            row
+            for row in incomplete_checks
+            if row["check"] == "marginal: long-stream completion"
+        )
+        self.assertEqual(completion["status"], "FAIL")
+        cost = next(
+            row
+            for row in incomplete_checks
+            if row["check"] == "marginal: fitted constant-cost screen"
+        )
+        self.assertNotEqual(cost["status"], "PASS")
         checks = acceptance(fixtures)
         self.assertTrue(checks)
         for check in checks:

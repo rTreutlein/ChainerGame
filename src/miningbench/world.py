@@ -52,6 +52,8 @@ class Config:
     numeric_width: int = 32
 
     def __post_init__(self):
+        if self.deep_lags < 3 or self.numeric_width < 3:
+            raise ValueError("deep_lags and numeric_width must be at least three")
         if self.samples < 8 or self.targets < 1 or self.distractors < 0:
             raise ValueError("samples >= 8, targets >= 1, distractors >= 0 required")
         if not self.kinds or any(k not in KINDS for k in self.kinds):
@@ -90,9 +92,7 @@ class World:
                 )
             elif k == "binding":
                 self.atoms.extend(
-                    (t + "_" + h, (f"e{i}",))
-                    for h in ("At", "Did")
-                    for i in range(8 if config.entity_holdout else 4)
+                    (t + "_" + h, (f"e{i}",)) for h in ("At", "Did") for i in range(4)
                 )
             else:
                 self.atoms.extend((t + f"_F{i}", ()) for i in range(4))
@@ -165,6 +165,7 @@ class World:
 
     @staticmethod
     def holds(rule, history):
+        complement = rule.condition == "not_body"
         variables = sorted(
             {a for literal in rule.body for a in literal.args if a.startswith("$")}
         )
@@ -205,8 +206,8 @@ class World:
                 != literal.negative
                 for literal in rule.body
             ):
-                return True
-        return False
+                return not complement
+        return complement
 
     def probabilities(self, history, phase):
         """Exact conditional distribution; independent rule firings combine by noisy OR.
@@ -294,7 +295,7 @@ class World:
                         {
                             (t + "_" + h, (f"e{i}",)): int(i == v)
                             for h, v in [("At", a), ("Did", b)]
-                            for i in range(8 if self.config.entity_holdout else 4)
+                            for i in range(offset, offset + 4)
                         }
                     )
                 else:
