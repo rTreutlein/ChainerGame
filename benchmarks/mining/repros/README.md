@@ -27,9 +27,11 @@ inputs yield strengths 0.45439112679589333 (true) and 0.4536851293455913 (false)
 unchanged by subsequent queries at budgets 40, 400 and 2000. The returned confidence
 is approximately 0.99647, and the proof is a revision of multiple views.
 
-This establishes a prediction/recovery discrepancy, not its cause. In particular,
-no claim is made that increasing the initial budget, changing review scheduling
-or eliminating previously withdrawn hypotheses would produce the same result.
+The cause is retained skeleton rows applying withdrawn hypotheses: removing a
+hypothesis from rule indexes did not invalidate its existing skeleton applications.
+`expand_proof` exposes the dropped hypothesis names inside the returned revision.
+The upstream agent owns this fix. The harness still queries the chainer directly;
+it does not filter proofs, reset the chainer, or substitute learned rates.
 The exact sequential-read repro is retained rather than changing the benchmark
 to read learned rule rates outside the chainer. Raw log:
 `/nexus/Dev/OpenCog/bench/results/mining-bench/prediction-read.log`.

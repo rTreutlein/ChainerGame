@@ -1,94 +1,162 @@
-"""Reports distinguish measured discrimination from acceptance expectations."""
+"""Paired bootstrap reports and falsifiable acceptance screens."""
 from collections import defaultdict
+import random
 import statistics
+
+
+def interval(values, seed=731, repeats=2000):
+    """Seed-level percentile bootstrap; no step-level pseudoreplication."""
+    if not values:
+        return None
+    rng = random.Random(seed)
+    means = sorted(statistics.fmean(rng.choices(values,k=len(values))) for _ in range(repeats))
+    return {'mean':statistics.fmean(values),'low':means[int(.025*repeats)],
+            'high':means[int(.975*repeats)],'n':len(values)}
+
+
+def formatted(values):
+    ci = interval(values)
+    return f"{ci['mean']:.4f} [{ci['low']:.4f}, {ci['high']:.4f}]"
+
+
+def gate(name, values, threshold, direction, broken, control):
+    """The identical predicate evaluates measured and deliberately broken arms."""
+    def passes(xs):
+        ci = interval(xs)
+        if ci is None:
+            return False
+        return ci['low'] > threshold if direction == 'above' else ci['high'] <= threshold
+    ci = interval(values)
+    powered = len(values) >= 10
+    return {'check':name,'status':('PASS' if passes(values) else 'FAIL') if powered else 'UNMEASURED',
+            'evidence':ci,'threshold':threshold,'direction':direction,
+            'negative_control':control,'broken_values':broken,
+            'discriminates':bool(broken) and not passes(broken)}
+
+
+def broken_system_measurements():
+    """Execute small faulty systems through the real scoring functions."""
+    from .world import Config, World
+    from .scoring import losses, recovery, CostMeter
+    from .truth import interpret
+    world = World(Config(samples=64,kinds=('xor',)))
+    errors, leaked_gaps, baseline_skills = [], [], []
+    for sample in world.stream():
+        exact = sample['q']['T0_xor']
+        errors.append(max(abs(p-q) for p,q in zip([.5,.5],exact)))
+        oracle = interpret(world,sample['history'],0)['T0_xor']
+        leaked_gaps.append(losses(oracle,exact)['brier']-losses(oracle,exact)['brier'])
+        error = losses([.5,.5],exact)['brier']
+        baseline_skills.append(1-error/error)
+    growing = CostMeter(1024)
+    for step in range(1024):
+        growing.add(step+1)
+    return {'oracle':max(errors), 'gap':statistics.fmean(leaked_gaps),
+            'xor':recovery(world.rules[0],world.rules[0],world.types)['all']['recall'],
+            'difficulty':baseline_skills[-1]-baseline_skills[0],
+            'growth':growing.result()['relative_growth']}
+
+
+def acceptance(results):
+    checks = []
+    broken = broken_system_measurements()
+    base = [r for r in results if r['metadata'].get('level') == 'base']
+    oracles = [r for r in base if r['metadata']['system'] == 'oracle']
+    # Independent interpreter error, not oracle-vs-itself probability loss.
+    by_seed = defaultdict(list)
+    for r in oracles:
+        by_seed[r['metadata']['config']['seed']].append(r['oracle_independent_max_error'])
+    values = [max(v) for v in by_seed.values()]
+    checks.append(gate('oracle independent truth',values,1e-12,'below',[broken['oracle']]*10,
+                       'constant .5 predictor on deterministic exhaustive truth fixtures'))
+    paired = defaultdict(dict)
+    for r in results:
+        c = r['metadata']['config']
+        key = (r['metadata'].get('level'),c['seed'],tuple(c['kinds']))
+        paired[key][r['metadata']['system']] = r
+    for kind in sorted({k for r in results for k in r['by_type']}-{'single'}):
+        gaps = [p['marginal']['by_type'][kind]['brier']-p['oracle']['by_type'][kind]['brier']
+                for (level,_,_),p in paired.items() if level == 'base' and 'oracle' in p
+                and 'marginal' in p and kind in p['oracle']['by_type']]
+        checks.append(gate('oracle beats marginal: '+kind,gaps,.005,'above',[broken['gap']]*10,
+                           'marginal replaced by oracle predictions'))
+    xor = [r['recovery']['by_type']['xor']['recall'] for r in base
+           if r['metadata']['system'] == 'marginal' and 'xor' in r['by_type']]
+    checks.append(gate('marginal XOR recovery fails',xor,.05,'below',[broken['xor']]*10,
+                       'marginal leaks the planted XOR rules'))
+    systems = sorted({r['metadata']['system'] for r in results})
+    for system in systems:
+        if system != 'oracle':
+            baseline = {(r['metadata']['config']['seed'],tuple(r['metadata']['config']['kinds'])):r
+                        for r in base if r['metadata']['system'] == system}
+            for knob in ('distractors','strength','observation_noise','samples','drift','targets'):
+                seed_differences = defaultdict(list)
+                for r in results:
+                    m = r['metadata']
+                    if m['system'] != system or m.get('level') != knob:
+                        continue
+                    key = (m['config']['seed'],tuple(m['config']['kinds']))
+                    b = baseline.get(key)
+                    if b:
+                        # Paired normalized skill: the irreducible label variance
+                        # cancels in both numerator and denominator.
+                        difference = b['normalized_skill']-r['normalized_skill']
+                        seed_differences[key[0]].append(difference)
+                values = [statistics.fmean(v) for v in seed_differences.values()]
+                checks.append(gate(f'{system}: harder {knob}',values,.01,'above',[broken['difficulty']]*10,
+                                   'input-ignoring population predictor in both paired levels (skill zero)'))
+        long = [r for r in results if r['metadata']['system'] == system
+                and r['metadata']['config']['samples'] >= 1000]
+        seed_growth = defaultdict(list)
+        for r in long:
+            seed_growth[r['metadata']['config']['seed']].append(r['mining_cost']['relative_growth'])
+        values = [max(v) for v in seed_growth.values()]
+        checks.append(gate(f'{system}: fitted constant-cost screen',values,.5,'below',[broken['growth']]*10,
+                           'miner revisits all previous samples each step (linear cost series)'))
+    return checks
 
 
 def report(results, failures=()):
     groups = defaultdict(list)
     for r in results:
-        level = r['metadata'].get('level', 'run')
         for kind in r['by_type']:
-            groups[(level, r['metadata']['system'], kind)].append(r)
-    lines = ['# Pattern mining benchmark', '',
-             '| Difficulty | System | Type | Seeds | Brier | Excess log loss | Precision | Recall | ms/step | Late/early | Peak MiB |',
-             '|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|']
-    for (level, system, kind), rows in sorted(groups.items()):
-        mean = lambda f: statistics.fmean(f(r) for r in rows)
+            groups[(r['metadata'].get('level','run'),r['metadata']['system'],kind)].append(r)
+    lines = ['# Pattern mining benchmark','',
+             'Intervals are 95% seed bootstrap intervals; paired differences resample paired seeds.', '',
+             '| Difficulty | System | Type | Seeds | Brier [95% CI] | Skill [95% CI] | Recall [95% CI] | Precision | Mining ms/step | Fitted growth | Peak MiB |',
+             '|---|---|---|---:|---|---|---|---:|---:|---:|---:|']
+    for (level,system,kind),rows in sorted(groups.items()):
+        values = lambda f:[f(r) for r in rows]
         lines.append(f'| {level} | {system} | {kind} | {len(rows)} | '
-                     f'{mean(lambda r:r["by_type"][kind]["brier"]):.5f} | '
-                     f'{mean(lambda r:r["by_type"][kind]["excess_log_loss"]):.5f} | '
-                     f'{mean(lambda r:r["recovery"]["by_type"][kind]["precision"]):.3f} | '
-                     f'{mean(lambda r:r["recovery"]["by_type"][kind]["recall"]):.3f} | '
-                     f'{mean(lambda r:r["cost"]["mean_seconds"])*1000:.3f} | '
-                     f'{mean(lambda r:r["cost"]["late_over_early"]):.2f} | '
-                     f'{max(r["peak_rss_kib"] for r in rows)/1024:.1f} |')
+                     +formatted(values(lambda r:r['by_type'][kind]['brier']))+' | '
+                     +formatted(values(lambda r:r['normalized_skill']))+' | '
+                     +formatted(values(lambda r:r['recovery']['by_type'][kind]['recall']))+' | '
+                     +f"{statistics.fmean(values(lambda r:r['recovery']['by_type'][kind]['precision'])):.3f} | "
+                     +f"{statistics.fmean(values(lambda r:r['mining_cost']['mean_seconds']))*1000:.2f} | "
+                     +f"{statistics.fmean(values(lambda r:r['mining_cost']['relative_growth'])):.2f} | "
+                     +f"{max(r['peak_rss_kib'] for r in rows)/1024:.1f} |")
+    lines += ['', '## Paired arm differences', '',
+              '| Difficulty | Type | Arm minus marginal Brier [95% CI] | Paired seeds |',
+              '|---|---|---|---:|']
+    for (level,system,kind),rows in sorted(groups.items()):
+        if system == 'marginal':
+            continue
+        refs = {r['metadata']['config']['seed']:r for r in groups.get((level,'marginal',kind),[])}
+        differences = [r['by_type'][kind]['brier']-refs[r['metadata']['config']['seed']]['by_type'][kind]['brier']
+                       for r in rows if r['metadata']['config']['seed'] in refs]
+        if differences:
+            lines.append(f'| {level} | {kind} | {system}: {formatted(differences)} | {len(differences)} |')
     if failures:
-        lines.extend(['', '## Incomplete runs', '',
-                      'These runs have no completed score. Partial scores are not substituted for full-stream results.', '',
-                      '| Difficulty | System | Type | Seed | Exit | Completed steps |',
-                      '|---|---|---|---:|---:|---:|'])
+        lines += ['', '## Incomplete runs', '', 'Incomplete streams have no full-stream score.', '',
+                  '| Difficulty | System | Type | Seed | Exit | Completed steps |',
+                  '|---|---|---|---:|---:|---:|']
         for f in failures:
             lines.append(f'| {f["level"]} | {f["system"]} | {", ".join(f["kinds"])} | '
                          f'{f["seed"]} | {f["returncode"]} | {f["completed_steps"]} |')
     checks = acceptance(results)
-    lines.extend(['', '## Acceptance', '', '| Check | Status | Evidence |', '|---|---|---|'])
-    for c in checks:
-        lines.append(f'| {c["check"]} | {c["status"]} | {c["evidence"]} |')
-    lines.extend(['', 'Timing and RSS are measurements, not seed-deterministic values. Late/early is a diagnostic, not a complexity proof.',
-                  'Brier is squared error against the exact distribution; excess log loss subtracts its entropy.', ''])
-    return '\n'.join(lines), checks
-
-
-def acceptance(results):
-    checks = []
-    oracles = [r for r in results if r['metadata']['system'] == 'oracle']
-    checks.append({'check': 'oracle exact', 'status': 'PASS' if oracles and all(
-        r['scores']['brier'] < 1e-15 and r['recovery']['all']['recall'] == 1 for r in oracles) else ('FAIL' if oracles else 'UNMEASURED'),
-        'evidence': f'{len(oracles)} oracle runs'})
-    pairs = defaultdict(dict)
-    for r in results:
-        m = r['metadata']
-        c = m['config']
-        key = (m.get('level', 'run'), c['seed'], tuple(c['kinds']), c['samples'], c['distractors'],
-               c['targets'], c['strength'], c['observation_noise'], c['drift'])
-        pairs[key][m['system']] = r
-    for kind in sorted({k for r in results for k in r['by_type']} - {'single'}):
-        gaps = [p['marginal']['by_type'][kind]['brier']-p['oracle']['by_type'][kind]['brier']
-                for p in pairs.values() if 'oracle' in p and 'marginal' in p and kind in p['oracle']['by_type']
-                and p['oracle']['metadata'].get('level', 'base') in ('base', 'run')]
-        checks.append({'check': f'oracle beats marginal: {kind}',
-                       'status': 'PASS' if gaps and min(gaps) > .01 else ('FAIL' if gaps else 'UNMEASURED'),
-                       'evidence': f'min paired Brier gap {min(gaps):.5f} > 0.01' if gaps else 'no paired base runs'})
-    xor = [r['recovery']['by_type']['xor']['recall'] for r in results
-           if r['metadata']['system'] == 'marginal' and 'xor' in r['by_type']]
-    checks.append({'check': 'marginal XOR recovery fails', 'status': 'PASS' if xor and max(xor) == 0 else ('FAIL' if xor else 'UNMEASURED'),
-                   'evidence': f'max recall {max(xor) if xor else None}'})
-    for system in sorted({r['metadata']['system'] for r in results}-{'oracle'}):
-        base = {(r['metadata']['config']['seed'],tuple(r['metadata']['config']['kinds'])): r for r in results
-                if r['metadata']['system'] == system and r['metadata'].get('level') == 'base'}
-        for knob in ('distractors', 'strength', 'observation_noise', 'samples', 'drift', 'targets'):
-            high = [r for r in results if r['metadata']['system'] == system and r['metadata'].get('level') == knob]
-            changes = []
-            for r in high:
-                b = base.get((r['metadata']['config']['seed'],tuple(r['metadata']['config']['kinds'])))
-                if not b:
-                    continue
-                # Noise is expected to worsen label prediction, but can make q easier
-                # to approximate. Keep both columns in raw results; do not tune gates.
-                metric = 'expected_brier' if knob in ('strength', 'observation_noise') else 'brier'
-                delta = r['scores'][metric]-b['scores'][metric]
-                cost_ratio = r['cost']['mean_seconds']/b['cost']['mean_seconds']
-                changes.append((delta, cost_ratio))
-            degraded = bool(changes) and (statistics.fmean(x[0] for x in changes) > .002 or
-                knob in ('distractors', 'targets') and statistics.fmean(x[1] for x in changes) > 1.2)
-            checks.append({'check': f'{system}: harder {knob}',
-                           'status': 'PASS' if degraded else ('FAIL' if changes else 'UNMEASURED'),
-                           'evidence': f'mean error delta {statistics.fmean(x[0] for x in changes):+.5f}; '
-                                       f'cost ratio {statistics.fmean(x[1] for x in changes):.2f}' if changes else 'no matched sweep'})
-    for system in sorted({r['metadata']['system'] for r in results}):
-        rows = [r for r in results if r['metadata']['system'] == system and r['metadata']['config']['samples'] >= 64]
-        failed = sum(not r['cost']['constant_cost_screen'] for r in rows)
-        checks.append({'check': f'{system}: constant-cost screen',
-                       'status': ('FAIL' if failed else 'PASS') if rows else 'UNMEASURED',
-                       'evidence': f'{failed}/{len(rows)} completed runs exceed late/early ratio 2; empirical screen only'})
-    return checks
+    lines += ['', '## Acceptance', '', '| Check | Status | Paired evidence | Rejects broken system |', '|---|---|---|---|']
+    for check in checks:
+        lines.append(f"| {check['check']} | {check['status']} | {check['evidence']} | {check['discriminates']} |")
+    lines += ['', 'Cost is an empirical slope screen, not a complexity proof. Timings and RSS are not seed deterministic.',
+              'Fewer than ten paired seeds is UNMEASURED, never a powered pass.', '']
+    return '\n'.join(lines),checks

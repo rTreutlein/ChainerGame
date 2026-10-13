@@ -6,12 +6,12 @@ from itertools import permutations
 import math
 
 
-def formula_key(source):
+def formula_coefficients(source):
     """Exact affine algebra for the numeric template language; no evaluation."""
     if not source:
-        return ''
+        return {}
     def walk(node):
-        if isinstance(node, ast.Name) and node.id in ('x1','x2','x3'):
+        if isinstance(node, ast.Name) and node.id in ('x1','x2','x3','v1'):
             return {node.id: Fraction(1)}
         if isinstance(node, ast.Constant) and isinstance(node.value, (int,float)):
             return {'1': Fraction(str(node.value))}
@@ -29,7 +29,11 @@ def formula_key(source):
                     return {k:b.get('1',0)*v for k,v in a.items()}
         raise ValueError('formula outside affine template language: '+source)
     coefficients = walk(ast.parse(source,mode='eval').body)
-    return repr(tuple(sorted((k,str(v)) for k,v in coefficients.items() if v)))
+    return {k:v for k,v in coefficients.items() if v}
+
+
+def formula_key(source):
+    return repr(tuple(sorted((k,str(v)) for k,v in formula_coefficients(source).items()))) if source else ''
 
 
 def canonical(rule):
@@ -41,7 +45,7 @@ def canonical(rule):
         names = {v: f'$v{i}' for i, v in enumerate(order)}
         body = frozenset(replace(l, args=tuple(names.get(a, a) for a in l.args)) for l in rule.body)
         forms.append(tuple(sorted(body)))
-    return (rule.target, rule.value, formula_key(rule.formula), min(forms))
+    return (rule.target, rule.value, (formula_key(rule.formula), rule.condition), min(forms))
 
 
 def normal_form(rules):
@@ -83,8 +87,35 @@ def normal_form(rules):
     return output
 
 
-def recovery(learned, planted, types):
-    a, b = normal_form(learned), normal_form(planted)
+SUFFICIENCY_MARGIN = .1
+
+
+def sufficient_rules(learned, planted, margin=SUFFICIENCY_MARGIN):
+    thresholds = {}
+    for rule in planted:
+        thresholds[rule.target] = min(thresholds.get(rule.target, 1.), rule.strength)
+    return [r for r in learned if r.strength >= thresholds.get(r.target, 1.)-margin]
+
+
+def recovery(learned, planted, types, world=None, phase=0):
+    sufficient = sufficient_rules(learned, planted)
+    a, b = normal_form(sufficient), normal_form(planted)
+    if world is not None:
+        from .truth import numeric_contexts, numeric_rule_value
+        for target, kind in types.items():
+            if kind != 'numeric':
+                continue
+            # A rule denotes a set of reachable (context, prediction) pairs.
+            # This admits grounded wall transitions and formula refinements.
+            for rules, normalized in ((sufficient,a),(planted,b)):
+                normalized.difference_update({item for item in normalized if item[0] == target})
+                for index, history in enumerate(numeric_contexts(world,target)):
+                    for rule in rules:
+                        if rule.target != target:
+                            continue
+                        value = numeric_rule_value(rule,history,world.config.numeric_width,phase)
+                        if value is not None:
+                            normalized.add((target,str(value),'reachable',index))
     def score(x, y):
         n = len(x & y)
         return {'precision': n/len(x) if x else 0.0, 'recall': n/len(y) if y else 1.0,
@@ -145,4 +176,20 @@ class CostMeter:
         slope = (self.xy-(n-1)/2*self.total)/(n*(n*n-1)/12) if n > 1 else 0
         return {'mean_seconds':self.total/n, 'early_seconds':early, 'late_seconds':late,
                 'late_over_early':late/early if early else None, 'seconds_per_step_slope':slope,
-                'constant_cost_screen':n >= 64 and late <= 2*early, 'screen_is_proof':False}
+                'relative_growth': slope*n/(self.total/n) if self.total else 0.,
+                'constant_cost_screen':n >= 1000 and slope*n <= .5*(self.total/n), 'screen_is_proof':False}
+
+
+def association_scores(learned, planted, world, phase):
+    from .truth import conditional
+    sufficient = sufficient_rules(learned, planted)
+    rows = []
+    for rule in learned:
+        if rule in sufficient or rule.formula:
+            continue
+        exact = conditional(world,rule,phase)
+        rows.append({'rule': repr(rule), 'strength':rule.strength, 'exact_conditional':exact,
+                     'squared_error':(rule.strength-exact)**2 if exact is not None else None})
+    errors = [r['squared_error'] for r in rows if r['squared_error'] is not None]
+    return {'rules':rows, 'count':len(rows), 'mean_squared_error':sum(errors)/len(errors) if errors else None,
+            'sufficiency_margin':SUFFICIENCY_MARGIN}

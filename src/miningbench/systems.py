@@ -59,3 +59,57 @@ class Marginal:
                         rules.append(Rule(t, (replace(self.features[j], negative=not bool(side)),),
                                           self.domains[t][value], strength=p))
         return rules
+
+
+class BudgetedMarginal(Marginal):
+    """Reference fixed-count search: compare lag/relevance priority with flat search.
+
+    Each unit examines and updates one feature/target contingency table. This is
+    an externally checkable algorithmic budget, not a claim about PeTTa's internals.
+    """
+    def __init__(self, features, domains, budget=80, flat=False):
+        super().__init__(features,domains)
+        self.budget = budget
+        self.flat = flat
+        self.step = 0
+        self.weights = {t:1. for t in domains}
+
+    def set_targets(self, weights):
+        self.weights = weights
+
+    def predict(self, history):
+        self.x = self.vector(history)
+        targets = sorted(self.domains, key=lambda t:-self.weights[t])
+        candidates = [(t,j) for t in targets for j in range(len(self.features))]
+        if not self.flat:
+            candidates.sort(key=lambda item:(-self.weights[item[0]],self.features[item[1]].lag))
+        # Flat arm rotates through all tables; prioritized arm allocates by lag
+        # and relevance. Both have exactly the same maximum update allowance.
+        offset = (self.step*self.budget) % len(candidates) if self.flat else 0
+        self.active = (candidates+ candidates)[offset:offset+min(self.budget,len(candidates))]
+        result = {}
+        for t,domain in self.domains.items():
+            eligible = [j for target,j in self.active if target == t]
+            if not eligible:
+                c = self.total[t]
+            else:
+                def quality(j):
+                    cells = self.counts[t][j]
+                    return sum(sum(v*v for v in c)/sum(c) for c in cells if sum(c))
+                j = max(eligible,key=quality)
+                self.selected[t] = j
+                c = self.counts[t][j][self.x[j]]
+            result[t] = [(v+.5)/(sum(c)+len(domain)*.5) for v in c]
+        return result
+
+    def learn(self, history, labels):
+        for t,y in labels.items():
+            self.total[t][y] += 1
+        lag_counts = {}
+        for t,j in self.active:
+            self.counts[t][j][self.x[j]][labels[t]] += 1
+            lag = str(self.features[j].lag)
+            lag_counts[lag] = lag_counts.get(lag,0)+1
+        self.work = {'table_updates':len(self.active), 'by_lag':lag_counts, 'budget':self.budget}
+        self.step += 1
+        return []

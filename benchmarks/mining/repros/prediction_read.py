@@ -19,4 +19,4 @@ for truth, period in ((1, 100), (0, 101)):
     for budget in (40, 400, 2000):
         rows = a.h.query_many_refs([f'(: $p (T0_single p{period}) $tv)'], steps=budget)
         print(json.dumps({'input':truth,'budget':budget,'answers':[
-            {'proof':r.proof,'statement':r.statement,'tv':r.tv} for r in rows[0]]}))
+            {'proof':r.proof,'expanded_proof':a.h.expand_proof(r.proof),'statement':r.statement,'tv':r.tv} for r in rows[0]]}))

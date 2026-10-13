@@ -9,9 +9,10 @@ import subprocess
 import time
 
 from .world import Config, World, serial_sample
-from .systems import Marginal
-from .scoring import RunningAverage, CostMeter, losses, recovery
-from .trace import TraceAudit, target_requests
+from .systems import Marginal, BudgetedMarginal
+from .scoring import RunningAverage, CostMeter, losses, recovery, association_scores
+from .truth import interpret, conditional
+from .world import Rule
 
 
 def revision(path):
@@ -37,14 +38,16 @@ def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
     metadata.update({'system': system, 'python': platform.python_version(), 'source_sha256': source_hash(),
                      'chainer_game_commit': revision(Path(__file__).parents[2]),
                      'budget': budget, 'max_new': max_new, 'max_live': max_live})
-    if system == 'petta':
+    if system in ('petta', 'petta-link-first'):
         from .petta import Petta
-        learner = Petta(world.features, world.domains, budget, max_new, max_live)
+        learner = Petta(world.features, world.domains, budget, max_new, max_live, link_first=system == 'petta-link-first')
         import pettachainer
         metadata['petta_path'] = str(Path(pettachainer.__file__).resolve())
         metadata['petta_commit'] = revision(Path(pettachainer.__file__).parents[1])
     elif system == 'marginal':
         learner = Marginal(world.features, world.domains)
+    elif system in ('budgeted', 'budgeted-flat'):
+        learner = BudgetedMarginal(world.features,world.domains,budget,flat=system == 'budgeted-flat')
     elif system == 'oracle':
         learner = None
     elif adapter:
@@ -55,8 +58,15 @@ def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
     all_scores = RunningAverage()
     times, learn_times = CostMeter(config.samples), CostMeter(config.samples)
     mining_times = CostMeter(config.samples)
-    curves, audit = [], TraceAudit()
-    previous_predictions, previous_labels, learned_targets = {}, {}, set()
+    curves = []
+    relevance = {target: 1. if i == 0 else .05 for i,target in enumerate(world.domains)}
+    weighted_error = weighted_mass = oracle_max_error = 0.
+    base_scores = RunningAverage()
+    holdout_scores = RunningAverage()
+    prior = {phase:{t:[conditional(world,Rule(t,(),v),phase) for v in domain]
+                    for t,domain in world.domains.items()} for phase in (0,1)}
+    work_totals = {}
+    frozen_rules = None
     recovery_points = []
     by_type = {k: RunningAverage() for k in sorted(set(world.types.values()))}
     windows = {k: RunningAverage() for k in by_type}
@@ -68,47 +78,60 @@ def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
                 serialized = json.dumps(serial_sample(sample), sort_keys=True)
                 digest.update(serialized.encode())
                 samples_file.write(serialized+'\n')
-                requests = target_requests(previous_predictions, previous_labels, world.domains, learned_targets)
                 t0 = time.perf_counter()
                 if learner and hasattr(learner, 'set_targets'):
-                    learner.set_targets(requests)
-                predictions = learner.predict(sample['history']) if learner else world.probabilities(sample['history'], sample['phase'])
+                    learner.set_targets(relevance)
+                predictions = learner.predict(sample['history']) if learner else interpret(world,sample['history'],sample['phase'])
                 t1 = time.perf_counter()
-                step_events = learner.learn(sample['history'], sample['y']) if learner else []
+                if sample['holdout'] and frozen_rules is None:
+                    frozen_rules = learner.rules() if learner else world.rules[sample['phase']]
+                step_events = learner.learn(sample['history'], sample['y']) if learner and not sample['holdout'] else []
                 t2 = time.perf_counter()
                 times.add(t2-t0)
                 learn_times.add(t2-t1)
-                mining_seconds = (learner.ingest_seconds+t2-t1 if system == 'petta' else
+                mining_seconds = (learner.ingest_seconds+t2-t1 if system.startswith('petta') else
                                   (t2-t0 if learner else 0.))
                 mining_times.add(mining_seconds)
-                for e in step_events:
-                    audit.add(dict(e, step=sample['step']))
-                previous_predictions, previous_labels = predictions, sample['y']
                 scores = {t: losses(predictions[t], q) for t, q in sample['q'].items()}
                 for t, score in scores.items():
                     by_type[world.types[t]].add(score)
                     windows[world.types[t]].add(score)
                     all_scores.add(score)
+                    base_scores.add(losses(prior[sample['phase']][t],sample['q'][t]))
+                    weighted_error += relevance[t]*score['brier']
+                    weighted_mass += relevance[t]
+                    if sample['holdout']:
+                        holdout_scores.add(score)
+                    if learner is None:
+                        oracle_max_error = max(oracle_max_error,max(abs(p-q) for p,q in
+                                               zip(predictions[t],sample['q'][t])))
                 row = {'step': sample['step'], 'phase': sample['phase'], 'predicted': predictions,
                        'exact': sample['q'], 'label': sample['y'], 'scores': scores,
                        'predict_seconds': t1-t0, 'learn_seconds': t2-t1, 'total_seconds': t2-t0,
                        'mining_path_seconds': mining_seconds,
                        'rss_peak_kib': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
-                       'work_units': learner.work if learner else 0, 'events': step_events, 'target_requests': requests}
+                       'work_units': learner.work if learner else 0, 'events': step_events,
+                       'relevance': relevance, 'holdout':sample['holdout']}
                 raw.write(json.dumps(row)+'\n')
                 raw.flush()
+                if learner and isinstance(learner.work,dict) and not sample['holdout']:
+                    for key,value in learner.work.items():
+                        if isinstance(value,(int,float)):
+                            work_totals[key] = work_totals.get(key,0)+value
+                        elif key == 'by_lag':
+                            for lag,count in value.items():
+                                work_totals['lag_'+lag] = work_totals.get('lag_'+lag,0)+count
                 n = sample['step']+1
-                if n % max(8, config.samples//8) == 0 or n == config.samples:
-                    learned = learner.rules() if learner else world.rules[sample['phase']]
-                    learned_targets = {r.target for r in learned}
-                    rec = recovery(learned, world.rules[sample['phase']], world.types)
+                if n in (64,256,1024) or n == config.samples:
+                    learned = frozen_rules if frozen_rules is not None else learner.rules() if learner else world.rules[sample['phase']]
+                    rec = recovery(learned, world.rules[sample['phase']], world.types,world,sample['phase'])
                     point = {'samples': n, 'phase': sample['phase'], 'recovery': rec,
                              'window': {k: v.result() for k, v in windows.items()},
                              'cumulative': {k: v.result() for k, v in by_type.items()}}
                     curves.append(point)
                     recovery_points.append(rec)
                     windows = {k: RunningAverage() for k in by_type}
-        learned = learner.rules() if learner else world.rules[sample['phase']]
+        learned = frozen_rules if frozen_rules is not None else learner.rules() if learner else world.rules[sample['phase']]
         result = {'status': 'complete', 'metadata': metadata, 'data_sha256': digest.hexdigest(),
                   'scores': all_scores.result(), 'by_type': {k: v.result() for k, v in by_type.items()},
                   'recovery': recovery_points[-1], 'learning_curve': curves,
@@ -116,8 +139,14 @@ def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
                   'mining_cost': mining_times.result(),
                   'peak_rss_kib': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
                   'elapsed_seconds': time.perf_counter()-started,
-                  'learned_rules': [asdict(r) for r in learned], 'trace_audit': audit.result()}
-        if system == 'petta':
+                  'learned_rules': [asdict(r) for r in learned], 'associations':association_scores(learned,world.rules[sample['phase']],world,sample['phase']),
+                  'baserate_scores':base_scores.result(),
+                  'normalized_skill':1-all_scores.result()['brier']/base_scores.result()['brier'],
+                  'relevance_weighted_brier':weighted_error/weighted_mass,
+                  'holdout_scores':holdout_scores.result(), 'work_totals':work_totals,
+                  'fixed_update_budget':budget if system.startswith('budgeted') else None,
+                  'oracle_independent_max_error':oracle_max_error if learner is None else None}
+        if system in ('petta', 'petta-link-first'):
             result['petta'] = {'unparsed': learner.unparsed, 'last_verdicts': learner.raw,
                                'answer_coverage_count': learner.coverage,
                                'anticipated_negative_count': learner.anticipated,

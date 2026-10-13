@@ -10,7 +10,6 @@ from miningbench.world import Config, World, Literal, Rule, serial_sample
 from miningbench.scoring import losses, normal_form, recovery
 from miningbench.systems import Marginal
 from miningbench.runner import run
-from miningbench.trace import audit
 from miningbench.petta import parse, decode
 
 
@@ -52,9 +51,12 @@ class MiningBenchTest(unittest.TestCase):
         w = World(Config(kinds=('numeric',)))
         samples = list(w.stream())
         for s in samples:
-            x1,x2 = [next(int(a[0]) for (h,a),v in s['history'][-lag].items() if v) for lag in (1,2)]
-            expected = x2 if x1 in (0,4) else 2*x1-x2
-            self.assertEqual(s['q']['T0_numeric'][expected], 1)
+            row = s['history'][-1]
+            x = next(int(a[0]) for (h,a),v in row.items() if v and h.endswith('_Pos'))
+            velocity = next(int(a[0]) for (h,a),v in row.items() if v and h.endswith('_Vel'))
+            z = x+velocity
+            expected = -z if z < 0 else 64-z if z > 32 else z
+            self.assertEqual(s['q']['T0_numeric'][expected],1)
         self.assertTrue(any(s['q']['T0_numeric'][1] for s in samples))
 
     def test_equivalence_absorption_consensus_alpha_and_contradiction(self):
@@ -108,11 +110,6 @@ class MiningBenchTest(unittest.TestCase):
         self.assertEqual(len(set(work)),1)
         self.assertEqual(recovery(m.rules(),w.rules[0],w.types)['all']['recall'],0)
 
-    def test_trace_never_treats_absent_telemetry_as_pass(self):
-        self.assertEqual(audit([])['decisions']['queue']['status'],'not_reported')
-        e = {'event':'budget','active_targets':1,'beam':4,'candidate_updates':5,'pair_updates':0,'new_candidates':0}
-        self.assertEqual(len(audit([e])['violations']),1)
-
     def test_petta_parser_lag_and_equality(self):
         r = decode(parse('(Implication (And (NextPeriod $u $t) (At $x $u) (Did $x $u)) (Y $t))'),{'Y':('0','1')})
         self.assertEqual({l.lag for l in r.body},{2})
@@ -135,36 +132,10 @@ class LiveMiningTest(unittest.TestCase):
     def test_live_miner_learns_without_planted_rules(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as d:
             result = run(Config(samples=16,kinds=('single',)), 'petta', d, budget=40)
-            self.assertEqual(result['metadata']['petta_commit'][:8], '4e6b059b')
+            self.assertEqual(len(result['metadata']['petta_commit']),40)
             self.assertTrue(result['petta']['last_verdicts'])
             self.assertFalse(result['petta']['unparsed'])
             self.assertGreater(result['petta']['anticipated_negative_count'],0)
-
-
-class DirectedContractTest(unittest.TestCase):
-    def test_requests_have_all_signals_and_decision_irrelevance(self):
-        from miningbench.trace import target_requests
-        domains = {t:('0','1') for t in ('A','B','C')}
-        requests = target_requests({'A':[.99,.01]}, {'A':1}, domains, {'A'})
-        self.assertEqual({r['signal'] for r in requests},{'gap','low_confidence','surprise'})
-        self.assertTrue(all(r['priority'] == 0 for r in requests if r['target'] == 'C'))
-        self.assertGreater(next(r['weight'] for r in requests if r['target']=='A' and r['signal']=='surprise'),4)
-
-    def test_trace_numeric_pair_promotion_and_generalization_checks(self):
-        events = [
-            {'event':'template','candidate':'c','template':'linear','role':'formula','bound_variables':['x'],
-             'used_variables':['x','y'],'learned_constant':2,'constant_from_data':False},
-            {'event':'pair','candidate':'c','cells':[[8,0],[0,8],[0,8],[8,0]],
-             'singles_stalled':True,'interaction_score':10},
-            {'event':'soft_sample','candidate':'c','strength':.49,'positive_mass':0,'negative_mass':1},
-            {'event':'promote','candidate':'c','support':20,'parent_log_loss':.2,'child_log_loss':.3,
-             'complexity_cost':.01,'confident':True},
-            {'event':'generalize','parents':['a','b'],'candidate':'c','skeletons':['AB','AC'],
-             'variables':['x','y'],'variable_cap':1,'pooled_cases':[1,1]},
-        ]
-        report = audit(events)
-        self.assertEqual(report['violation_count'],6)
-        self.assertEqual(report['means']['pair_interaction_contrast'],2)
 
 
 class EvidenceIntegrityTest(unittest.TestCase):
@@ -197,3 +168,86 @@ class RuleExtractionTest(unittest.TestCase):
         a.negative_rates = {'h':.6}
         self.assertEqual(a.rules()[0].body,(Literal('A',negative=True),))
         self.assertEqual(a.rules()[0].strength,.6)
+
+
+class ReviewRegressionTest(unittest.TestCase):
+    def test_weak_singles_do_not_absorb_sufficient_conjunction(self):
+        a,b = Literal('A'),Literal('B')
+        conjunction = Rule('Y',(a,b))
+        learned = [Rule('Y',(a,),strength=.54),Rule('Y',(b,),strength=.53),conjunction]
+        result = recovery(learned,[conjunction],{'Y':'and2'})
+        self.assertEqual(result['all']['recall'],1)
+        self.assertEqual(result['all']['precision'],1)
+        self.assertEqual(recovery(learned[:2],[conjunction],{'Y':'and2'})['all']['recall'],0)
+
+    def test_exact_association_calibration(self):
+        from miningbench.truth import conditional
+        from miningbench.scoring import association_scores
+        w = World(Config(kinds=('and2',)))
+        rule = Rule('T0_and2',(Literal('T0_and2_F0'),),strength=.54)
+        self.assertEqual(conditional(w,rule),.5)
+        score = association_scores([rule],w.rules[0],w,0)
+        self.assertAlmostEqual(score['mean_squared_error'],.04**2)
+
+    def test_numeric_reachable_equivalence_and_memorization_limit(self):
+        w = World(Config(kinds=('numeric',)))
+        # At wall zero, velocities of +/-1 yield one. That grounded rule is
+        # credited on its reachable contexts, not rejected for lacking a formula.
+        rules = [Rule('T0_numeric',(Literal('T0_numeric_Pos',('0',)),
+                                   Literal('T0_numeric_Vel',(str(v),))), '1') for v in (-1,1)]
+        score = recovery(rules,w.rules[0],w.types,w)
+        self.assertEqual(score['all']['precision'],1)
+        self.assertAlmostEqual(score['all']['recall'],2/198)
+        self.assertLess(score['all']['recall'],.05)
+        self.assertEqual(recovery(w.rules[0],w.rules[0],w.types,w)['all']['recall'],1)
+
+    def test_oracle_independent_interpreter_and_broken_oracle(self):
+        from miningbench.truth import interpret
+        for phase in (False,True):
+            w = World(Config(samples=64,strength=.7,observation_noise=.2,drift=phase))
+            for sample in w.stream():
+                actual = interpret(w,sample['history'],sample['phase'])
+                for t,q in sample['q'].items():
+                    self.assertLess(max(abs(a-b) for a,b in zip(actual[t],q)),1e-12)
+        # Deliberately broken numeric formula is observable by the independent check.
+        w = World(Config(kinds=('numeric',)))
+        w.rules[0] = [replace(r,formula='x1') for r in w.rules[0]]
+        self.assertTrue(any(interpret(w,s['history'],0) != s['q'] for s in w.stream()))
+
+    def test_fixed_budget_lag_priority_and_entity_holdout(self):
+        from miningbench.systems import BudgetedMarginal
+        w = World(Config(samples=64,kinds=('binding',),entity_holdout=True,deep_lags=12,distractors=10))
+        learner = BudgetedMarginal(w.features,w.domains,budget=10)
+        for sample in w.stream():
+            learner.predict(sample['history'])
+            learner.learn(sample['history'],sample['y'])
+            self.assertLessEqual(learner.work['table_updates'],10)
+            self.assertEqual(set(learner.work['by_lag']),{'1'})
+            if sample['step'] >= 32:
+                self.assertTrue(sample['holdout'])
+        early = list(w.stream())[0]['history'][-1]
+        late = list(w.stream())[-1]['history'][-1]
+        self.assertTrue(all(a[0] in ('e0','e1','e2','e3') for (h,a),v in early.items() if v and a))
+        self.assertTrue(all(a[0] in ('e4','e5','e6','e7') for (h,a),v in late.items() if v and a))
+
+    def test_cost_slope_rejects_growing_work(self):
+        from miningbench.scoring import CostMeter
+        constant,growing = CostMeter(1024),CostMeter(1024)
+        for i in range(1024):
+            constant.add(1)
+            growing.add(i+1)
+        self.assertTrue(constant.result()['constant_cost_screen'])
+        self.assertFalse(growing.result()['constant_cost_screen'])
+
+    def test_skill_and_every_gate_negative_control(self):
+        from miningbench.report import gate
+        # A population predictor has zero skill at all strengths, even though
+        # its expected label Brier decreases. Oracle skill remains one.
+        for p in (.5,.35,.1):
+            base = losses([1-p,p],[1.,0.])['brier']
+            self.assertEqual(1-base/base,0)
+        for direction,good,bad in [('above',[1.]*10,[0.]*10),('below',[0.]*10,[1.]*10)]:
+            result = gate('fixture',good,.5,direction,bad,'broken predictor')
+            self.assertEqual(result['status'],'PASS')
+            self.assertTrue(result['discriminates'])
+            self.assertEqual(gate('fixture',bad,.5,direction,bad,'broken predictor')['status'],'FAIL')

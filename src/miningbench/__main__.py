@@ -23,20 +23,22 @@ def main():
         p.add_argument('--distractors', type=int, default=0)
         p.add_argument('--strength', type=float, default=1)
         p.add_argument('--observation-noise', type=float, default=0)
+        p.add_argument('--deep-lags', type=int, default=3)
+        p.add_argument('--entity-holdout', action='store_true')
         p.add_argument('--drift', action='store_true')
         p.add_argument('--budget', type=int, default=80)
         p.add_argument('--max-new', type=int, default=4)
         p.add_argument('--max-live', type=int, default=8)
         if name == 'run':
-            p.add_argument('--system', choices=('oracle', 'marginal', 'petta'), default='marginal')
+            p.add_argument('--system', choices=('oracle', 'marginal', 'petta', 'petta-link-first', 'budgeted', 'budgeted-flat'), default='marginal')
             p.add_argument('--level', default='run')
         else:
-            p.add_argument('--systems', nargs='+', choices=('oracle', 'marginal', 'petta'), default=['oracle', 'marginal'])
-            p.add_argument('--seeds', nargs='+', type=int, default=[1, 2, 3])
-            p.add_argument('--timeout', type=int, default=180)
+            p.add_argument('--systems', nargs='+', choices=('oracle', 'marginal', 'petta', 'petta-link-first', 'budgeted', 'budgeted-flat'), default=['oracle', 'marginal'])
+            p.add_argument('--seeds', nargs='+', type=int, default=list(range(1,11)))
+            p.add_argument('--timeout', type=int, default=600)
             p.add_argument('--jobs', type=int, default=1)
             p.add_argument('--separate-kinds', action='store_true')
-            p.add_argument('--levels', nargs='+', choices=('base','distractors','strength','observation_noise','samples','drift','targets'),
+            p.add_argument('--levels', nargs='+', choices=('base','distractors','strength','observation_noise','samples','drift','targets','long','deep_lags','entity_holdout'),
                            default=['base','distractors','strength','observation_noise','samples','drift','targets'])
     p = commands.add_parser('report')
     p.add_argument('path', type=Path)
@@ -59,9 +61,9 @@ def main():
         print(text)
         return
     if a.command == 'run':
-        if a.system == 'petta' and not os.environ.get('MININGBENCH_CAPPED'):
+        if a.system.startswith('petta') and not os.environ.get('MININGBENCH_CAPPED'):
             parser.error('PeTTa runs require capped; see docs/mining_bench.md (MININGBENCH_CAPPED=1)')
-        c = Config(a.seed, a.samples, tuple(a.kinds), a.targets, a.distractors, a.strength, a.observation_noise, a.drift)
+        c = Config(a.seed, a.samples, tuple(a.kinds), a.targets, a.distractors, a.strength, a.observation_noise, a.drift, a.deep_lags, a.entity_holdout)
         result = run(c, a.system, a.out, a.budget, a.max_new, a.max_live)
         result['metadata']['level'] = a.level
         (a.out/'result.json').write_text(json.dumps(result, indent=2)+'\n')
@@ -84,17 +86,20 @@ def main():
         out = a.out/f'{level}-{system}-{seed}{suffix}'
         out.mkdir(parents=True, exist_ok=True)
         cmd = [sys.executable, '-m', 'miningbench', 'run', '--out', str(out), '--seed', str(seed),
-               '--samples', str(max(8,a.samples//4) if level == 'samples' else a.samples),
+               '--samples', str(64 if level == 'samples' else 1024 if level in ('long','deep_lags') else a.samples),
                '--targets', str(3 if level == 'targets' else a.targets),
-               '--distractors', str(100 if level == 'distractors' else a.distractors),
+               '--distractors', str(100 if level in ('distractors','deep_lags') else a.distractors),
                '--strength', str(.7 if level == 'strength' else a.strength),
                '--observation-noise', str(.2 if level == 'observation_noise' else a.observation_noise),
                '--budget', str(a.budget), '--max-new', str(a.max_new), '--max-live', str(a.max_live),
                '--system', system, '--level', level, '--kinds', *kinds]
+        cmd += ['--deep-lags', str(12 if level == 'deep_lags' else a.deep_lags)]
+        if a.entity_holdout or level == 'entity_holdout':
+            cmd.append('--entity-holdout')
         if a.drift or level == 'drift':
             cmd.append('--drift')
         with (out/'process.log').open('w') as log:
-            status = subprocess.run(['timeout', '--signal=TERM', '--kill-after=10', str(a.timeout), *cmd],
+            status = subprocess.run(['timeout', '--signal=TERM', '--kill-after=10', str(a.timeout * (6 if level in ('distractors','targets','deep_lags','long') else 1)), *cmd],
                                     stdout=log, stderr=subprocess.STDOUT).returncode
         item = {'level': level, 'seed': seed, 'system': system, 'kinds': kinds, 'returncode': status,
                 'result': str(out/'result.json')}

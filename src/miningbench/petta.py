@@ -1,4 +1,4 @@
-"""Frozen PeTTaChainer adapter. Run only inside the mandatory capped wrapper."""
+"""PeTTaChainer adapter. Run only inside the mandatory capped wrapper."""
 from dataclasses import replace
 import re
 import time
@@ -50,10 +50,13 @@ def decode(implication, domains):
 
 
 class Petta:
-    def __init__(self, features, domains, budget=80, max_new=4, max_live=8):
+    def __init__(self, features, domains, budget=80, max_new=4, max_live=8, link_first=False):
         from pettachainer import PeTTaChainer
         self.h = PeTTaChainer()
         self.domains, self.budget = domains, budget
+        self.link_first = link_first
+        self.work = {}
+        self.input_count = 0
         self.label_counts = {t: [0]*len(d) for t,d in domains.items()}
         self.h.set_evidence_confidence_k(1)
         self.h.set_hypothesis_mining(max_new, max_live)
@@ -64,19 +67,23 @@ class Petta:
             self.h.set_predicate_time(head, pos, 0)
         for target, domain in domains.items():
             self.h.set_predicate_time(target, 1 if len(domain) == 2 else 2, 1)
-            self.h.set_observed_predicate(target)
+            if not link_first:
+                self.h.set_observed_predicate(target)
         self.live = {}
         self.negative_rates = {}
         self.unparsed = {}
         self.raw = []
-        self.period = 0
-        self.work = None
+        self.period = None
         self.coverage = 0
         self.anticipated = 0
 
     def add_inputs(self, row, time):
+        self.input_count += len(row)
         self.h.add_atoms_no_check([f'(: in-{time}-{i} ({h} {" ".join(a)} p{time}) (STV {v} 1))'
                                    for i, ((h, a), v) in enumerate(row.items())])
+
+    def link(self, period):
+        self.h.add_atoms_no_check([f'(: close{period} (NextPeriod p{period-1} p{period}) (STV 1 1))'])
 
     def statement(self, t, value, period):
         return f'({t} p{period})' if len(self.domains[t]) == 2 else f'({t} {value} p{period})'
@@ -86,15 +93,17 @@ class Petta:
         # An event y_t is the end-of-period outcome of context x_(t-1).
         # Context and outcome use layers 0/1 of that decision period. No lagged
         # feature predicates, negated proxy predicates or planted rules are supplied.
-        if self.period == 0:
-            for i, row in enumerate(history):
-                self.add_inputs(row, i)
-                if i:
-                    self.h.add_atoms_no_check([f'(: link{i} (NextPeriod p{i-1} p{i}) (STV 1 1))'])
-            self.period = 2
-        else:
-            self.period += 1
-            self.add_inputs(history[-1], self.period)
+        self.input_count = 0
+        rows = list(enumerate(history)) if self.period is None else [(self.period+1,history[-1])]
+        for period,row in rows:
+            if self.link_first and period:
+                self.link(period)
+            self.add_inputs(row,period)
+            # Warmup periods have no target observations. Close each one after
+            # its inputs, exactly as completed measured periods are closed.
+            if not self.link_first and period and period != rows[-1][0]:
+                self.link(period)
+        self.period = rows[-1][0]
         self.ingest_seconds = time.perf_counter()-ingest_started
         statements, indices = [], []
         for t, domain in self.domains.items():
@@ -131,12 +140,16 @@ class Petta:
         # domain. Supply explicit negatives outside it, so never-successful goals
         # can exercise failure mining too. No missing outcome becomes unknown.
         covered = {(r.target, r.value) for r in self.live.values()}
-        manual = [a for t, v, a in negatives if (t, v) not in covered]
+        manual = [a for t, v, a in negatives if self.link_first or (t, v) not in covered]
         self.h.add_atoms_no_check(manual)
-        self.anticipated += sum((t, v) in covered for t, v, _ in negatives)
-        self.h.add_atoms_no_check([f'(: close{self.period} (NextPeriod p{self.period-1} p{self.period}) (STV 1 1))'])
+        self.anticipated += sum((t, v) in covered and not self.link_first for t, v, _ in negatives)
+        if not self.link_first:
+            self.link(self.period)
         verdicts = self.h.review_hypotheses(steps=self.budget)
         self.raw = [str(v) for v in verdicts]
+        self.work = {'input_atoms':self.input_count, 'label_atoms':len(positives)+len(manual),
+                     'review_rows':len(verdicts), 'query_expansion_allowance':self.budget,
+                     'internal_candidate_updates':None}
         events = []
         for raw in self.raw:
             row = parse(raw)

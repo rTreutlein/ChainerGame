@@ -22,6 +22,7 @@ class Rule:
     value: str = '1'
     formula: str = ''
     strength: float = 1.0
+    condition: str = ''
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,9 @@ class Config:
     strength: float = 1.0
     observation_noise: float = 0.0
     drift: bool = False
+    deep_lags: int = 3
+    entity_holdout: bool = False
+    numeric_width: int = 32
 
     def __post_init__(self):
         if self.samples < 8 or self.targets < 1 or self.distractors < 0:
@@ -53,18 +57,20 @@ class World:
     def __init__(self, config):
         self.config = config
         self.types = {f'T{i}_{k}': k for i in range(config.targets) for k in config.kinds}
-        self.domains = {t: tuple(map(str, range(5))) if k == 'numeric' else ('0', '1')
+        self.domains = {t: tuple(map(str, range(config.numeric_width + 1))) if k == 'numeric' else ('0', '1')
                         for t, k in self.types.items()}
         self.atoms = []
         for t, k in self.types.items():
             if k == 'numeric':
-                self.atoms.extend((t + '_Pos', (str(i),)) for i in range(5))
+                self.atoms.extend((t + '_Pos', (str(i),)) for i in range(config.numeric_width + 1))
+                self.atoms.extend((t + '_Vel', (str(i),)) for i in (-3, -2, -1, 1, 2, 3))
             elif k == 'binding':
-                self.atoms.extend((t + '_' + h, (f'e{i}',)) for h in ('At', 'Did') for i in range(4))
+                self.atoms.extend((t + '_' + h, (f'e{i}',)) for h in ('At', 'Did') for i in range(8 if config.entity_holdout else 4))
             else:
                 self.atoms.extend((t + f'_F{i}', ()) for i in range(4))
         self.atoms.extend((f'D{i}', ()) for i in range(config.distractors))
-        self.features = tuple(Literal(h, a, lag) for lag in (1, 2, 3) for h, a in self.atoms)
+        self.features = tuple(Literal(h, a, lag) for lag in range(1, config.deep_lags + 1)
+                              for h, a in self.atoms if lag <= 3 or h.startswith('D'))
         self.rules = [self.plant(phase) for phase in (0, 1)]
 
     def plant(self, phase):
@@ -90,9 +96,12 @@ class World:
                 if phase:
                     bodies = [(Literal(t+'_At', (f'e{i}',)), Literal(t+'_Did', (f'e{i}',))) for i in range(1, 4)]
             else:
-                for region, formula in [('interior', '2*x1-x2' if not phase else 'x2'),
-                                        ('wall0', 'x2'), ('wall4', 'x2')]:
-                    result.append(Rule(t, (Literal(t+'_Region', (region,)),), '*', formula, self.config.strength))
+                body = (Literal(t+'_Pos', ('$x1',)), Literal(t+'_Vel', ('$v1',)))
+                width = self.config.numeric_width
+                for condition, formula in [('inside', 'x1+v1'), ('below', '-x1-v1'),
+                                           ('above', f'{2*width}-x1-v1')]:
+                    result.append(Rule(t, body, '*', 'x1-v1' if phase else formula,
+                                       self.config.strength, condition))
                 continue
             result.extend(Rule(t, b, strength=self.config.strength) for b in bodies)
         return result
@@ -100,7 +109,9 @@ class World:
     @staticmethod
     def holds(rule, history):
         variables = sorted({a for l in rule.body for a in l.args if a.startswith('$')})
-        for values in product(('e0', 'e1', 'e2', 'e3'), repeat=len(variables)):
+        entities = sorted({a for row in history for (_, args), value in row.items() if value
+                           for a in args if a.startswith('e')})
+        for values in product(entities, repeat=len(variables)):
             binding = dict(zip(variables, values))
             if all(bool(history[-l.lag].get((l.head, tuple(binding.get(a, a) for a in l.args)), 0)) != l.negative
                    for l in rule.body):
@@ -118,12 +129,15 @@ class World:
             rules = [r for r in self.rules[phase] if r.target == t]
             n = self.config.observation_noise
             if k == 'numeric':
-                x1, x2 = [next(int(a[0]) for (h, a), v in history[-lag].items() if h == t+'_Pos' and v)
-                          for lag in (1, 2)]
-                value = x2 if x1 in (0, 4) or phase else 2*x1-x2
-                # The input stream is a noiseless reflecting unit-velocity trajectory.
-                q[t] = [(1-self.config.strength)/5 + self.config.strength*(i == value) for i in range(5)]
-                q[t] = [(1-n)*p+n/5 for p in q[t]]
+                x, velocity = [next(int(a[0]) for (h, a), v in history[-1].items()
+                                    if h == t+'_'+head and v) for head in ('Pos', 'Vel')]
+                width = self.config.numeric_width
+                z = x-velocity if phase else x+velocity
+                value = -z if z < 0 else 2*width-z if z > width else z
+                size = width+1
+                q[t] = [(1-self.config.strength)/size + self.config.strength*(i == value)
+                        for i in range(size)]
+                q[t] = [(1-n)*p+n/size for p in q[t]]
             else:
                 miss = 1.0
                 for r in rules:
@@ -137,25 +151,38 @@ class World:
         streams = {t: rng_for(self.config.seed, t) for t in self.types}
         ds = {h: rng_for(self.config.seed, h) for h, _ in self.atoms if h.startswith('D')}
         labels = {t: rng_for(self.config.seed, 'label:'+t) for t in self.types}
-        positions = {t: streams[t].randrange(8) for t, k in self.types.items() if k == 'numeric'}
+        positions = {t: streams[t].randrange(self.config.numeric_width+1)
+                     for t, k in self.types.items() if k == 'numeric'}
+        velocities = {t: streams[t].choice((-3,-2,-1,1,2,3)) for t in positions}
+        warmup = self.config.deep_lags
         history = []
-        for step in range(self.config.samples+3):
+        for step in range(self.config.samples+warmup):
             facts = {}
             for t, k in self.types.items():
                 r = streams[t]
                 if k == 'numeric':
-                    z = (positions[t]+step) % 8
-                    x = z if z <= 4 else 8-z
-                    facts.update({(t+'_Pos', (str(i),)): int(i == x) for i in range(5)})
+                    width = self.config.numeric_width
+                    x, velocity = positions[t], velocities[t]
+                    # Random velocity interventions prevent a short periodic orbit.
+                    if r.random() < .2:
+                        velocity = r.choice((-3, -2, -1, 1, 2, 3))
+                    facts.update({(t+'_Pos', (str(i),)): int(i == x) for i in range(width+1)})
+                    facts.update({(t+'_Vel', (str(i),)): int(i == velocity)
+                                  for i in (-3,-2,-1,1,2,3)})
+                    z = x+velocity
+                    positions[t] = -z if z < 0 else 2*width-z if z > width else z
+                    velocities[t] = -velocity if z < 0 or z > width else velocity
                 elif k == 'binding':
-                    a, b = r.randrange(4), r.randrange(4)
+                    offset = 4 if self.config.entity_holdout and step >= warmup+self.config.samples//2 else 0
+                    a, b = offset+r.randrange(4), offset+r.randrange(4)
                     facts.update({(t+'_'+h, (f'e{i}',)): int(i == v)
-                                  for h, v in [('At', a), ('Did', b)] for i in range(4)})
+                                  for h, v in [('At', a), ('Did', b)]
+                                  for i in range(8 if self.config.entity_holdout else 4)})
                 else:
                     facts.update({(t+f'_F{i}', ()): r.randrange(2) for i in range(4)})
             facts.update({(h, ()): r.randrange(2) for h, r in ds.items()})
-            if step >= 3:
-                phase = int(self.config.drift and step-3 >= self.config.samples//2)
+            if step >= warmup:
+                phase = int(self.config.drift and step-warmup >= self.config.samples//2)
                 q = self.probabilities(history, phase)
                 y = {}
                 for t, probs in q.items():
@@ -166,9 +193,10 @@ class World:
                         if u < acc:
                             y[t] = i
                             break
-                yield {'step': step-3, 'time': step, 'phase': phase,
-                       'history': tuple(history), 'q': q, 'y': y, 'current': facts}
-            history = (history+[facts])[-3:]
+                yield {'step': step-warmup, 'time': step, 'phase': phase,
+                       'history': tuple(history), 'q': q, 'y': y, 'current': facts,
+                       'holdout': self.config.entity_holdout and step-warmup >= self.config.samples//2}
+            history = (history+[facts])[-warmup:]
 
     def metadata(self):
         return {'config': asdict(self.config), 'types': self.types, 'domains': self.domains,
