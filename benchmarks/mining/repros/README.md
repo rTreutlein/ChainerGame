@@ -32,6 +32,10 @@ hypothesis from rule indexes did not invalidate its existing skeleton applicatio
 `expand_proof` exposes the dropped hypothesis names inside the returned revision.
 The upstream agent owns this fix. The harness still queries the chainer directly;
 it does not filter proofs, reset the chainer, or substitute learned rates.
+The expanded-proof rerun on `4e6b059b` confirms withdrawn `hypothesis-0`,
+`-1`, `-2`, `-3`, `-4`, `-8`, and `-9` in both returned revisions, at all three
+query budgets. The complete names, withdrawal verdicts and expansions are in
+`/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-prediction-read.log`.
 The exact sequential-read repro is retained rather than changing the benchmark
 to read learned rule rates outside the chainer. Raw log:
 `/nexus/Dev/OpenCog/bench/results/mining-bench/prediction-read.log`.

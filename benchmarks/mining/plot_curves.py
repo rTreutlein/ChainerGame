@@ -1,31 +1,76 @@
-"""Export base-case learning curves from completed runs (optional matplotlib)."""
+"""Export powered learning curves with seed bootstrap intervals (matplotlib)."""
+
 import json
 from pathlib import Path
 import sys
+from collections import defaultdict
+
 import matplotlib
-matplotlib.use('Agg')
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from miningbench.report import interval
 
 root = Path(sys.argv[1])
-results = [json.loads(p.read_text()) for p in root.glob('base-*/result.json')]
-kinds = sorted({k for r in results for k in r['by_type']})
+provenance = json.loads((root / "provenance.json").read_text())
+selected = {}
+for path in provenance["runs"]:
+    result = json.loads(Path(path).read_text())
+    metadata = result["metadata"]
+    config = metadata["config"]
+    if (
+        metadata.get("level") not in ("base", "long")
+        or len(config["kinds"]) != 1
+        or config["targets"] != 1
+    ):
+        continue
+    key = (metadata["system"], config["kinds"][0], config["seed"])
+    if (
+        key not in selected
+        or config["samples"] > selected[key]["metadata"]["config"]["samples"]
+    ):
+        selected[key] = result
+curves = defaultdict(list)
+for (system, kind, seed), result in selected.items():
+    for point in result["learning_curve"]:
+        curves[(system, kind, point["samples"])].append(
+            point["cumulative"][kind]["brier"]
+        )
+kinds = sorted({key[1] for key in selected})
+colors = {
+    "oracle": "#338855",
+    "marginal": "#4477aa",
+    "petta": "#cc6677",
+    "petta-link-first": "#aa4499",
+}
 fig, axes = plt.subplots(2, 5, figsize=(16, 6), sharex=True)
-colors = {'oracle':'#338855', 'marginal':'#4477aa', 'petta':'#cc6677'}
 for ax, kind in zip(axes.flat, kinds):
-    for r in results:
-        if kind not in r['by_type']:
+    for system, color in colors.items():
+        samples = sorted(n for s, k, n in curves if s == system and k == kind)
+        if not samples:
             continue
-        system = r['metadata']['system']
-        points = r['learning_curve']
-        ax.plot([p['samples'] for p in points], [p['window'][kind]['brier'] for p in points],
-                label=system, color=colors[system], marker='.', linewidth=1.5)
+        cis = [interval(curves[(system, kind, n)]) for n in samples]
+        ax.plot(
+            samples, [ci["mean"] for ci in cis], label=system, color=color, marker="."
+        )
+        ax.fill_between(
+            samples,
+            [ci["low"] for ci in cis],
+            [ci["high"] for ci in cis],
+            color=color,
+            alpha=0.2,
+        )
     ax.set_title(kind)
-    ax.set_ylabel('Window probability Brier')
-    ax.set_xlabel('Samples observed')
-    ax.grid(alpha=.2)
-axes.flat[0].legend()
-fig.suptitle('Planted mining benchmark: prequential error by sample window (seed 1)')
+    ax.set_xlabel("Samples")
+    ax.set_ylabel("Cumulative probability Brier")
+    ax.set_xscale("log", base=2)
+    ax.set_xticks([64, 256, 1024], labels=["64", "256", "1024"])
+    ax.grid(alpha=0.2)
+axes.flat[0].legend(fontsize=8)
+fig.suptitle(
+    "Planted mining benchmark: ten-seed learning curves with 95% bootstrap intervals"
+)
 fig.tight_layout()
-fig.savefig(root/'learning_curves.svg')
-fig.savefig(root/'learning_curves.png', dpi=120)
+fig.savefig(root / "learning_curves.svg")
+fig.savefig(root / "learning_curves.png", dpi=150)
 plt.close(fig)
