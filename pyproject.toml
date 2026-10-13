@@ -8,6 +8,9 @@ version = "0.1.0"
 description = "StationOps hidden-state maintenance simulation and reasoning benchmarks"
 requires-python = ">=3.11"
 
+[project.optional-dependencies]
+supplynet-stage5 = ["numpy>=1.24", "problog>=2.2"]
+
 [project.scripts]
 stationops = "stationops.cli:main"
 supplynet = "supplynet.cli:main"

@@ -35,141 +35,209 @@ from supplynet.world import (
 
 class LookaheadTests(unittest.TestCase):
     def setUp(self):
-        self.cell = lookahead.network(1).cell
-        self.values = Values()
-        self.rates = Rates(persist=0.7)
-        self.choices = options(self.cell, 2)
+        self.net = lookahead.network()
+        self.values, self.rates = Values(), Rates(persist=.7)
+        self.model = lookahead.Oracle(self.net,self.rates,self.values)
+        self.cell = self.net.cell
+        self.decision = lookahead.Decision(Problem('now','before',{'plant-a':True},True,'rf',self.model.first,self.values),False,0,'mine','rf',{})
 
-    def test_transition_and_repair_probability(self):
-        state = lookahead.State(True, (True, False, True), (False, True), True)
-        for action in self.choices:
-            states = list(lookahead.transition(self.cell, self.rates, state, action))
-            self.assertAlmostEqual(sum(w for s, w in states), 1.0)
-            for i, (site, kind) in enumerate(self.cell.sites.items()):
-                expected = self.rates.degraded_rate(kind, float(state.degraded[i] and site not in action.repairs))
-                self.assertAlmostEqual(sum(w for s, w in states if s.degraded[i]), expected)
-            arriving = lookahead.produced(self.cell, state, action)[MINE] and not state.blocked[int(action.reroute)]
-            self.assertTrue(all(s.fuel == arriving for s, w in states))
+    def test_real_inputs_partial_weather_and_legal_inspections(self):
+        self.assertEqual(len(self.net.routes),4)
+        self.assertTrue(all(r.transit==1 for r in self.net.routes))
+        self.assertTrue(all(any(s in r.shipments for r in self.net.routes) for s in self.cell.inputs.values()))
+        self.assertIn(Action(repairs=(POWER,),inspections=(POWER,)),self.model.first)
+        self.assertEqual((len(self.model.first),len(self.model.second)),(37,16))
+        self.assertTrue(all(a.units<=2 for a in self.model.first))
 
-    def test_expectimax_and_fixed_pairs_match_independent_enumeration(self):
-        # Independent product calculation, including the shared storm which
-        # makes the two next route blocks correlated.
-        state = lookahead.State(False, (True, False, False), (False, True), True)
-        distributions = {a: list(lookahead.transition(self.cell, self.rates, state, a)) for a in self.choices}
-        pairs, feedback = lookahead.pair_values(self.cell, self.values, state, self.choices, distributions)
-        for first in self.choices:
-            totals = dict.fromkeys(self.choices, 0.0)
-            adaptive = 0.0
-            current = production(self.cell, dict(zip(self.cell.sites, state.degraded)), first.stock,
-                                 {"plant-1": True}, False, True, first.repairs)
-            arriving = current[MINE] and not state.blocked[int(first.reroute)]
-            for bits in itertools.product((False, True), repeat=6):
-                storm, rf, ra, *degraded = bits
-                p = self.rates.storm["coastal"]
-                weight = p if storm else 1-p
-                for blocked, kind in ((rf, "exposed"), (ra, "sheltered")):
-                    p = self.rates.block_rate(kind, storm)
-                    weight *= p if blocked else 1-p
-                for i, (site, kind) in enumerate(self.cell.sites.items()):
-                    p = self.rates.degrade[kind] if site in first.repairs or not state.degraded[i] else self.rates.degraded_persist
-                    weight *= p if degraded[i] else 1-p
-                rewards = {}
-                for second in self.choices:
-                    output = production(self.cell, dict(zip(self.cell.sites, degraded)), second.stock,
-                                        {"plant-1": True}, not arriving, True, second.repairs)
-                    value = sum(self.values.output[self.cell.sites[s]] for s, on in output.items() if on)
-                    value += self.values.fuel * (output[MINE] and not (ra if second.reroute else rf))
-                    rewards[second] = value-self.values.cost_of(second)
-                    totals[second] += weight*rewards[second]
-                adaptive += weight*max(rewards.values())
-            immediate = sum(self.values.output[self.cell.sites[s]] for s, on in current.items() if on)-self.values.cost_of(first)
-            self.assertAlmostEqual(feedback[first], immediate+adaptive)
-            for second in self.choices:
-                self.assertAlmostEqual(pairs[first, second], immediate+totals[second])
-                self.assertLessEqual(pairs[first, second], feedback[first]+1e-10)
+    def test_forecast_normalizes_and_repairs_affect_hidden_next_damage(self):
+        weights = self.model.np.ones(128)/128
+        for a in self.model.first:
+            joint = self.model.forecast(weights,self.decision,a)
+            self.assertAlmostEqual(float(joint.sum()),1)
+            states = joint.sum(axis=0)
+            for i,(site,kind) in enumerate(self.cell.sites.items(),3):
+                p = self.rates.degrade[kind] if site in a.repairs else (self.rates.degrade[kind]+self.rates.degraded_persist)/2
+                self.assertAlmostEqual(float(states@((self.model.next>>i)&1)),p)
+            for o in self.model.np.flatnonzero(joint.sum(axis=1)):
+                for b in self.model.second:
+                    self.assertLessEqual(self.model.execute(a,b,int(o),self.decision).units,2)
 
-    def test_repair_now_tradeoff_and_no_terminal_repair_proxy(self):
-        repair = Action(repairs=("mine",))
-        state = lookahead.State(False, (True, False, False), (False, False), True)
-        pairs, feedback = lookahead.pair_values(self.cell, self.values, state, self.choices,
-            {a: list(lookahead.transition(self.cell, self.rates, state, a)) for a in self.choices})
-        self.assertGreater(feedback[repair], feedback[Action()])
-        self.assertLess(lookahead.reward(self.cell, self.values, state, repair), lookahead.reward(self.cell, self.values, state, Action()))
-        altered = replace(self.values, repair={"mine": 9999, "power": 9999, "plant": 9999})
-        other, _ = lookahead.pair_values(self.cell, altered, state, self.choices,
-            {a: list(lookahead.transition(self.cell, self.rates, state, a)) for a in self.choices})
-        self.assertEqual(pairs, other)
-        # A healthy mine gains nothing from premature repair.
-        healthy = replace(state, degraded=(False, False, False))
-        _, qs = lookahead.pair_values(self.cell, self.values, healthy, self.choices,
-            {a: list(lookahead.transition(self.cell, self.rates, healthy, a)) for a in self.choices})
-        self.assertLess(qs[repair], qs[Action()])
-        # With only two crews, restoring the degraded plant is worth more
-        # next period than rerouting fuel to avoid a later stock cost. Stage
-        # 4's terminal proxies tie these and choose the reroute first.
-        tight = lookahead.State(False, (False, False, True), (True, False), False)
-        _, qs = lookahead.pair_values(self.cell, self.values, tight, self.choices,
-            {a: list(lookahead.transition(self.cell, self.rates, tight, a)) for a in self.choices})
-        reference = best(qs)
-        myopic = best(lookahead.myopic_values(self.cell, self.values, tight, self.choices))
-        self.assertEqual(reference, Action(stock=True, repairs=("plant-1",)))
-        self.assertEqual(myopic, Action(stock=True, reroute=True))
-        self.assertAlmostEqual(qs[reference]-qs[myopic], 0.5776)
+    def test_expectimax_conditions_on_observations_not_hidden_next_labels(self):
+        # Independently calculate all next-world rewards with the physical
+        # production function, then compare max after conditioning vs before.
+        weights = self.model.np.zeros(128)
+        weights[64] = 1  # healthy, open routes, fuel now, unknown future
+        first = Action()
+        joint = self.model.forecast(weights,self.decision,first)
+        future = []
+        for state in range(self.model.next_size):
+            d = {site:bool((state>>(3+i))&1) for i,site in enumerate(self.cell.sites)}
+            amounts = []
+            for a in self.model.second:
+                prod = production(self.cell,d,a.stock,{'plant-a':bool((state>>7)&1)},not bool((state>>6)&1),True,a.repairs)
+                value = 4*sum(self.values.output[self.cell.sites[s]] for s,on in prod.items() if on)
+                value -= lookahead.Parameters().cost(self.values,a,1)
+                value -= 16*sum(on and site not in a.repairs for site,on in d.items())
+                value += self.values.fuel*prod[MINE]*(not bool((state>>(1+int(a.reroute)))&1))
+                amounts.append(value)
+            future.append(amounts)
+        future = self.model.np.array(future)
+        self.model.np.testing.assert_allclose(future,self.model.next_rewards[1])
+        immediate = sum(self.values.output.values())
+        paired,q,_ = self.model.evaluate(weights,self.decision,firsts=[first])
+        expectimax = immediate+sum(max(row) for row in joint@future)
+        clairvoyant = immediate+float(joint.sum(axis=0)@future.max(axis=1))
+        self.assertAlmostEqual(q[first],expectimax)
+        self.assertLess(q[first],clairvoyant-.1)
+        self.assertTrue(all(v<=q[first]+1e-8 for v in paired.values()))
 
-    def test_proposals_respect_cap_and_are_feasible(self):
-        for cap in (1, 8, 16, 32, 256):
+    def test_delayed_noisy_shipments_update_next_weather_posterior(self):
+        weights = self.model.np.zeros(128)
+        weights[64] = weights[65] = .5
+        joint = self.model.forecast(weights,self.decision,Action())
+        late_pattern = (1 << len(self.model.shipments))-1
+        rows = [i for i in range(len(joint)) if (i//4)%(1 << len(self.model.shipments))==late_pattern]
+        conditioned = joint[rows].sum(axis=0)
+        actual = float(conditioned@(self.model.next&1))/float(conditioned.sum())
+        likelihood = []
+        for storm in (False,True):
+            value = 1
+            for route in self.model.shipping:
+                pblock = self.rates.block_rate(route.kind,storm)
+                value *= pblock*self.rates.late_given_blocked**len(route.shipments)+(1-pblock)*self.rates.late_given_open**len(route.shipments)
+            likelihood.append(value)
+        expected = (likelihood[0]*.3+likelihood[1]*.7)/sum(likelihood)
+        self.assertAlmostEqual(actual,expected)
+        self.assertGreater(actual,.65)
+
+    def test_retrospective_labels_condition_the_second_decision(self):
+        # No fuel now: the production report cannot identify power damage.
+        # A released past label distinguishes two current damage priors.
+        components = self.model.np.zeros((2,128))
+        components[0,0],components[0,16] = .5*.95,.5*.05
+        components[1,0],components[1,16] = .5*.25,.5*.75
+        first = Action()
+        pairs,without,_ = self.model.evaluate(components.sum(axis=0),self.decision,firsts=[first])
+        labelled,with_labels,_ = self.model.evaluate(components,self.decision,firsts=[first])
+        self.assertGreater(with_labels[first]-without[first],.01)
+        for b in self.model.second:
+            self.assertAlmostEqual(pairs[first,b],labelled[first,b])
+
+    def test_stock_and_paid_next_shift_information_have_real_value(self):
+        m = {('Storm','north'):.5,('Blocked','rf'):.415,('Blocked','ra'):.215,('Degraded',MINE):.2,('Degraded',POWER):.1,('Degraded','plant-a'):.2,'fuel':1}
+        w = self.model.factored(m)
+        _,q,_ = self.model.evaluate(w,self.decision,pairs=False)
+        chosen = best(q)
+        self.assertEqual(chosen,Action(stock=True,inspections=('plant-a',)))
+        self.assertGreater(q[chosen]-max(v for a,v in q.items() if not a.inspections),.7)
+        joint = self.model.forecast(w,self.decision,chosen)
+        # Delivered diagnostics label the NEXT site's condition, including
+        # new damage; they do not reveal it to the first decision.
+        for o in self.model.np.flatnonzero(joint.sum(axis=1)):
+            group = int(o)//16
+            diagnosed = bool((group>>1)&1)
+            support = self.model.np.flatnonzero(joint[o])
+            self.assertTrue(all(bool((int(s)>>5)&1)==diagnosed for s in support))
+
+    def test_no_terminal_repair_proxy_and_whole_period_downtime(self):
+        a = Action(repairs=(MINE,))
+        states = self.model.np.array([64])
+        healthy = self.model.reward(states,Action(),0,{'plant-a':True})[0]
+        repairing = self.model.reward(states,a,0,{'plant-a':True})[0]
+        self.assertLess(repairing,healthy)
+        # Repair uncertain power now sacrifices 5.2 expected credits of
+        # current production/cost, but avoids next-shift emergency losses.
+        weights = self.model.np.zeros(128)
+        weights[64],weights[80] = .6,.4
+        repair = Action(repairs=(POWER,))
+        _,q,_ = self.model.evaluate(weights,self.decision,pairs=False)
+        self.assertGreater(q[repair]-q[Action()],.7)
+        self.assertLess(float(weights@self.model.reward(self.model.current,repair,0,self.decision.problem.inputs)),
+                        float(weights@self.model.reward(self.model.current,Action(),0,self.decision.problem.inputs)))
+        altered = lookahead.Oracle(self.net,self.rates,replace(self.values,repair={'mine':9999,'power':9999,'plant':9999}))
+        self.model.np.testing.assert_allclose(self.model.next_rewards[1],altered.next_rewards[1])
+
+    def test_proposals_respect_cap_and_include_diagnostic_continuations(self):
+        for cap in (1,16,32,64,256):
             calls = []
-            def evaluate(pairs):
-                calls.extend(pairs)
-                return {p: p[0].units + p[1].units for p in pairs}
-            proposed = lookahead.propose_pairs(self.choices, self.values, evaluate, cap)
-            self.assertLessEqual(len(calls), cap)
-            self.assertEqual(len(calls), len(set(calls)))
-            self.assertEqual(set(calls), set(proposed))
-            self.assertTrue(all(a in self.choices and b in self.choices for a, b in calls))
+            def evaluate(ps):
+                calls.extend(ps)
+                return {p:p[0].units+p[1].units for p in ps}
+            proposed = lookahead.propose_pairs(self.model.first,self.model.second,self.values,evaluate,cap)
+            self.assertLessEqual(len(calls),cap)
+            self.assertEqual(len(calls),len(set(calls)))
+            self.assertEqual(set(calls),set(proposed))
+            self.assertTrue(all(a in self.model.first and b in self.model.second for a,b in calls))
+            if cap>=32:
+                self.assertIn((Action(inspections=(MINE,)),Action(repairs=(MINE,))),calls)
 
-    def test_receding_reference_and_myopic_gain(self):
-        config = GameConfig(seed=3, rounds=5, stage=5, plants=1)
-        rows = []
-        result = lookahead.run(config, "reference", on_round=rows.append)
-        self.assertEqual(result["regret"], 0)
-        self.assertGreater(result["reference_seconds"], 0)
-        self.assertEqual(result["next_states"], 64)
-        self.assertTrue(all(r["lookahead_gain"] >= -1e-10 for r in rows))
-        self.assertEqual(lookahead.run(config, "myopic")["lookahead_gain"], 0)
+    def test_myopic_is_suboptimal_in_substantial_partially_observed_rounds(self):
+        fractions = []
+        for seed in range(1,5):
+            rows = []
+            result = lookahead.run(GameConfig(seed=seed,rounds=30,stage=5,plants=1),'myopic',on_round=rows.append)
+            fractions.append(result['myopic_suboptimal_fraction'])
+            self.assertGreater(result['regret'],.5)
+            self.assertEqual(result['lookahead_gain'],0)
+            self.assertTrue(any(r['posterior_support']>1 for r in rows))
+            self.assertTrue(any(not r['inputs']['plant-a'] for r in rows))
+        self.assertGreaterEqual(sum(fractions)/4,.2)
 
-    def test_unavailable_pair_values_are_reported_without_a_summary_crash(self):
-        output = {"chosen": 0, "candidate_pairs": 1, "context_bound": 1, "decision_queries": 1,
-                  "decision_answered": 0, "pair_scores": [[0, 0, None]], "unsupported": ["Assuming"]}
-        child = SimpleNamespace(returncode=0, stderr="", stdout=json.dumps(output))
-        with patch("supplynet.lookahead.subprocess.run", return_value=child):
-            result = lookahead.run(GameConfig(seed=1, rounds=1, stage=5, plants=1), "mm2")
-        self.assertEqual(result["decision_answered"], 0)
-        self.assertEqual(result["unsupported"], ["Assuming"])
-        self.assertNotIn("pair_mean_error", result)
+    def test_prior_uses_history_frequencies_even_for_inspected_variables(self):
+        prior = PriorBackend()
+        captured = []
+        original = lookahead.Oracle.factored
+        def record(model,marginals,*args,**kwargs):
+            captured.append(marginals.copy())
+            return original(model,marginals,*args,**kwargs)
+        with patch('supplynet.backends.PriorBackend',return_value=prior),patch.object(lookahead.Oracle,'factored',record):
+            lookahead.run(GameConfig(seed=1,rounds=1,stage=5,plants=1),'prior')
+        for key,value in captured[0].items():
+            if key!='fuel':
+                yes,total = prior.counts[key]
+                self.assertEqual(value,(yes+1)/(total+2))
 
-    @unittest.skipUnless(os.environ.get("SUPPLYNET_LIVE_PETTACHAINER") == "1", "set SUPPLYNET_LIVE_PETTACHAINER=1")
+    def test_unavailable_pair_values_are_reported_without_summary_crash(self):
+        output = {'chosen':0,'candidate_pairs':0,'context_bound':1,'decision_queries':1,'decision_answered':0,'pair_scores':[[0,0,None]],'unsupported':['Assuming']}
+        child = SimpleNamespace(returncode=0,stderr='',stdout=json.dumps(output))
+        with patch('supplynet.lookahead.subprocess.run',return_value=child):
+            result = lookahead.run(GameConfig(seed=1,rounds=1,stage=5,plants=1),'mm2')
+        self.assertEqual(result['decision_answered'],0)
+        self.assertNotIn('pair_mean_error',result)
+
+    @unittest.skipUnless(os.environ.get('SUPPLYNET_LIVE_PETTACHAINER')=='1','set SUPPLYNET_LIVE_PETTACHAINER=1')
     def test_live_lookahead_choice_and_bounded_contexts(self):
         rows = []
-        result = lookahead.run(GameConfig(seed=1, rounds=1, stage=5, plants=1, budget=400),
-                               "pettachainer", python_path=os.environ.get("PETTACHAINER_PYTHONPATH"), on_round=rows.append)
-        self.assertEqual(result["regret"], 0)
-        self.assertLessEqual(result["context_bound"], 32)
-        self.assertGreater(result["decision_answered"], 0)
-        self.assertEqual(len(rows[0]["pair_scores"]), result["candidate_pairs"])
-        self.assertLess(result["pair_max_error"], 1e-6)
-        # Healthy current production must stay certain when it fuels later
-        # production. This catches contradictory negative alternative rules.
-        healthy = lookahead.run(GameConfig(seed=2, rounds=1, stage=5, plants=1, budget=50),
-                                 "pettachainer", python_path=os.environ.get("PETTACHAINER_PYTHONPATH"))
-        self.assertLess(healthy["pair_max_error"], 1e-6)
+        result = lookahead.run(GameConfig(seed=1,rounds=2,stage=5,plants=1,budget=400),'pettachainer',python_path=os.environ.get('PETTACHAINER_PYTHONPATH'),on_round=rows.append)
+        self.assertLessEqual(result['context_bound'],64)
+        self.assertGreater(result['decision_answered'],0)
+        self.assertEqual(len(rows[0]['pair_scores']),rows[0]['candidate_pairs'])
+        self.assertTrue(all(r['posterior_support']>1 for r in rows))
 
-    @unittest.skipUnless(os.environ.get("SUPPLYNET_LIVE_PROBLOG") == "1", "set SUPPLYNET_LIVE_PROBLOG=1")
+    @unittest.skipUnless(os.environ.get('SUPPLYNET_LIVE_PETTACHAINER')=='1','set SUPPLYNET_LIVE_PETTACHAINER=1')
+    def test_live_known_snapshot_pairs_match_exact_sums(self):
+        from dataclasses import asdict
+        from supplynet.lookahead_worker import decide
+        d = replace(self.decision,inspected={r.name:False for r in self.net.routes})
+        for state in (64,72,80,96):  # healthy, degraded mine/power/plant
+            with self.subTest(state=state):
+                marginal = [['Storm','north',0],*(['Blocked',r.name,0] for r in self.net.routes),*(['Degraded',site,int(bool((state>>(3+i))&1))] for i,site in enumerate(self.cell.sites))]
+                payload = {'network':asdict(self.net),'rates':asdict(self.rates),'values':asdict(self.values),'parameters':asdict(lookahead.Parameters()),'decision':asdict(d),'marginals':marginal,'fuel':1,'backend':'pettachainer','budget':400,'pair_cap':64,'beam':2,'proposer':'extend'}
+                result = decide(payload)
+                weights = self.model.np.zeros(128)
+                weights[state] = 1
+                exact,_,_ = self.model.evaluate(weights,d)
+                self.assertEqual(result['decision_answered'],64)
+                for a,b,value in result['pair_scores']:
+                    self.assertAlmostEqual(value,exact[self.model.first[a],self.model.second[b]],places=6)
+
+    @unittest.skipUnless(os.environ.get('SUPPLYNET_LIVE_PROBLOG')=='1','set SUPPLYNET_LIVE_PROBLOG=1')
     def test_live_problog_two_stage_matches_reference(self):
-        result = lookahead.run(GameConfig(seed=2, rounds=1, stage=5, plants=1), "problog")
-        self.assertEqual(result["problog_answered"], 1)
-        self.assertLess(result["problog_reference_max_error"], 1e-8)
-        self.assertLess(result["regret"], 1e-8)
+        result = lookahead.run(GameConfig(seed=1,rounds=3,stage=5,plants=1),'problog')
+        self.assertEqual(result['problog_answered'],19)  # 16 conditional tables + 3 posteriors
+        self.assertLess(result['problog_reference_max_error'],1e-8)
+        self.assertEqual(result['problog_timeouts'],0)
+        self.assertLess(result['regret'],1e-8)
 
 
 def brute_force_posterior(network, rates, before, periods, observations, actions=None, utility=None):

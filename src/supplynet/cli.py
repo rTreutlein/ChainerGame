@@ -29,7 +29,7 @@ def main(argv=None):
     decide.add_argument("--proposer", choices=("extend", "exhaustive", "open"), default="extend",
                         help="pettachainer/mm2: which joint actions are asked (backends.PeTTaChainerBackend)")
     decide.add_argument("--beam", type=int, default=2, help="pettachainer/mm2 with --proposer extend: options extended per layer")
-    decide.add_argument("--pair-cap", type=int, default=32, help="stage 5: maximum candidate pairs, including proposal probes")
+    decide.add_argument("--pair-cap", type=int, default=64, help="stage 5: maximum candidate pairs, including proposal probes")
     run.add_argument("--mm2-path", default=os.environ.get("MM2_CHAINER_PYTHONPATH"), help="the directory holding mm2_chainer")
     run.add_argument(
         "--learned-rules",
@@ -85,8 +85,8 @@ def main(argv=None):
         from . import lookahead
         if args.backend in ("nars", "learned-reference", "local") or args.learned_rules or args.mine_rules:
             parser.error("stage 5 uses given rates; NARS has no comparable joint expected-utility planner")
-        if (args.plants is not None and not 0 <= args.plants <= 3) or not 1 <= args.capacity <= 3 or args.pair_cap < 1 or args.beam < 1:
-            parser.error("stage 5 exact sizes: plants 0..3, capacity 1..3, pair-cap and beam positive")
+        if (args.plants is not None and not 0 <= args.plants <= 2) or not 1 <= args.capacity <= 3 or args.pair_cap < 1 or args.beam < 1:
+            parser.error("stage 5 exact sizes: plants 0..2, capacity 1..3, pair-cap and beam positive")
         if args.regions not in (None, 1):
             parser.error("stage 5 has one region")
         config = GameConfig(seed=args.seed, history=30 if args.history is None else args.history,

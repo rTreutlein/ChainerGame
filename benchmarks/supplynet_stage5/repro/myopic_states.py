@@ -1,21 +1,28 @@
-"""Enumerate planning states to locate timing tradeoffs (not a rollout score).
-Uniform counts here are structural coverage, not a state visitation prior.
+"""Uniform structural coverage of control states, distinct from rollouts.
+Current core labels are point beliefs; uninspected shipping blocks remain
+conditional on weather. Vary phase, observed input and warehouse receipt.
+The next itinerary is held at mine/rf. No visitation distribution is implied.
 """
-import itertools
 import json
-from supplynet.decisions import Values, best, options
-from supplynet.lookahead import State, myopic_values, network, pair_values, transition
+from supplynet.decisions import Problem, Values, best
+from supplynet.lookahead import Decision, Oracle, network
 from supplynet.world import Rates
 
-cell, rates, values = network(1).cell, Rates(persist=0.7), Values()
-choices = options(cell, 2)
+model = Oracle(network(),Rates(persist=.7),Values())
+count = losses = 0
 witnesses = []
-for bits in itertools.product((False, True), repeat=7):
-    state = State(bits[0], bits[1:4], bits[4:6], bits[6])
-    _, qs = pair_values(cell, values, state, choices, {a: list(transition(cell, rates, state, a)) for a in choices})
-    reference, myopic = best(qs), best(myopic_values(cell, values, state, choices))
-    regret = qs[reference]-qs[myopic]
-    if regret > 1e-8:
-        witnesses.append({"state": bits, "reference": repr(reference), "myopic": repr(myopic), "regret": regret})
-print(json.dumps({"type": "probe", "states": 128, "myopic_suboptimal": len(witnesses),
-                  "max_myopic_regret": max(w["regret"] for w in witnesses), "witnesses": witnesses}), flush=True)
+for phase in (0,1):
+ for arrived in (False,True):
+  for bank in (False,True):
+   for state in range(model.current_size):
+    weights = model.np.zeros(model.current_size)
+    weights[state] = 1
+    d = Decision(Problem('now','old',{'plant-a':arrived},True,'rf',model.first,model.values),bank,phase,'mine','rf',{})
+    _,q,_ = model.evaluate(weights,d,pairs=False)
+    reference,myopic = best(q),best(model.myopic(weights,d))
+    regret = q[reference]-q[myopic]
+    count += 1
+    losses += regret>1e-8
+    if regret>1e-8:
+     witnesses.append({'state':state,'phase':phase,'input':arrived,'bank':bank,'reference':repr(reference),'myopic':repr(myopic),'regret':regret})
+print(json.dumps({'type':'structural-state-probe','states':count,'myopic_suboptimal':losses,'fraction':losses/count,'max_myopic_regret':max(x['regret'] for x in witnesses),'witnesses':witnesses}),flush=True)

@@ -81,7 +81,8 @@ def _mean(records: list[dict]) -> dict:
 
 def describe(action) -> str:
     """An action as the round records name it: "none", or its parts joined by "+"."""
-    parts = [*(["stock"] if action.stock else []), *(["reroute"] if action.reroute else []), *(f"repair-{site}" for site in action.repairs)]
+    parts = [*(["stock"] if action.stock else []), *(["reroute"] if action.reroute else []),
+             *(f"repair-{site}" for site in action.repairs), *(f"inspect-{site}" for site in action.inspections)]
     return "+".join(parts) or "none"
 
 

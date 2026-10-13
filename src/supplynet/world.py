@@ -207,11 +207,12 @@ class Action:
     stock: bool = False
     reroute: bool = False
     repairs: tuple[str, ...] = ()  # sorted
+    inspections: tuple[str, ...] = ()  # stage 5: results arrive before the next decision
 
     @property
     def units(self) -> int:
         """The capacity it takes: one unit per stockpile, reroute and repair."""
-        return self.stock + self.reroute + len(self.repairs)
+        return self.stock + self.reroute + len(self.repairs) + len(self.inspections)
 
     def via(self, cell: Cell) -> str:
         """The route the mine's fuel leaves on."""

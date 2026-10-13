@@ -27,32 +27,38 @@ class Values:
     output: dict[str, float] = field(default_factory=lambda: {"mine": 2.0, "power": 1.0, "plant": 4.0})
     fuel: float = 8.0  # the mine's fuel sent over an open route, for the next period
     repair: dict[str, float] = field(default_factory=lambda: {"mine": 10.0, "power": 20.0, "plant": 8.0})  # a cleared degradation
-    cost: dict[str, float] = field(default_factory=lambda: {"stock": 2.0, "reroute": 1.0, "repair": 1.0})
+    cost: dict[str, float] = field(default_factory=lambda: {"stock": 2.0, "reroute": 1.0, "repair": 1.0, "inspect": 0.5})
     capacity: int = 2
 
     def cost_of(self, action: Action) -> float:
-        return self.cost["stock"] * action.stock + self.cost["reroute"] * action.reroute + self.cost["repair"] * len(action.repairs)
+        return (self.cost["stock"] * action.stock + self.cost["reroute"] * action.reroute
+                + self.cost["repair"] * len(action.repairs) + self.cost.get("inspect", 0.5) * len(action.inspections))
 
 
-def options(cell: Cell, capacity: int) -> tuple[Action, ...]:
+def options(cell: Cell, capacity: int, inspect: bool = False) -> tuple[Action, ...]:
     """Every joint action within ``capacity``, fewer units first."""
     singles = [Action(stock=True), Action(reroute=True), *(Action(repairs=(site,)) for site in sorted(cell.sites))]
+    if inspect:
+        singles += [Action(inspections=(site,)) for site in sorted(cell.sites)]
     result = []
     for size in range(capacity + 1):
         for chosen in itertools.combinations(singles, size):
-            result.append(combine(chosen))
+            action = combine(chosen)
+            result.append(action)
     return tuple(result)
 
 
 def combine(actions) -> Action:
     actions = list(actions)
-    return Action(any(a.stock for a in actions), any(a.reroute for a in actions), tuple(sorted(site for a in actions for site in a.repairs)))
+    return Action(any(a.stock for a in actions), any(a.reroute for a in actions),
+                  tuple(sorted(site for a in actions for site in a.repairs)),
+                  tuple(sorted(site for a in actions for site in a.inspections)))
 
 
 def singles(action: Action) -> list[Action]:
     """The single actions ``action`` joins."""
     return [*([Action(stock=True)] if action.stock else []), *([Action(reroute=True)] if action.reroute else []),
-            *(Action(repairs=(site,)) for site in action.repairs)]
+            *(Action(repairs=(site,)) for site in action.repairs), *(Action(inspections=(site,)) for site in action.inspections)]
 
 
 @dataclass(frozen=True)

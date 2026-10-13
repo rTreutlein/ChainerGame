@@ -94,8 +94,8 @@ def _cycle_rules(network: Network, positive_actions: bool = False) -> list[str]:
         arriving = f"(And (Producing {MINE} $t) (Not (Blocked {cell.fuel_route.name} $t)))"
     if positive_actions:
         repairing = lambda site: f" (InService {site} $t)"  # noqa: E731
-        fuelled = [_certain("fuelled-by-stock", "(StockedFuel $t)", f"(Fuelled {POWER} $t)"),
-                   _certain("fuelled-by-mine", "(And (Unstocked $t) (FuelArrived $t))", f"(Fuelled {POWER} $t)")]
+        fuelled = [f"(: fuelled-by-stock (Implication (StockedFuel $t) (Fuelled {POWER} $t)) (STV 1 1))",
+                   f"(: fuelled-by-mine (Implication (And (Unstocked $t) (FuelArrived $t)) (Fuelled {POWER} $t)) (STV 1 1))"]
     else:
         repairing = (lambda site: f" (Not (Repairing {site} $t))") if cell.alternate else (lambda site: "")
         fuelled = [_certain("fuelled", "(Or (StockedFuel $t) (FuelArrived $t))", f"(Fuelled {POWER} $t)")]

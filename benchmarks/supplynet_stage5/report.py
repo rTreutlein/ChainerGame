@@ -4,7 +4,7 @@ from pathlib import Path
 import statistics
 import sys
 
-root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/nexus/Dev/OpenCog/bench/results/supplynet-stage5")
+root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/nexus/Dev/OpenCog/bench/results/supplynet-stage5/partial-network")
 runs = {}
 for path in root.glob("*.json"):
     text = path.read_text().strip()
@@ -27,10 +27,10 @@ groups = {}
 for name, run in sorted(runs.items()):
     if not name.startswith("growth"):
         groups.setdefault(name.rsplit("-s", 1)[0], []).append(run)
-print("| policy | seeds | regret/round | gain over myopic | realized reward | s/round decision | s/round reference | pairs/round | pair mean error |")
-print("|---|---|---|---|---|---|---|---|---|")
+print("| policy | seeds | regret/round | gain over myopic | myopic suboptimal % | realized reward | s/round decision | s/round reference | pairs/round | pair mean error |")
+print("|---|---|---|---|---|---|---|---|---|---|")
 for name, rows in groups.items():
-    print(f"| {name} | {len(rows)} | {mean(rows, 'regret'):.3f} | {mean(rows, 'lookahead_gain'):.3f} | {mean(rows, 'utility'):.3f} | {mean(rows, 'decision_seconds'):.3f} | {mean(rows, 'reference_seconds'):.3f} | {mean(rows, 'candidate_pairs'):.1f} | {mean(rows, 'pair_mean_error'):.3f} |")
+    print(f"| {name} | {len(rows)} | {mean(rows, 'regret'):.3f} | {mean(rows, 'lookahead_gain'):.3f} | {100*mean(rows, 'myopic_suboptimal_fraction'):.1f} | {mean(rows, 'utility'):.3f} | {mean(rows, 'amortized_seconds'):.3f} | {mean(rows, 'reference_seconds'):.3f} | {mean(rows, 'candidate_pairs'):.1f} | {mean(rows, 'pair_mean_error'):.3f} |")
 print("\n| case | options | possible pairs | candidate pair branches | context bound | s/round | regret | open answers |")
 print("|---|---|---|---|---|---|---|---|")
 for name, r in sorted(runs.items()):
