@@ -44,6 +44,8 @@ kinds = sorted({key[1] for key in selected})
 colors = {
     "oracle": "#338855",
     "marginal": "#4477aa",
+    "budgeted": "#66ccee",
+    "budgeted-flat": "#ccbb44",
     "petta": "#cc6677",
     "petta-link-first": "#aa4499",
 }
