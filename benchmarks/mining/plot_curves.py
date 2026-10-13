@@ -52,11 +52,15 @@ for system, _, _ in selected:
         colors[system] = colors.get(system.split("@")[0], "#777777")
 fig, axes = plt.subplots(2, 5, figsize=(16, 6), sharex=True)
 for ax, kind in zip(axes.flat, kinds):
+    partial = []
     for system, color in colors.items():
         samples = sorted(n for s, k, n in curves if s == system and k == kind)
         if not samples:
             continue
         cis = [interval(curves[(system, kind, n)]) for n in samples]
+        count = min(ci["n"] for ci in cis)
+        if count < 10:
+            partial.append(f"{system}: n={count}")
         ax.plot(
             samples, [ci["mean"] for ci in cis], label=system, color=color, marker="."
         )
@@ -68,6 +72,10 @@ for ax, kind in zip(axes.flat, kinds):
             alpha=0.2,
         )
     ax.set_title(kind)
+    if partial:
+        ax.text(
+            0.03, 0.97, "\n".join(partial), transform=ax.transAxes, va="top", fontsize=7
+        )
     ax.set_xlabel("Samples")
     ax.set_ylabel("Cumulative probability Brier")
     ax.set_xscale("log", base=2)
@@ -75,7 +83,7 @@ for ax, kind in zip(axes.flat, kinds):
     ax.grid(alpha=0.2)
 axes.flat[0].legend(fontsize=8)
 fig.suptitle(
-    "Planted mining benchmark: ten-seed learning curves with 95% bootstrap intervals"
+    "Planted mining benchmark: seed-level learning curves with 95% bootstrap intervals"
 )
 fig.tight_layout()
 fig.savefig(root / "learning_curves.svg")

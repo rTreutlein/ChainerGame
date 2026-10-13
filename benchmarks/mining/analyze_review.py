@@ -35,9 +35,11 @@ def main():
     paths = {}
     for path in sorted(args.root.rglob("result.json")):
         # Replaced reference-arm runs retain evidence but are not double counted.
-        if path.parent.parent.name == "directed" and json.loads(path.read_text())[
-            "metadata"
-        ]["system"].startswith("budgeted"):
+        if path.parent.parent.name in (
+            "directed",
+            "directed-bounded",
+            "directed-entity-final",
+        ) and json.loads(path.read_text())["metadata"]["system"].startswith("budgeted"):
             continue
         result = json.loads(path.read_text())
         if result["metadata"].get(
@@ -46,6 +48,7 @@ def main():
             "entity-final",
             "directed-entity-final",
             "petta-entity-final",
+            "directed-fair",
         ):
             continue
         if path.parent.parent.name == "pure" and result["metadata"]["config"][
@@ -59,6 +62,7 @@ def main():
             "directed",
             "directed-bounded",
             "directed-entity-final",
+            "directed-fair",
         ):
             # These are a distinct six-target cohort, not extra independent
             # seeds for the single-type base experiment.

@@ -91,6 +91,7 @@ class BudgetedMarginal(Marginal):
         self.step = 0
         self.weights = None
         self.schedule = []
+        self.tiers = []
         self.set_targets({t: 1.0 for t in domains})
 
     def set_targets(self, weights):
@@ -100,16 +101,26 @@ class BudgetedMarginal(Marginal):
         targets = sorted(self.domains, key=lambda t: -weights[t])
         self.schedule = [(t, j) for t in targets for j in range(len(self.features))]
         if not self.flat:
-            self.schedule.sort(
-                key=lambda item: (-weights[item[0]], self.features[item[1]].lag)
-            )
+            from itertools import groupby
+
+            def priority(item):
+                return -weights[item[0]], self.features[item[1]].lag
+
+            self.schedule.sort(key=priority)
+            self.tiers = [list(items) for _, items in groupby(self.schedule, priority)]
 
     def predict(self, history):
-        size = len(self.schedule)
-        offset = (self.step * self.budget) % size if self.flat else 0
-        self.active = [
-            self.schedule[(offset + i) % size] for i in range(min(self.budget, size))
-        ]
+        self.active = []
+        # Rotate within equal-priority tiers so a fixed schema prefix cannot
+        # determine which features ever receive evidence. At most budget tables
+        # are selected and read, regardless of the size of the public schema.
+        tiers = [self.schedule] if self.flat else self.tiers
+        for tier in tiers:
+            count = min(self.budget - len(self.active), len(tier))
+            offset = (self.step * count) % len(tier)
+            self.active.extend(tier[(offset + i) % len(tier)] for i in range(count))
+            if len(self.active) == self.budget:
+                break
         self.x = {}
         for _, j in self.active:
             literal = self.features[j]

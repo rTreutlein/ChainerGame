@@ -397,10 +397,13 @@ class ReviewRegressionTest(unittest.TestCase):
             )
         )
         learner = BudgetedMarginal(w.features, w.domains, budget=10)
+        seen = set()
         for sample in w.stream():
             learner.predict(sample["history"])
             learner.learn(sample["history"], sample["y"])
+            seen.update(j for _, j in learner.active)
             self.assertLessEqual(learner.work["table_updates"], 10)
+            self.assertLessEqual(learner.work["feature_reads"], 10)
             self.assertEqual(set(learner.work["by_lag"]), {"1"})
             if sample["step"] >= 32:
                 self.assertTrue(sample["holdout"])
@@ -409,6 +412,9 @@ class ReviewRegressionTest(unittest.TestCase):
                 not literal.args or literal.args[0] not in ("e4", "e5", "e6", "e7")
                 for literal in w.features
             )
+        )
+        self.assertEqual(
+            seen, {j for j, literal in enumerate(w.features) if literal.lag == 1}
         )
         early = list(w.stream())[0]["history"][-1]
         late = list(w.stream())[-1]["history"][-1]
