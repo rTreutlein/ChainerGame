@@ -54,6 +54,7 @@ def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
     (out/'world.json').write_text(json.dumps(metadata, indent=2)+'\n')
     all_scores = RunningAverage()
     times, learn_times = CostMeter(config.samples), CostMeter(config.samples)
+    mining_times = CostMeter(config.samples)
     curves, audit = [], TraceAudit()
     previous_predictions, previous_labels, learned_targets = {}, {}, set()
     recovery_points = []
@@ -77,6 +78,9 @@ def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
                 t2 = time.perf_counter()
                 times.add(t2-t0)
                 learn_times.add(t2-t1)
+                mining_seconds = (learner.ingest_seconds+t2-t1 if system == 'petta' else
+                                  (t2-t0 if learner else 0.))
+                mining_times.add(mining_seconds)
                 for e in step_events:
                     audit.add(dict(e, step=sample['step']))
                 previous_predictions, previous_labels = predictions, sample['y']
@@ -88,6 +92,7 @@ def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
                 row = {'step': sample['step'], 'phase': sample['phase'], 'predicted': predictions,
                        'exact': sample['q'], 'label': sample['y'], 'scores': scores,
                        'predict_seconds': t1-t0, 'learn_seconds': t2-t1, 'total_seconds': t2-t0,
+                       'mining_path_seconds': mining_seconds,
                        'rss_peak_kib': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
                        'work_units': learner.work if learner else 0, 'events': step_events, 'target_requests': requests}
                 raw.write(json.dumps(row)+'\n')
@@ -108,6 +113,7 @@ def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
                   'scores': all_scores.result(), 'by_type': {k: v.result() for k, v in by_type.items()},
                   'recovery': recovery_points[-1], 'learning_curve': curves,
                   'cost': times.result(), 'feedback_cost': learn_times.result(),
+                  'mining_cost': mining_times.result(),
                   'peak_rss_kib': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
                   'elapsed_seconds': time.perf_counter()-started,
                   'learned_rules': [asdict(r) for r in learned], 'trace_audit': audit.result()}

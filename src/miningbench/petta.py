@@ -1,6 +1,7 @@
 """Frozen PeTTaChainer adapter. Run only inside the mandatory capped wrapper."""
 from dataclasses import replace
 import re
+import time
 from .world import Literal, Rule
 
 
@@ -81,6 +82,7 @@ class Petta:
         return f'({t} p{period})' if len(self.domains[t]) == 2 else f'({t} {value} p{period})'
 
     def predict(self, history):
+        ingest_started = time.perf_counter()
         # An event y_t is the end-of-period outcome of context x_(t-1).
         # Context and outcome use layers 0/1 of that decision period. No lagged
         # feature predicates, negated proxy predicates or planted rules are supplied.
@@ -93,6 +95,7 @@ class Petta:
         else:
             self.period += 1
             self.add_inputs(history[-1], self.period)
+        self.ingest_seconds = time.perf_counter()-ingest_started
         statements, indices = [], []
         for t, domain in self.domains.items():
             for v in (('1',) if len(domain) == 2 else domain):
