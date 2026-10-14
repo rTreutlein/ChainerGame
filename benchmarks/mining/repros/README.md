@@ -1,6 +1,6 @@
 # Frozen miner capability and runtime probes
 
-All probes use PeTTaChainer `4e6b059b`, without modifications. They require the
+The original probes use PeTTaChainer `4e6b059b`, without modifications. They require the
 shared interpreter and the capped wrapper, DISPLAY unset and virtual memory
 limited to 16000000 KiB. `run.sh` supplies these settings. Use a fresh output path
 for repeated generator runs; the benchmark refuses to overwrite evidence.
@@ -36,6 +36,11 @@ The expanded-proof rerun on `4e6b059b` confirms withdrawn `hypothesis-0`,
 `-1`, `-2`, `-3`, `-4`, `-8`, and `-9` in both returned revisions, at all three
 query budgets. The complete names, withdrawal verdicts and expansions are in
 `/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-prediction-read.log`.
+A separate rerun on master `6ffb1404` reproduces exactly the same two strengths
+and the same seven withdrawn hypotheses in every expanded revision. That commit
+changes implication-query semantics but does not fix hypothesis withdrawal. Its
+raw evidence is
+`/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-prediction-read-6ff.log`.
 The exact sequential-read repro is retained rather than changing the benchmark
 to read learned rule rates outside the chainer. Raw log:
 `/nexus/Dev/OpenCog/bench/results/mining-bench/prediction-read.log`.

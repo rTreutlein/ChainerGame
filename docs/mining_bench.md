@@ -289,6 +289,13 @@ at the original commit, selected through `PYTHONPATH` while keeping the shared
 interpreter. Separate single/AND2 runs and the prediction-read repro check the
 new master. Runtime commits and import paths are recorded per run; these cohorts
 are not pooled.
+All 40 new-master runs completed (single/AND2, both ingestion arms, ten seeds,
+256 steps). Their predictions, exact probabilities, labels, scores, learned
+rules and recovery match the original runtime exactly. See the
+[separate current-master table](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-master-6ff/report.md)
+and [per-run comparison](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-master-comparison.json).
+The full suite also passes on `6ffb1404`: 188 passed, 25 skipped and 13 subtests.
+The prediction-read repro still exposes the same seven withdrawn hypotheses.
 For long streams add `--levels long`; for the 100-distractor, lag-12 stress case
 use `--levels deep_lags --stress-seconds 3600`. For transfer use
 `--kinds binding --levels entity_holdout`. Report collection also uses capped.
