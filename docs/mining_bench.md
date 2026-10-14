@@ -278,7 +278,7 @@ second queued 15 GB reservation cannot block smaller jobs behind it. The
 remaining difficulty grid uses eight waiting workers after completing strength
 and noise; each child still needs its own one-slot capped admission.
 `--keep-timeouts` reuses completed timeout attempts. `--keep-resource-failures`
-also reuses exit-250 attempts whose retained log explicitly reports memory
+also reuses exit-137 or exit-250 attempts whose retained log explicitly reports memory
 allocation failure. Interrupted attempts are recorded separately and rerun in
 fresh directories.
 

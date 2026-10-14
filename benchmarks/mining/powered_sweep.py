@@ -67,7 +67,7 @@ def main():
             log_path = path.parent / "process.log"
             resource_failure = (
                 args.keep_resource_failures
-                and status["returncode"] == 250
+                and status["returncode"] in (137, 250)
                 and log_path.exists()
                 and "Could not allocate memory" in log_path.read_text(errors="replace")
             )
