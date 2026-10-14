@@ -38,6 +38,7 @@ def main():
     parser.add_argument("--stress-peak-mb", type=int, default=6000)
     parser.add_argument("--required-petta-commit")
     parser.add_argument("--keep-timeouts", action="store_true")
+    parser.add_argument("--keep-resource-failures", action="store_true")
     args = parser.parse_args()
     if not os.environ.get("MININGBENCH_CAPPED"):
         parser.error("launch the coordinator through capped with MININGBENCH_CAPPED=1")
@@ -59,11 +60,19 @@ def main():
             done.add(
                 (meta.get("level"), config["kinds"][0], config["seed"], meta["system"])
             )
-    if args.keep_timeouts:
+    if args.keep_timeouts or args.keep_resource_failures:
         for path in args.evidence.rglob("status.json"):
             status = json.loads(path.read_text())
             world_path = path.parent / "world.json"
-            if status["returncode"] != 124 or not world_path.exists():
+            log_path = path.parent / "process.log"
+            resource_failure = (
+                args.keep_resource_failures
+                and status["returncode"] == 250
+                and log_path.exists()
+                and "Could not allocate memory" in log_path.read_text(errors="replace")
+            )
+            timeout = args.keep_timeouts and status["returncode"] == 124
+            if not (timeout or resource_failure) or not world_path.exists():
                 continue
             metadata = json.loads(world_path.read_text())
             if (

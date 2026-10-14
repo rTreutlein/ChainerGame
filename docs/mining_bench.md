@@ -270,12 +270,25 @@ Choose fresh output directories. The live coordinator admits each child through
 `capped` separately, reserving 15 GB for a numeric attempt, 6 GB for binding stress,
 3 GB for ordinary binding, and 1.5 GB for other ordinary runs. Other stress attempts
 default to 6 GB; `--stress-peak-mb` adjusts that reservation from measured peaks.
-The resized live cohorts use 3.5 GB after four deep-lag timeout attempts logged
-peaks below 2.4 GiB. Execution limits and seeds are unchanged. Admission waiting
+The early resized cohorts used 3.5 GB after four deep-lag timeout attempts logged
+peaks below 2.4 GiB. After the reboot, ordinary stress reservations increased to
+5 GB because three-target runs exceeded 4 GiB. Execution limits and seeds are unchanged. Admission waiting
 does not consume the execution timeout. Numeric attempts use one worker so a
 second queued 15 GB reservation cannot block smaller jobs behind it. The
 remaining difficulty grid uses eight waiting workers after completing strength
 and noise; each child still needs its own one-slot capped admission.
+`--keep-timeouts` reuses completed timeout attempts. `--keep-resource-failures`
+also reuses exit-250 attempts whose retained log explicitly reports memory
+allocation failure. Interrupted attempts are recorded separately and rerun in
+fresh directories.
+
+Master was `4e6b059b` when the powered experiment started. It advanced to
+`6ffb1404` during the resumed sweep, changing implication-query semantics without
+landing the withdrawal fix. Remaining powered runs use an unmodified local clone
+at the original commit, selected through `PYTHONPATH` while keeping the shared
+interpreter. Separate single/AND2 runs and the prediction-read repro check the
+new master. Runtime commits and import paths are recorded per run; these cohorts
+are not pooled.
 For long streams add `--levels long`; for the 100-distractor, lag-12 stress case
 use `--levels deep_lags --stress-seconds 3600`. For transfer use
 `--kinds binding --levels entity_holdout`. Report collection also uses capped.
