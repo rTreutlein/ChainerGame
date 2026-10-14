@@ -160,6 +160,8 @@ def main():
             "1",
             "--peak-mb",
             str(peak_mb),
+            "--label",
+            f"mining-{system}-{level}-{kind}",
             "timeout",
             "--kill-after=10",
             str(timeout_seconds),

@@ -12,12 +12,18 @@ alternates true/false; `Y(entity,t+1)` copies it. Both predicates have layer zer
 so the miner must use the temporal link. Link-first proposes the intended rule
 with strength 0.9993756555741329; link-last proposes no Y hypothesis.
 
-The observed-predicate API requires observations before the closing link. The
-current miner records the link but does not revisit already ingested endpoints.
+The observed-predicate API requires observations before the closing link. At
+`4e6b059b`, the miner records the link but does not revisit already ingested endpoints.
 This limits natural event-time mining. The benchmark's context/outcome layer
 encoding enables event lag 1 without changing the world; deeper event lags still
 expose temporal restrictions. Raw log:
 `/nexus/Dev/OpenCog/bench/results/mining-bench/time-link-order.log`.
+
+On `7925f8d5`, both orders propose the intended rule with strength
+0.9993756555741329 and confidence 0.8889924978641507. Late-link replay fixes
+this candidate-generation repro. This does not by itself demonstrate firing
+before a link arrives or mining conjunctions spanning several links. Raw log:
+`/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-time-link-order-792.log`.
 
 ## Correct learned rates, incorrect predictive reads
 
@@ -44,6 +50,15 @@ raw evidence is
 The exact sequential-read repro is retained rather than changing the benchmark
 to read learned rule rates outside the chainer. Raw log:
 `/nexus/Dev/OpenCog/bench/results/mining-bench/prediction-read.log`.
+
+The upstream withdrawal and late-link replay fix landed during the powered
+rerun. On master `7925f8d5`, the unchanged repro now returns
+0.9998485307482582 for true input and 0.00016123831022250886 for false input,
+at all three budgets. None of the nine withdrawn hypothesis names appears in
+the expanded returned proofs. This fixes the reproduced predictive-read defect;
+it does not establish recovery of rule forms the miner never proposes.
+Evidence: `review-v2-prediction-read-792.log` and
+`review-v2-prediction-read-792-check.json` under the same results directory.
 
 ```bash
 unset DISPLAY

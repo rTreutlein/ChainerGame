@@ -296,6 +296,12 @@ rules and recovery match the original runtime exactly. See the
 and [per-run comparison](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-master-comparison.json).
 The full suite also passes on `6ffb1404`: 188 passed, 25 skipped and 13 subtests.
 The prediction-read repro still exposes the same seven withdrawn hypotheses.
+After that check, master advanced to `7925f8d5`, including the withdrawal and
+late-link replay fix. The unchanged repro now predicts .99985 versus .00016,
+and its expanded proofs contain no withdrawn hypotheses. The full suite also
+passes on that revision: 188 passed, 25 skipped, 13 subtests. A separate powered
+cohort is running from an unmodified clone of this revision, using the shared
+interpreter. Its results will remain separate from the original runtime.
 For long streams add `--levels long`; for the 100-distractor, lag-12 stress case
 use `--levels deep_lags --stress-seconds 3600`. For transfer use
 `--kinds binding --levels entity_holdout`. Report collection also uses capped.
@@ -329,7 +335,12 @@ The [full results table](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2
 
 There are 3870 completed runs in this report. Historical interrupted attempts remain in the audit; completed replacements determine coverage. PeTTa commits: 4e6b059be39537d2c7c8a28e5dc807fb4f3a83c9.
 
-This is an interim evidence snapshot: the baseline and reference grids are complete, while the remaining PeTTa numeric, three-target, and distractor attempts are still running. The completed deep-lag experiment has ten timeouts per PeTTa arm.
+This is an interim evidence snapshot. The original-runtime cohort is now fully
+attempted: 530 completed streams, 209 timeouts and one reproducible allocation
+failure among 740 planned live conditions. The updated-runtime cohort is still
+running. The complete original-runtime audit is in
+[review-v2-final](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-final/report.md),
+with [unique-condition coverage](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-live-coverage.json).
 
 Intervals below are 95% seed bootstrap intervals. An underpowered cell retains its actual n and cannot earn an acceptance pass. Oracle base probability Brier is zero and recovery is one for every type.
 
