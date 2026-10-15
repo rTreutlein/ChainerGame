@@ -267,7 +267,7 @@ export TMPDIR="$PWD/.scratch"
 ```
 
 Choose fresh output directories. The live coordinator admits each child through
-`capped` separately, reserving 15 GB for a numeric attempt, 6 GB for binding stress,
+`capped` separately, reserving 15 GB for a numeric attempt, at least 6 GB for binding stress,
 3 GB for ordinary binding, and 1.5 GB for other ordinary runs. Other stress attempts
 default to 6 GB; `--stress-peak-mb` adjusts that reservation from measured peaks.
 The early resized cohorts used 3.5 GB after four deep-lag timeout attempts logged
@@ -281,6 +281,14 @@ and noise; each child still needs its own one-slot capped admission.
 also reuses exit-137 or exit-250 attempts whose retained log explicitly reports memory
 allocation failure. Interrupted attempts are recorded separately and rerun in
 fresh directories.
+
+The fixed-runtime cohort subsequently required larger reservations: its first
+deep-lag attempt reached 15.1 GiB of logged RSS before an allocation failure.
+Deep-lag and numeric attempts each use one worker and a 15 GB reservation.
+Remaining 256-step stress attempts use 10 GB, including binding, because the
+observed deep-lag history already exceeded 5 GB before 256 steps. Interrupted
+attempts from the reservation changes retain their logs and explicit reasons;
+they are rerun with identical worlds and execution timeouts.
 
 Master was `4e6b059b` when the powered experiment started. It advanced to
 `6ffb1404` during the resumed sweep, changing implication-query semantics without

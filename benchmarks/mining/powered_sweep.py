@@ -110,7 +110,7 @@ def main():
         if kind == "numeric":
             peak_mb = 15000
         elif kind == "binding":
-            peak_mb = 6000 if stress else 3000
+            peak_mb = max(6000, args.stress_peak_mb) if stress else 3000
         else:
             peak_mb = args.stress_peak_mb if stress else 1500
         timeout_seconds = args.stress_seconds if stress else args.seconds
