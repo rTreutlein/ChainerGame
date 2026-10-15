@@ -1402,6 +1402,14 @@ about **69%** to beliefs/marginal projection (including the responsive
 policy-class floor), **20%** to the two-beam proposal restriction and
 **11%** to chainer valuation. These are seed-specific descriptive shares. Across all
 four seeds the corresponding shares are approximately 80%/13%/7%.
+This inversion-on worktree removes the production `no_inverse` workaround
+for the PeTTaChainer context-overlay comparison. Decision and choice rules
+retain their `no_inverse` declarations. The measurements in this section
+remain the historical workaround baseline. The three-way stage 4/5 rerun is
+recorded under `/nexus/Dev/OpenCog/bench/results/ctx-overlay/`. The sweep
+scripts accept `CHAINER_PY`; stage 5 also takes `PETTACHAINER_REPO` for source
+provenance, and stage 4 accepts `CASE_PATTERN` for selecting existing cases.
+
 The dominant loss is the known stage 3/4 production-report gap: belief-KB
 production rules are `no_inverse` (`metta._cycle_rules`), and antecedent
 completion does not invert production reports into degradation. In seed 1,

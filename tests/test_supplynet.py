@@ -715,7 +715,7 @@ class GameTests(unittest.TestCase):
         semantic, chainer = metta.rules(network, rates), metta.rules(network, rates, positive_actions=True)
         self.assertIn("(: fuelled (Implication (Or (StockedFuel $t) (FuelArrived $t)) (Fuelled power-plant $t)) (CTV (STV 1 1) (STV 0 1)))", semantic)
         self.assertIn(
-            "(: (no_inverse runs-mine) (Implication (And (Producing power-plant $t) (Not (Degraded mine $t)) (InService mine $t)) "
+            "(: runs-mine (Implication (And (Producing power-plant $t) (Not (Degraded mine $t)) (InService mine $t)) "
             "(Producing mine $t)) (CTV (STV 1 1) (STV 0 1)))",
             chainer,
         )
