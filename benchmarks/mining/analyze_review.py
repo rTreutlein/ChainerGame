@@ -296,11 +296,11 @@ def main():
                 errors.append(losses(predicted, q)["brier"])
                 memory[key] = q
             numeric_memory[level].append(statistics.fmean(errors))
-    directed = defaultdict(list)
+    directed_by_seed = defaultdict(lambda: defaultdict(list))
     work = defaultdict(list)
     for (level, seed, kinds, targets), arms in groups.items():
         if "budgeted" in arms and "budgeted-flat" in arms:
-            directed[level].append(
+            directed_by_seed[level][seed].append(
                 arms["budgeted-flat"]["relevance_weighted_brier"]
                 - arms["budgeted"]["relevance_weighted_brier"]
             )
@@ -321,6 +321,12 @@ def main():
                         "weighted_brier": result["relevance_weighted_brier"],
                     }
                 )
+    # Ten kinds evaluated with the same ten seeds are ten independent seed
+    # clusters, not one hundred independent replications.
+    directed = {
+        level: [statistics.fmean(values[seed]) for seed in sorted(values)]
+        for level, values in directed_by_seed.items()
+    }
     behaviour = {
         "relevance_priority_paired_gain": {k: interval(v) for k, v in directed.items()},
         "numeric_exact_context_memorizer_brier": {

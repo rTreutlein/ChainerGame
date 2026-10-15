@@ -483,17 +483,19 @@ The fixed-budget comparison retains learned predictors, rotates candidate update
 
 | Cohort | Priority advantage in weighted Brier [95% paired CI] |
 |---|---|
-| base | 0.0000 [0.0000, 0.0000]; n=100 |
+| base | 0.0000 [0.0000, 0.0000]; n=10 |
 | directed_base | 0.1379 [0.1150, 0.1654]; n=10 |
 | directed_deep_lags | 0.2636 [0.2606, 0.2667]; n=10 |
 | directed_entity_holdout | 0.2061 [0.1531, 0.2598]; n=10 |
-| distractors | 0.0716 [0.0635, 0.0794]; n=100 |
-| drift | 0.0000 [0.0000, 0.0000]; n=100 |
-| long | 0.0000 [0.0000, 0.0000]; n=100 |
-| observation_noise | 0.0000 [0.0000, 0.0000]; n=100 |
-| samples | 0.0000 [-0.0000, 0.0000]; n=100 |
-| strength | 0.0000 [0.0000, 0.0000]; n=100 |
-| targets | 0.0128 [0.0097, 0.0160]; n=100 |
+| distractors | 0.0716 [0.0658, 0.0783]; n=10 |
+| drift | 0.0000 [0.0000, 0.0000]; n=10 |
+| long | 0.0000 [0.0000, 0.0000]; n=10 |
+| observation_noise | 0.0000 [0.0000, 0.0000]; n=10 |
+| samples | 0.0000 [-0.0000, 0.0000]; n=10 |
+| strength | 0.0000 [0.0000, 0.0000]; n=10 |
+| targets | 0.0128 [0.0111, 0.0146]; n=10 |
+
+These intervals cluster all rule types within each seed before resampling. The frozen raw report’s ancillary cross-type priority table counted 100 type/seed pairs; this correction restores ten independent seeds. The dedicated directed-design probes and all primary acceptance conclusions are unchanged.
 
 | New-entity holdout cohort | Brier [95% CI] |
 |---|---|

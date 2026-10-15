@@ -64,7 +64,18 @@ for ax, kind in zip(axes.flat, kinds):
         if count < 10:
             partial.append(f"{system}: n={count}")
         ax.plot(
-            samples, [ci["mean"] for ci in cis], label=system, color=color, marker="."
+            samples,
+            [ci["mean"] for ci in cis],
+            label=system,
+            color=color,
+            marker=".",
+            linestyle=(
+                "--"
+                if system.endswith("@4e6b059b")
+                else "-."
+                if system.endswith("@171b2820")
+                else "-"
+            ),
         )
         ax.fill_between(
             samples,
