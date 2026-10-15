@@ -53,7 +53,11 @@ read through its shared interpreter; no upstream implementation is changed.
 8. **Readability and evidence.** Scoring, reporting, and the temporal protocol have
    named operations and documented units. Historical runs remain immutable.
    `benchmarks/mining/analyze_review.py` collects the corrected results and raw
-   behavioural evidence into a fresh report directory.
+   behavioural evidence into a fresh report directory. PeTTa checkpoint recovery
+   is reconstructed from raw verdict events. Final recovery uses saved rules for
+   every system. Older reference checkpoints without saved rule snapshots retain
+   their original values as `recorded_recovery`; their current-matcher recovery
+   is left unmeasured. Prediction curves do not depend on this reconstruction.
 
 ## Generator and exact truth
 

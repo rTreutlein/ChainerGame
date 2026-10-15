@@ -33,6 +33,7 @@ def main():
     args.out.mkdir(parents=True, exist_ok=False)
     results, failures = [], []
     paths = {}
+    current_source = source_hash()
     for path in sorted(args.root.rglob("result.json")):
         # Replaced reference-arm runs retain evidence but are not double counted.
         if path.parent.parent.name in (
@@ -85,6 +86,17 @@ def main():
         live, negative_rates = {}, {}
         domains = result["metadata"]["domains"]
         label_counts = {target: [0] * len(domain) for target, domain in domains.items()}
+        checkpoints = {point["samples"]: point for point in result["learning_curve"]}
+        is_petta = result["metadata"]["system"].startswith("petta")
+        for point in checkpoints.values():
+            point["recorded_recovery"] = point["recovery"]
+            point["recovery_scoring"] = "recorded_at_run"
+            if not is_petta and result["metadata"]["source_sha256"] != current_source:
+                # Reference runs did not save intermediate rule snapshots.
+                # Preserve their historical values without presenting them as
+                # current-matcher results. The final rules are saved below.
+                point["recovery"] = None
+                point["recovery_scoring"] = "historical_only_no_rule_snapshot"
         for line, sample_line in zip(
             (path.parent / "steps.jsonl").open(),
             (path.parent / "samples.jsonl").open(),
@@ -133,6 +145,16 @@ def main():
                     live[name] = rule
                     if tv[0] == "CTV":
                         negative_rates[name] = float(tv[2][1])
+            point = checkpoints.get(step["step"] + 1)
+            if is_petta and point is not None:
+                checkpoint_rules = export_rules(
+                    live, negative_rates, label_counts, domains
+                )
+                phase = point["phase"]
+                point["recovery"] = recovery(
+                    checkpoint_rules, world.rules[phase], world.types, world, phase
+                )
+                point["recovery_scoring"] = "raw_verdict_replay"
             if step.get("holdout"):
                 observed = {
                     (head, tuple(args)): value
@@ -200,6 +222,11 @@ def main():
         result["recovery"] = recovery(
             rules, world.rules[phase], world.types, world, phase
         )
+        final_point = checkpoints[config["samples"]]
+        if is_petta and final_point["recovery"] != result["recovery"]:
+            raise ValueError(f"checkpoint replay disagrees with final recovery: {path}")
+        final_point["recovery"] = result["recovery"]
+        final_point["recovery_scoring"] = "final_rules_recomputed"
 
         results.append(result)
         paths[id(result)] = path
