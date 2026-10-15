@@ -741,7 +741,8 @@ experiments below began.
 
 ## Final review follow-up
 
-The powered base table is unchanged. Its Markdown SHA-256 remains
+The powered base table is unchanged. Its SHA-256 (table rows joined with newlines,
+without a trailing newline) remains
 `0280b046d03223db17fbde9465d5527f54e38cbcfa8c0bc01d0ddb8fde0403ed`.
 The [regenerated full report](/nexus/Dev/OpenCog/bench/results/mining-bench/review4-report/report.md)
 contains 4457 completed runs, including the six new shuffled distractor runs.
@@ -844,8 +845,53 @@ repros; production ingestion remains shuffled.
 The pair runs in one capped two-worker scope at sweep priority. Its 10690 MiB
 reservation is 1.2 times the sum of the measured matched 64-step peaks. The
 previous full-pool request was cancelled after over 75 minutes without admission;
-no engine started and it contributes no measurement. The paired results are
-recorded separately below when both revisions finish.
+no engine started and it contributes no measurement. Both workers completed all 64 decisions with return code zero. Their sample logs
+are byte-identical, as are their generated-data hashes. The maximum start skew
+was **0.242 ms**, with a mean of **0.103 ms** over 64 barriers.
+
+| PeTTaChainer revision | Mining wall s/step | Prediction + learning wall s/step | Total active CPU s/step | CPU / active wall | Peak RSS MiB |
+|---|---:|---:|---:|---:|---:|
+| 7925f8d5 | 6.130 | 9.253 | 9.851 | 1.064 | 4622.3 |
+| 171b2820 | 34.321 | 44.269 | 58.073 | 1.312 | 4266.2 |
+
+The numeric slowdown persists: **5.60× mining wall time** and
+**5.90× active total-work CPU per decision**, with **7.7% lower peak RSS**.
+CPU measures all active decision work, not just mining; CPU/wall can exceed one
+because the engine uses multiple threads. Whole-process CPU, including startup,
+finalization and any work during barrier waits, is 9.894 versus 58.118 seconds
+per decision, supporting the same conclusion. Scheduling delay alone does not
+explain this difference.
+
+This is a substantial numeric performance regression between the tested
+revisions. It is one paired seed under synchronized shared load, with no
+population confidence interval or idle-machine claim. The revision range also
+includes live-instance truth refinement; this experiment does not isolate one
+individual commit as the cause. No engine workaround or upstream change was
+made, and no further regression investigation was attempted.
+
+The width-32 diagnostics have Brier .03589 versus .03599 and behavioural recall
+14/198 versus 18/198. They are complete **64-step diagnostics**, not completed
+256-step numeric base cells. The powered base table remains unchanged.
+
+The [final experiment summary](/nexus/Dev/OpenCog/bench/results/mining-bench/review4-summary-final/summary.md)
+contains the paired distractor confidence intervals, timing table and both
+history-length censuses. Its JSON retains per-cell values and full protocol
+records. The [timing synchronization record](/nexus/Dev/OpenCog/bench/results/mining-bench/review4-paired64/synchronization.json)
+and [original-prefix audit](/nexus/Dev/OpenCog/bench/results/mining-bench/review4-paired64/original-prefix-checks.json)
+provide additional checks. The historical killed numeric runs saved no input
+rows: only their 64 exact-probability/label rows can be independently compared.
+The two new runs have complete, identical input logs.
+
+The provenance audit corrected a metadata-only error: Git lookup from the
+installed `petta` wrapper inside `.venv` returned the enclosing PeTTaChainer
+repository's HEAD, not a VM version. The actual 57 bundled VM files are identical
+to the clean runtime checkout **673d20f3870dd268fda8433a007eb77cef458e0f** and have
+installation timestamps preceding both workers. The installed-content SHA-256 is
+`cbc2d6c15d96d11e9b92e969cf982fd92f2238499cb2b389f110155ec27dddce`.
+This identity is reconstructed after the run; future probes fingerprint the
+actual VM and wrapper before and after execution. Raw metadata is preserved with
+an explicit [provenance correction](/nexus/Dev/OpenCog/bench/results/mining-bench/review4-paired64/runtime_provenance_correction.json).
+The separately recorded pinned chainer revisions were correct throughout.
 
 ### Memory census and validation
 
@@ -878,7 +924,20 @@ pinned 171b2820 runtime: **192 passed, 25 skipped, 15 subtests passed**
 ([log](/nexus/Dev/OpenCog/bench/results/mining-bench/review4-suite-verified.log)).
 Focused tests cover seeded ordering, mean cost aggregation, positive and negative
 controls, completion separation and runtime/order cohort preservation. No upstream
-PeTTaChainer files were modified.
+PeTTaChainer files were modified. The later diagnostic scripts passed static
+checks; the synchronized pair exercised the timing protocol end to end, and the
+installed-VM identity was checked against the actual 57-file source copy.
+
+All benchmark, census, timing, test and analysis processes from this task have
+exited. The [process audit](/nexus/Dev/OpenCog/bench/results/mining-bench/review4-process-check.json)
+found no remaining task processes or mining admission tickets. Other agents'
+jobs were left untouched. No push or merge was performed.
+
+Remaining limits are explicit: three shuffled distractor seeds per arm, one
+numeric diagnostic seed, no completed 256-step live numeric base cell, incomplete
+higher-arity distractor/three-target/entity-holdout coverage, and censored deep-lag
+stress cohorts. Neither the six reused control families nor successful plain
+1024-step streams establish universal miner coverage or constant cost.
 
 ## Commits
 
@@ -892,3 +951,11 @@ PeTTaChainer files were modified.
 - `0bc753b`: directed completion labels and matched numeric timing inputs.
 - `8d4c8bd`: complete report provenance and all-seed AND2 retirement audit.
 - The earlier documentation commit and branch history are in [the commit record](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-commits.txt). No push or merge was performed.
+
+- `52bb504`: corrected diagnoses, shuffled results and memory census findings.
+- `92a55f4`: timing input checks and analysis provenance.
+- `c8aa207`: synchronized two-worker numeric comparison.
+- `1a06f16`: exact distractor intervals and shared-load protocol.
+- `e378aee`: actual installed-VM fingerprint and preserved provenance correction.
+- This final report commit and full branch history are in the
+  [current commit record](/nexus/Dev/OpenCog/bench/results/mining-bench/review4-commits.txt).

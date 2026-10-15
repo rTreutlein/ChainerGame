@@ -132,3 +132,13 @@ Raw numeric verdicts can include variable-output rules that the categorical
 export adapter does not support. In the completed narrow probe the only kept
 such rule has strength .5, below the .9 sufficiency threshold; its association
 calibration is omitted. Do not infer a miner language gap from that export limit.
+
+The completed synchronized pair (seed 1, 64 steps, width 32) measured mining
+wall time of **6.130 s/step on 7925f8d5 versus 34.321 on 171b2820 (5.60×)**.
+Active total-work CPU was 9.851 versus 58.073 s/step (5.90×); peak RSS was
+4622.3 versus 4266.2 MiB. Both exited zero, with identical sample logs and a
+maximum decision-start skew of 0.242 ms. This is a one-seed, shared-load revision
+regression, not an isolated-commit attribution or population estimate. No engine
+workaround was applied. See `review4-summary-final/summary.md` and
+`review4-paired64/` under the results root. The latter includes a metadata-only
+correction identifying the actual installed VM bundle; raw records are preserved.
