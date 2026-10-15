@@ -119,10 +119,15 @@ contribute to prediction scores. The census uses SWI predicate clause counts and
 allocated predicate bytes without enumerating row terms or invoking GC. These
 bytes explain store retention but are not an exact decomposition of process RSS.
 
-`../numeric_review.py` keeps width-8 feasibility separate from the width-32,
-seed-1, 64-step timing pair on 7925f8d5 and 171b2820. Timing uses identical
-historical input ordering, fresh processes and full-pool CPU admission at sweep
-priority; the narrow probe uses shuffled inputs. No backend repair is applied.
+`../numeric_review.py` supplies the width-8 feasibility worker and an optional
+full-pool timing protocol. The full-pool attempt was cancelled before any engine
+started because higher-priority work prevented admission. `../paired_numeric.py`
+runs the width-32, seed-1, 64-step comparison on 7925f8d5 and 171b2820 in two
+fresh processes synchronized before every decision, under one capped two-worker
+reservation at sweep priority. It records active CPU/wall time and start skew;
+barrier waiting is outside measured steps. This aligns shared host load, not an
+idle machine. Timing uses identical historical input order; the narrow probe
+uses shuffled inputs. No backend repair is applied.
 Raw numeric verdicts can include variable-output rules that the categorical
 export adapter does not support. In the completed narrow probe the only kept
 such rule has strength .5, below the .9 sufficiency threshold; its association

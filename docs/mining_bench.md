@@ -760,15 +760,14 @@ filtered or repaired.
 
 | Arm on 171b2820, D100 single, 256 steps | Seeds | Brier [95% CI] | Recall [95% CI] | Precision [95% CI] | Power |
 |---|---:|---|---|---|---|
-| petta, shuffled | 3 | .1179 [.1089, .1253] | 1 [1, 1] | .556 [.333, 1] | underpowered |
-| petta-link-first, shuffled | 3 | .1179 [.1089, .1253] | 1 [1, 1] | .556 [.333, 1] | underpowered |
+| petta, shuffled | 3 | .1179 [.1089, .1253] | 1 [1, 1] | .556 [.167, 1] | underpowered |
+| petta-link-first, shuffled | 3 | .1179 [.1089, .1253] | 1 [1, 1] | .556 [.167, 1] | underpowered |
 | either arm, historical fixed order | 3 | .2786 [.2778, .2797] | 0 [0, 0] | 0 [0, 0] | ordering artefact |
 
 The arms have identical predictions for these seeds; they are three independent
 seeds, not six. All three shuffled streams recover the planted rule. Two also
-retain spurious sufficient rules, so this is not perfect recovery. The paired
-improvement and all per-cell resource measurements are in the final experiment
-summary linked below. The new maximum RSS is about 5442 MiB, versus 6429–7633 MiB
+retain spurious sufficient rules, so this is not perfect recovery. The paired Brier improvement is **.1607 [.1531, .1689]** in each arm;
+all per-cell resource measurements are in the final experiment summary linked below. The new maximum RSS is about 5442 MiB, versus 6429–7633 MiB
 in the same fixed-order cells.
 
 The newest-24-true-facts window remains a real candidate-access limit. In the
@@ -833,10 +832,20 @@ misreported as proof that PeTTa cannot propose variable numeric outputs. General
 arithmetic formula discovery is still unshown.
 
 The matched timing experiment uses fresh processes, width 32, seed 1, 64 steps,
-budget 40, the same historical input order, the same shared interpreter and
-PeTTa VM, and full-pool CPU reservations at sweep priority. Historical ordering
-is explicit only in diagnostic repros; production ingestion remains shuffled.
-Its results are recorded separately below when both revisions finish.
+budget 40, the same historical input order, shared interpreter and PeTTa VM.
+`paired_numeric.py` synchronizes the two revisions before every decision. Both
+see concurrent host load at the same history length; the faster worker waits
+outside the measured step. Active process CPU and wall time, per-step host load,
+and actual start skew are recorded. This is a **step-synchronized shared-load
+comparison**, not an idle-machine timing. Memory-bandwidth and CPU-frequency
+variation remain possible. Historical ordering is explicit only in diagnostic
+repros; production ingestion remains shuffled.
+
+The pair runs in one capped two-worker scope at sweep priority. Its 10690 MiB
+reservation is 1.2 times the sum of the measured matched 64-step peaks. The
+previous full-pool request was cancelled after over 75 minutes without admission;
+no engine started and it contributes no measurement. The paired results are
+recorded separately below when both revisions finish.
 
 ### Memory census and validation
 
