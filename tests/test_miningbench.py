@@ -642,6 +642,13 @@ class ReviewRegressionTest(unittest.TestCase):
                     if level == "long":
                         row["metadata"]["config"]["samples"] = 1024
                     fixtures.append(row)
+        for seed in range(1, 11):
+            row = deepcopy(oracle)
+            row["metadata"]["config"].update(
+                seed=seed, samples=1024, distractors=100, deep_lags=12
+            )
+            row["metadata"]["level"] = "directed_deep_lags"
+            fixtures.append(row)
         censored = [
             {
                 "level": "deep_lags",
@@ -666,6 +673,13 @@ class ReviewRegressionTest(unittest.TestCase):
             if row["check"] == "marginal: deep-lag 100-distractor completion"
         )
         self.assertEqual(deep["status"], "FAIL")
+        directed = next(
+            row
+            for row in incomplete_checks
+            if row["check"] == "oracle: deep-lag 100-distractor completion"
+        )
+        self.assertEqual(directed["status"], "PASS")
+
         cost = next(
             row
             for row in incomplete_checks

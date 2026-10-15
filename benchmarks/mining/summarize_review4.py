@@ -38,6 +38,7 @@ def main():
             brier=result["scores"]["brier"],
             old_brier=old["scores"]["brier"],
             recall=result["recovery"]["all"]["recall"],
+            precision=result["recovery"]["all"]["precision"],
             old_peak_mib=old["peak_rss_kib"] / 1024,
             peak_mib=result["peak_rss_kib"] / 1024,
             brier_improvement=old["scores"]["brier"] - result["scores"]["brier"],
@@ -49,7 +50,7 @@ def main():
     summary = {
         system: {
             field: interval([row[field] for row in rows])
-            for field in ("brier", "recall", "brier_improvement")
+            for field in ("brier", "recall", "precision", "brier_improvement")
         }
         for system, rows in groups.items()
     }
@@ -135,7 +136,37 @@ def main():
                 interpretation="Input-only opportunity, not internal miner work",
             )
         )
+    retention_checks = []
+    for case, original in (
+        ("fixed-d100", "review-v2/petta-171/distractors/distractors-petta-9-single"),
+        ("fixed-deep", "review-v2/petta-171/deep/deep_lags-petta-1-single"),
+    ):
+        current = args.root / "review4-retention" / case
+        if not (current / "steps.jsonl").exists():
+            continue
+        old = args.root / original
+        check = {
+            "case": case,
+            "original": str(old),
+            "complete": (current / "result.json").exists(),
+        }
+        for filename, keys in (
+            ("steps.jsonl", ("predicted", "exact", "label")),
+            ("samples.jsonl", ()),
+        ):
+            before = [
+                json.loads(line) for line in (old / filename).read_text().splitlines()
+            ]
+            after = [
+                json.loads(line)
+                for line in (current / filename).read_text().splitlines()
+            ]
+            for a, b in zip(before, after):
+                assert all(a[key] == b[key] for key in keys) if keys else a == b
+            check[filename + "_verified_rows"] = min(len(before), len(after))
+        retention_checks.append(check)
     result = dict(
+        retention_prefix_checks=retention_checks,
         input_tail_opportunities=opportunities,
         distractor_cells=paired,
         distractor_summary=summary,
@@ -147,13 +178,13 @@ def main():
     lines = [
         "# Final-review experiments",
         "",
-        "| Shuffled arm | Seeds | Brier [95% CI] | Recall [95% CI] | Paired Brier improvement [95% CI] |",
-        "|---|---:|---|---|---|",
+        "| Shuffled arm | Seeds | Brier [95% CI] | Recall [95% CI] | Precision [95% CI] | Paired Brier improvement [95% CI] |",
+        "|---|---:|---|---|---|---|",
     ]
     for system, rows in groups.items():
         lines.append(
             f"| {system} | {len(rows)} | {formatted([r['brier'] for r in rows])} | "
-            f"{formatted([r['recall'] for r in rows])} | {formatted([r['brier_improvement'] for r in rows])} |"
+            f"{formatted([r['recall'] for r in rows])} | {formatted([r['precision'] for r in rows])} | {formatted([r['brier_improvement'] for r in rows])} |"
         )
     lines += [
         "",

@@ -3,7 +3,9 @@
 No backend changes. Every engine lives in a fresh capped child. Timing children
 reserve all admission CPU slots so no other pool benchmark overlaps either
 revision. An optional ABBA repeat checks order effects. Host load and CPU time are
-recorded as checks, not silently assumed equal. Run the coordinator via capped.
+recorded as checks, not silently assumed equal. Timing reproduces the original
+fixed input order to avoid confounding the revision comparison with the shuffle
+fix. The narrow feasibility probe uses the corrected shuffle. Run via capped.
 """
 
 import argparse
@@ -24,6 +26,12 @@ def worker(args):
     import petta
     from miningbench.world import Config
 
+    if args.historical_order:
+        from miningbench.petta import Petta
+        from repros.store_retention import legacy_inputs
+
+        Petta.add_inputs = legacy_inputs
+        Petta.input_order = "historical-fixed-order-repro"
     cpu_start = time.process_time()
     wall_start = time.perf_counter()
     load_start = os.getloadavg()
@@ -73,6 +81,7 @@ def main():
     parser.add_argument("--worker", action="store_true")
     parser.add_argument("--skip-narrow", action="store_true")
     parser.add_argument("--repeat-pair", action="store_true")
+    parser.add_argument("--historical-order", action="store_true")
     parser.add_argument("--width", type=int, default=32)
     parser.add_argument("--slots", type=int, default=1)
     parser.add_argument("--samples", type=int, default=32)
@@ -146,6 +155,8 @@ def main():
             "--out",
             str(out),
         ]
+        if label.startswith("paired-"):
+            command.append("--historical-order")
         with (args.out / f"{label}-{revision}.log").open("w") as log:
             status = subprocess.run(
                 command, env=environment, stdout=log, stderr=subprocess.STDOUT

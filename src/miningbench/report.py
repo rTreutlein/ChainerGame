@@ -366,7 +366,7 @@ def acceptance(results, failures=()):
         )
         completed = {
             (
-                row["metadata"].get("level"),
+                row["metadata"].get("level", "").removeprefix("directed_"),
                 row["metadata"]["config"]["seed"],
                 tuple(row["metadata"]["config"]["kinds"]),
             )
@@ -376,8 +376,12 @@ def acceptance(results, failures=()):
             failure
             for failure in failures
             if failure["system"] == system
-            and failure["level"] in ("long", "deep_lags")
-            and (failure["level"], failure["seed"], tuple(failure["kinds"]))
+            and failure["level"].removeprefix("directed_") in ("long", "deep_lags")
+            and (
+                failure["level"].removeprefix("directed_"),
+                failure["seed"],
+                tuple(failure["kinds"]),
+            )
             not in completed
         ]
         if censored:
@@ -395,10 +399,10 @@ def acceptance(results, failures=()):
             completion = {
                 row["metadata"]["config"]["seed"]: 1.0
                 for row in long
-                if row["metadata"].get("level") == level
+                if row["metadata"].get("level", "").removeprefix("directed_") == level
             }
             for failure in censored:
-                if failure["level"] == level:
+                if failure["level"].removeprefix("directed_") == level:
                     completion[failure["seed"]] = 0.0
             checks.append(
                 gate(
