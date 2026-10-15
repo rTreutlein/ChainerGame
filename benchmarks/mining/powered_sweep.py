@@ -1,0 +1,236 @@
+"""Resume powered live sweeps with per-run capped admission and immutable attempts.
+
+The coordinator itself must be launched through capped --slots 1 --peak-mb 128.
+Child waiting for admission does not consume its execution timeout.
+"""
+
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+import importlib.util
+import json
+import math
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+from miningbench.world import KINDS
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--evidence", type=Path, required=True)
+    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--kinds", nargs="+", default=list(KINDS))
+    parser.add_argument(
+        "--levels",
+        nargs="+",
+        default=[
+            "samples",
+            "strength",
+            "observation_noise",
+            "drift",
+            "targets",
+            "distractors",
+        ],
+    )
+    parser.add_argument("--jobs", type=int, default=1)
+    parser.add_argument("--seconds", type=int, default=600)
+    parser.add_argument("--stress-seconds", type=int, default=1800)
+    parser.add_argument(
+        "--peaks",
+        type=Path,
+        required=True,
+        help="Measured per-label RSS profiles; reservations add a 20%% margin",
+    )
+    parser.add_argument(
+        "--tasks-file",
+        type=Path,
+        help="Explicit [level, kind, seed, system] rows to resume",
+    )
+    parser.add_argument("--required-petta-commit")
+    parser.add_argument("--keep-timeouts", action="store_true")
+    parser.add_argument("--keep-resource-failures", action="store_true")
+    args = parser.parse_args()
+    if not os.environ.get("MININGBENCH_CAPPED"):
+        parser.error("launch the coordinator through capped with MININGBENCH_CAPPED=1")
+    if args.required_petta_commit:
+        spec = importlib.util.find_spec("pettachainer")
+        runtime = Path(spec.origin).parents[1]
+        actual = subprocess.check_output(
+            ["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True
+        ).strip()
+        if actual != args.required_petta_commit:
+            parser.error(
+                f"runtime pin mismatch: expected {args.required_petta_commit}, found {actual}"
+            )
+    peaks = json.loads(args.peaks.read_text())
+    args.out.mkdir(parents=True, exist_ok=False)
+    done = set()
+    for path in args.evidence.rglob("result.json"):
+        row = json.loads(path.read_text())
+        meta = row["metadata"]
+        status = path.parent / "status.json"
+        if status.exists() and json.loads(status.read_text())["returncode"]:
+            continue
+        if (
+            args.required_petta_commit
+            and meta.get("petta_commit") != args.required_petta_commit
+        ):
+            continue
+        if meta.get("input_order") != "seeded-per-period-v1":
+            continue
+        config = meta["config"]
+        if len(config["kinds"]) == 1:
+            done.add(
+                (meta.get("level"), config["kinds"][0], config["seed"], meta["system"])
+            )
+    if args.keep_timeouts or args.keep_resource_failures:
+        for path in args.evidence.rglob("status.json"):
+            status = json.loads(path.read_text())
+            world_path = path.parent / "world.json"
+            log_path = path.parent / "process.log"
+            resource_failure = (
+                args.keep_resource_failures
+                and status["returncode"] in (137, 250)
+                and log_path.exists()
+                and "Could not allocate memory" in log_path.read_text(errors="replace")
+            )
+            timeout = args.keep_timeouts and status["returncode"] == 124
+            if not (timeout or resource_failure) or not world_path.exists():
+                continue
+            metadata = json.loads(world_path.read_text())
+            if (
+                args.required_petta_commit
+                and metadata.get("petta_commit") != args.required_petta_commit
+            ):
+                continue
+            if metadata.get("input_order") != "seeded-per-period-v1":
+                continue
+            if len(status["kinds"]) == 1:
+                done.add(
+                    (
+                        status["level"],
+                        status["kinds"][0],
+                        status["seed"],
+                        status["system"],
+                    )
+                )
+    requested = (
+        json.loads(args.tasks_file.read_text())
+        if args.tasks_file
+        else [
+            (level, kind, seed, system)
+            for level in args.levels
+            for kind in args.kinds
+            for seed in range(1, 11)
+            for system in ("petta", "petta-link-first")
+        ]
+    )
+    tasks = [tuple(task) for task in requested if tuple(task) not in done]
+    for level, kind, seed, system in tasks:
+        label = f"mining-{system}-{level}-{kind}"
+        if label not in peaks or not peaks[label]["observed_peak_mib"] > 0:
+            parser.error(f"missing positive measured peak for {label}")
+    (args.out / "tasks.json").write_text(json.dumps(tasks, indent=2) + "\n")
+    (args.out / "admission-profiles.json").write_text(
+        json.dumps(peaks, indent=2) + "\n"
+    )
+
+    def execute(task):
+        level, kind, seed, system = task
+        out = args.out / f"{level}-{system}-{seed}-{kind}"
+        out.mkdir()
+        stress = (
+            level in ("targets", "distractors", "long", "deep_lags")
+            or kind == "numeric"
+        )
+        label = f"mining-{system}-{level}-{kind}"
+        peak_mb = math.ceil(1.2 * peaks[label]["observed_peak_mib"])
+        timeout_seconds = args.stress_seconds if stress else args.seconds
+        command = [
+            sys.executable,
+            "-m",
+            "miningbench",
+            "run",
+            "--out",
+            str(out),
+            "--system",
+            system,
+            "--seed",
+            str(seed),
+            "--kinds",
+            kind,
+            "--level",
+            level,
+            "--samples",
+            str(
+                64
+                if level == "samples"
+                else 1024
+                if level in ("long", "deep_lags")
+                else 256
+            ),
+            "--targets",
+            str(3 if level == "targets" else 1),
+            "--distractors",
+            str(100 if level in ("distractors", "deep_lags") else 0),
+            "--deep-lags",
+            str(12 if level == "deep_lags" else 3),
+            "--strength",
+            str(0.7 if level == "strength" else 1),
+            "--observation-noise",
+            str(0.2 if level == "observation_noise" else 0),
+            "--budget",
+            "40",
+        ]
+        if level == "drift":
+            command.append("--drift")
+        if level == "entity_holdout":
+            command.append("--entity-holdout")
+        command = [
+            "/nexus/Dev/OpenCog/bench/capped",
+            "--slots",
+            "1",
+            "--peak-mb",
+            str(peak_mb),
+            "--label",
+            label,
+            "--priority",
+            "sweep",
+            "timeout",
+            "--kill-after=10",
+            str(timeout_seconds),
+            *command,
+        ]
+        child_environment = dict(os.environ, BENCH_PRIORITY="sweep")
+        with (out / "process.log").open("w") as log:
+            status = subprocess.run(
+                command, stdout=log, stderr=subprocess.STDOUT, env=child_environment
+            ).returncode
+        record = {
+            "level": level,
+            "system": system,
+            "seed": seed,
+            "kinds": [kind],
+            "returncode": status,
+            "admission_peak_mb": peak_mb,
+            "admission_label": label,
+            "observed_peak_mib": peaks[label]["observed_peak_mib"],
+            "priority": "sweep",
+            "timeout_seconds": timeout_seconds,
+            "result": str(out / "result.json"),
+        }
+        (out / "status.json").write_text(json.dumps(record, indent=2) + "\n")
+        print(json.dumps(record), flush=True)
+        return record
+
+    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        statuses = list(pool.map(execute, tasks))
+    (args.out / "failures.json").write_text(
+        json.dumps([s for s in statuses if s["returncode"]], indent=2) + "\n"
+    )
+
+
+if __name__ == "__main__":
+    main()
