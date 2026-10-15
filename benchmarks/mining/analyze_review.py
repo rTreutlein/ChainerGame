@@ -241,6 +241,7 @@ def main():
             metadata = json.loads(world_path.read_text()) if world_path.exists() else {}
             if metadata:
                 status["petta_commit"] = metadata.get("petta_commit")
+                status["input_order"] = metadata.get("input_order")
             if raw.exists():
                 meter = CostMeter(metadata["config"]["samples"])
                 peak = 0

@@ -657,15 +657,34 @@ class ReviewRegressionTest(unittest.TestCase):
         completion = next(
             row
             for row in incomplete_checks
-            if row["check"] == "marginal: long-stream completion"
+            if row["check"] == "marginal: plain long-stream completion"
         )
-        self.assertEqual(completion["status"], "FAIL")
+        self.assertEqual(completion["status"], "PASS")
+        deep = next(
+            row
+            for row in incomplete_checks
+            if row["check"] == "marginal: deep-lag 100-distractor completion"
+        )
+        self.assertEqual(deep["status"], "FAIL")
         cost = next(
             row
             for row in incomplete_checks
             if row["check"] == "marginal: fitted constant-cost screen"
         )
         self.assertNotEqual(cost["status"], "PASS")
+        # Ten constant-work types with noisy signed slopes. Selecting the
+        # worst type would reject every seed; their within-seed mean is zero.
+        noisy_fixtures = []
+        for source in fixtures:
+            if source["metadata"].get("level") == "long":
+                for index in range(10):
+                    row = deepcopy(source)
+                    row["metadata"]["config"]["kinds"] = [f"fixture{index}"]
+                    row["mining_cost"]["relative_growth"] = 0.8 if index % 2 else -0.8
+                    noisy_fixtures.append(row)
+        for check in acceptance(noisy_fixtures):
+            if check["check"].endswith("cost screen"):
+                self.assertEqual(check["status"], "PASS")
         checks = acceptance(fixtures)
         self.assertTrue(checks)
         for check in checks:
@@ -680,6 +699,42 @@ class ReviewRegressionTest(unittest.TestCase):
                 )
                 self.assertEqual(rejected["status"], "FAIL")
                 self.assertTrue(check["discriminates"])
+                self.assertTrue(check["positive_passes"])
+                accepted = gate(
+                    check["check"],
+                    check["positive_values"],
+                    check["threshold"],
+                    check["direction"],
+                    check["broken_values"],
+                    check["negative_control"],
+                )
+                self.assertEqual(accepted["status"], "PASS")
+
+    def test_input_shuffle_is_seeded_and_does_not_starve_signal(self):
+        from miningbench.petta import Petta, parse
+
+        class Engine:
+            def add_atoms_no_check(self, rows):
+                self.rows = rows
+
+        adapter = Petta.__new__(Petta)
+        adapter.h = Engine()
+        adapter.seed = 8
+        adapter.input_count = 0
+        row = {(f"D{i}", ()): 1 for i in range(100)}
+        row[("T0_single_F0", ())] = 1
+        orders = []
+        for period in range(100):
+            adapter.add_inputs(row, period)
+            order = [parse(atom)[2][0] for atom in adapter.h.rows]
+            adapter.add_inputs(dict(reversed(list(row.items()))), period)
+            self.assertEqual(order, [parse(atom)[2][0] for atom in adapter.h.rows])
+            orders.append(order)
+        self.assertGreater(sum("T0_single_F0" in order[-24:] for order in orders), 0)
+        self.assertGreater(len({tuple(order) for order in orders}), 1)
+        adapter.seed = 9
+        adapter.add_inputs(row, 0)
+        self.assertNotEqual(orders[0], [parse(atom)[2][0] for atom in adapter.h.rows])
 
     def test_link_order_is_consistent_in_warmup_and_measured_periods(self):
         from miningbench.petta import Petta
@@ -698,6 +753,7 @@ class ReviewRegressionTest(unittest.TestCase):
             adapter = Petta.__new__(Petta)
             adapter.h = Engine()
             adapter.link_first = link_first
+            adapter.seed = 1
             adapter.period = None
             adapter.domains = {"Y": ("0", "1")}
             adapter.budget = 40

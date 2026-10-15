@@ -4,6 +4,7 @@ from dataclasses import asdict
 from pathlib import Path
 import hashlib
 import json
+import os
 import platform
 import resource
 import subprocess
@@ -47,6 +48,9 @@ def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
         (out / name).exists() for name in ("world.json", "steps.jsonl", "result.json")
     ):
         raise FileExistsError(f"refusing to overwrite benchmark evidence in {out}")
+    census_steps = {
+        int(n) for n in os.environ.get("MININGBENCH_STORE_CENSUS", "").split(",") if n
+    }
     world = World(config)
     metadata = world.metadata()
     metadata.update(
@@ -70,9 +74,11 @@ def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
             max_new,
             max_live,
             link_first=system == "petta-link-first",
+            seed=config.seed,
         )
         import pettachainer
 
+        metadata["input_order"] = learner.input_order
         metadata["petta_path"] = str(Path(pettachainer.__file__).resolve())
         metadata["petta_commit"] = revision(Path(pettachainer.__file__).parents[1])
     elif system == "marginal":
@@ -202,6 +208,13 @@ def run(config, system, out, budget=80, max_new=4, max_live=8, adapter=None):
                 }
                 raw.write(json.dumps(row) + "\n")
                 raw.flush()
+                if system.startswith("petta") and sample["step"] + 1 in census_steps:
+                    from .census import store_census
+
+                    with (out / "store_census.jsonl").open("a") as census_file:
+                        census_file.write(
+                            json.dumps(store_census(sample["step"] + 1)) + "\n"
+                        )
                 if learner and isinstance(learner.work, dict):
                     for key, value in learner.work.items():
                         if isinstance(value, (int, float)):

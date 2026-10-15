@@ -32,7 +32,16 @@ def formatted(values):
     return f"{ci['mean']:.4f} [{ci['low']:.4f}, {ci['high']:.4f}]"
 
 
-def gate(name, values, threshold, direction, broken, control):
+def gate(
+    name,
+    values,
+    threshold,
+    direction,
+    broken,
+    control,
+    positive=None,
+    positive_control=None,
+):
     """The identical predicate evaluates measured and deliberately broken arms."""
 
     def passes(xs):
@@ -54,6 +63,9 @@ def gate(name, values, threshold, direction, broken, control):
         "negative_control": control,
         "broken_values": broken,
         "discriminates": bool(broken) and not passes(broken),
+        "positive_control": positive_control,
+        "positive_values": positive,
+        "positive_passes": passes(positive) if positive is not None else None,
     }
 
 
@@ -92,6 +104,76 @@ def broken_system_measurements():
     }
 
 
+def positive_system_measurements():
+    """Passing fixtures for six gate families, not independent workload trials.
+
+    The difficulty control intentionally degrades oracle predictions toward the
+    population predictor. It checks a passable skill gate, not a claim that every
+    natural difficulty intervention must harm every real learner.
+    """
+    from .world import Config, World
+    from .scoring import losses, recovery, CostMeter
+    from .truth import interpret
+
+    world = World(Config(samples=64, kinds=("xor",)))
+    errors, gaps, skill_losses = [], [], []
+    for sample in world.stream():
+        truth = sample["q"]["T0_xor"]
+        correct = interpret(world, sample["history"], 0)["T0_xor"]
+        degraded = [0.5 * p + 0.25 for p in correct]
+        base_error = losses([0.5, 0.5], truth)["brier"]
+        correct_error = losses(correct, truth)["brier"]
+        errors.append(max(abs(p - q) for p, q in zip(correct, truth)))
+        gaps.append(base_error - correct_error)
+        skill_losses.append(
+            (losses(degraded, truth)["brier"] - correct_error) / base_error
+        )
+    # Known constant-mean 35us series with independent timing jitter, ten types
+    # per seed. The measured gate uses this same within-seed mean aggregation.
+    growth = []
+    for seed in range(10):
+        rng = random.Random(seed)
+        fits = []
+        for _ in range(10):
+            meter = CostMeter(1024)
+            for _ in range(1024):
+                meter.add(35e-6 * rng.uniform(0.1, 1.9))
+            fits.append(meter.result()["relative_growth"])
+        growth.append(statistics.fmean(fits))
+    return {
+        "oracle": ([max(errors)] * 10, "independent interpreter on XOR truth"),
+        "gap": (
+            [statistics.fmean(gaps)] * 10,
+            "oracle versus population predictor on XOR",
+        ),
+        "xor": (
+            [recovery([], world.rules[0], world.types)["all"]["recall"]] * 10,
+            "single-literal-only learner exports no XOR rule",
+        ),
+        "difficulty": (
+            [statistics.fmean(skill_losses)] * 10,
+            "oracle predictions degraded halfway toward population probabilities",
+        ),
+        "growth": (
+            growth,
+            "constant-mean 35us work with seeded timing jitter; mean of ten types",
+        ),
+        "completion": (
+            [
+                float(
+                    sum(
+                        1
+                        for _ in World(Config(samples=1024, kinds=("single",))).stream()
+                    )
+                    == 1024
+                )
+            ]
+            * 10,
+            "system consumes all 1024 decisions",
+        ),
+    }
+
+
 def separate_runtime_cohorts(results, failures=()):
     commits = {
         row["metadata"]["petta_commit"]
@@ -101,19 +183,31 @@ def separate_runtime_cohorts(results, failures=()):
     commits.update(
         failure["petta_commit"] for failure in failures if failure.get("petta_commit")
     )
-    if len(commits) <= 1:
-        return results, failures
     separated = []
     for row in results:
         metadata = dict(row["metadata"])
-        if "petta_commit" in metadata and "@" not in metadata["system"]:
+        if (
+            len(commits) > 1
+            and "petta_commit" in metadata
+            and "@" not in metadata["system"]
+        ):
             metadata["system"] += "@" + metadata["petta_commit"][:8]
+        if (
+            metadata.get("input_order") == "seeded-per-period-v1"
+            and "+shuffled" not in metadata["system"]
+        ):
+            metadata["system"] += "+shuffled"
         separated.append(dict(row, metadata=metadata))
     separated_failures = []
     for failure in failures:
         row = dict(failure)
-        if row.get("petta_commit") and "@" not in row["system"]:
+        if len(commits) > 1 and row.get("petta_commit") and "@" not in row["system"]:
             row["system"] += "@" + row["petta_commit"][:8]
+        if (
+            row.get("input_order") == "seeded-per-period-v1"
+            and "+shuffled" not in row["system"]
+        ):
+            row["system"] += "+shuffled"
         separated_failures.append(row)
     return separated, separated_failures
 
@@ -261,7 +355,7 @@ def acceptance(results, failures=()):
             seed_growth[r["metadata"]["config"]["seed"]].append(
                 r["mining_cost"]["relative_growth"]
             )
-        values = [max(v) for v in seed_growth.values()]
+        values = [statistics.fmean(v) for v in seed_growth.values()]
         cost_check = gate(
             f"{system}: fitted constant-cost screen",
             values,
@@ -294,19 +388,61 @@ def acceptance(results, failures=()):
             if cost_check["status"] == "PASS":
                 cost_check["status"] = "UNMEASURED"
         checks.append(cost_check)
-        completion = {row["metadata"]["config"]["seed"]: 1.0 for row in long}
-        for failure in censored:
-            completion[failure["seed"]] = 0.0
-        checks.append(
-            gate(
-                f"{system}: long-stream completion",
-                list(completion.values()),
-                0.99,
-                "above",
-                [broken["completion"]] * 10,
-                "system stops after 32 of 1024 decisions",
+        for level, label in (
+            ("long", "plain long-stream completion"),
+            ("deep_lags", "deep-lag 100-distractor completion"),
+        ):
+            completion = {
+                row["metadata"]["config"]["seed"]: 1.0
+                for row in long
+                if row["metadata"].get("level") == level
+            }
+            for failure in censored:
+                if failure["level"] == level:
+                    completion[failure["seed"]] = 0.0
+            checks.append(
+                gate(
+                    f"{system}: {label}",
+                    list(completion.values()),
+                    0.99,
+                    "above",
+                    [broken["completion"]] * 10,
+                    "system stops after 32 of 1024 decisions",
+                )
             )
+    positive = positive_system_measurements()
+    for check in checks:
+        name = check["check"]
+        if name == "oracle independent truth":
+            family = "oracle"
+        elif name.startswith("oracle beats marginal:"):
+            family = "gap"
+        elif name == "marginal XOR recovery fails":
+            family = "xor"
+        elif ": harder " in name:
+            family = "difficulty"
+        elif name.endswith("cost screen"):
+            family = "growth"
+        else:
+            family = "completion"
+        values, label = positive[family]
+        tested = gate(
+            name,
+            check["broken_values"],
+            check["threshold"],
+            check["direction"],
+            check["broken_values"],
+            check["negative_control"],
+            values,
+            label,
         )
+        check.update(
+            {
+                key: tested[key]
+                for key in ("positive_values", "positive_control", "positive_passes")
+            }
+        )
+        check["control_family"] = family
     return checks
 
 
@@ -417,16 +553,17 @@ def report(results, failures=()):
         "",
         "## Acceptance",
         "",
-        "| Check | Status | Paired evidence | Included types / omitted pair counts | Rejects broken system |",
-        "|---|---|---|---|---|",
+        "| Check | Status | Paired evidence | Included types / omitted pair counts | Rejects broken system | Passing control passes |",
+        "|---|---|---|---|---|---|",
     ]
     for check in checks:
         lines.append(
             f"| {check['check']} | {check['status']} | {check['evidence']} | "
-            f"{check.get('paired_rule_types', [])} / {check.get('underpowered_rule_types', {})} | {check['discriminates']} |"
+            f"{check.get('paired_rule_types', [])} / {check.get('underpowered_rule_types', {})} | {check['discriminates']} | {check['positive_passes']} |"
         )
     lines += [
         "",
+        "Controls are six reusable fixture families, not independent experiments per gate. The negative gap and difficulty controls are identity constructions (x-x and zero-skill difference). Positive controls test passability, not universal degradation.",
         "Cost is an empirical slope screen, not a complexity proof. Timings and RSS are not seed deterministic.",
         "Fewer than ten paired seeds is UNMEASURED, never a powered pass.",
         "",

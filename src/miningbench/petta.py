@@ -3,7 +3,7 @@
 from dataclasses import replace
 import re
 import time
-from .world import Literal, Rule
+from .world import Literal, Rule, rng_for
 
 
 def parse(text):
@@ -53,14 +53,24 @@ def decode(implication, domains):
 
 
 class Petta:
+    input_order = "seeded-per-period-v1"
+
     def __init__(
-        self, features, domains, budget=80, max_new=4, max_live=8, link_first=False
+        self,
+        features,
+        domains,
+        budget=80,
+        max_new=4,
+        max_live=8,
+        link_first=False,
+        seed=0,
     ):
         from pettachainer import PeTTaChainer
 
         self.h = PeTTaChainer()
         self.domains, self.budget = domains, budget
         self.link_first = link_first
+        self.seed = seed
         self.work = {}
         self.input_count = 0
         self.label_counts = {t: [0] * len(d) for t, d in domains.items()}
@@ -85,10 +95,12 @@ class Petta:
 
     def add_inputs(self, row, time):
         self.input_count += len(row)
+        ordered = sorted(row.items())
+        rng_for(self.seed, f"petta-inputs:{time}").shuffle(ordered)
         self.h.add_atoms_no_check(
             [
                 f"(: in-{time}-{i} ({h} {' '.join(a)} p{time}) (STV {v} 1))"
-                for i, ((h, a), v) in enumerate(row.items())
+                for i, ((h, a), v) in enumerate(ordered)
             ]
         )
 

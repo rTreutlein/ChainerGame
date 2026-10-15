@@ -78,6 +78,8 @@ def main():
             and meta.get("petta_commit") != args.required_petta_commit
         ):
             continue
+        if meta.get("input_order") != "seeded-per-period-v1":
+            continue
         config = meta["config"]
         if len(config["kinds"]) == 1:
             done.add(
@@ -102,6 +104,8 @@ def main():
                 args.required_petta_commit
                 and metadata.get("petta_commit") != args.required_petta_commit
             ):
+                continue
+            if metadata.get("input_order") != "seeded-per-period-v1":
                 continue
             if len(status["kinds"]) == 1:
                 done.add(
