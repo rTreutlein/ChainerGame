@@ -11,7 +11,7 @@ import hashlib
 import json
 from pathlib import Path
 from miningbench.report import report
-from miningbench.runner import source_hash
+from miningbench.runner import source_hash, revision
 
 
 def main():
@@ -24,6 +24,12 @@ def main():
     rows = [
         json.loads(line) for line in (args.snapshot / "rescored_results.jsonl").open()
     ]
+    original_base = [
+        row for row in rows if row["result"]["metadata"].get("level") == "base"
+    ]
+    original_base_hash = hashlib.sha256(
+        json.dumps(original_base, sort_keys=True).encode()
+    ).hexdigest()
     provenance = json.loads((args.snapshot / "provenance.json").read_text())
     failures = provenance["failures"]
     for path in sorted(args.extra.rglob("result.json")):
@@ -52,16 +58,30 @@ def main():
         "".join(json.dumps(row) + "\n" for row in rows)
     )
     base = [row for row in rows if row["result"]["metadata"].get("level") == "base"]
+    base_hash = hashlib.sha256(json.dumps(base, sort_keys=True).encode()).hexdigest()
+    assert base_hash == original_base_hash, (
+        "this refresh must not change powered base cells"
+    )
+    sources = [row["source"] for row in rows]
+    assert len(sources) == len(set(sources)), "duplicate experiment source"
     provenance.update(
+        snapshot_analysis_commit=provenance.get("analysis_commit"),
+        analysis_commit=revision(Path(__file__).resolve().parents[2]),
+        analysis_script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        runs=sources,
+        run_systems={
+            row["source"]: row["result"]["metadata"]["system"] for row in rows
+        },
+        source_hashes=sorted(
+            {row["result"]["metadata"]["source_sha256"] for row in rows}
+        ),
         snapshot=str(args.snapshot),
         source_sha256=source_hash(),
         added_root=str(args.extra),
         failures=failures,
         completed=len(rows),
         frozen_base_rows=len(base),
-        frozen_base_sha256=hashlib.sha256(
-            json.dumps(base, sort_keys=True).encode()
-        ).hexdigest(),
+        frozen_base_sha256=base_hash,
         controls={
             "families": sorted({c["control_family"] for c in checks}),
             "negative_rejections": sum(c["discriminates"] for c in checks),
