@@ -32,8 +32,8 @@ read through its shared interpreter; no upstream implementation is changed.
    anticipation, and states all negative labels explicitly. Warmup follows the
    corresponding order. Neither arm filters proofs or repairs withdrawn rules.
 5. **Cost and timeouts.** Long streams contain 1024 decisions. Cost growth is a
-   fitted least-squares slope multiplied by stream length and divided by mean
-   step cost. The fit excludes the first 32 steps so initial history ingestion
+   fitted least-squares slope multiplied by the fitted portion's length and
+   divided by its mean step cost. The fit excludes the first 32 steps so initial history ingestion
    cannot hide later growth; the overall mean still includes them. Ordinary runs
    allow 600 seconds. The CLI default allows 3600 for stress levels; the powered live rerun uses 1800 for distractor, three-target and
    numeric cases, and 3600 for the 1024-step deep-lag case. Incomplete runs retain

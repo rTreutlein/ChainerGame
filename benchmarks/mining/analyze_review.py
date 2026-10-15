@@ -211,12 +211,11 @@ def main():
                 sum(1 for _ in raw.open()) if raw.exists() else 0
             )
             world_path = path.parent / "world.json"
-            if world_path.exists():
-                status["petta_commit"] = json.loads(world_path.read_text()).get(
-                    "petta_commit"
-                )
+            metadata = json.loads(world_path.read_text()) if world_path.exists() else {}
+            if metadata:
+                status["petta_commit"] = metadata.get("petta_commit")
             if raw.exists():
-                meter = CostMeter(1024)
+                meter = CostMeter(metadata["config"]["samples"])
                 peak = 0
                 total_seconds = 0
                 for line in raw.open():
