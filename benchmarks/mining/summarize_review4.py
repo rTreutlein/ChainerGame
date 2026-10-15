@@ -67,7 +67,12 @@ def main():
                 samples=result["metadata"]["config"]["samples"],
                 mining_seconds_per_step=result["mining_cost"]["mean_seconds"],
                 total_seconds_per_step=result["cost"]["mean_seconds"],
-                cpu_to_wall=load["cpu_seconds"] / load["wall_seconds"],
+                cpu_to_wall=load.get("active_cpu_seconds", load["cpu_seconds"])
+                / load.get("active_wall_seconds", load["wall_seconds"]),
+                active_cpu_seconds_per_step=load.get(
+                    "active_cpu_seconds", load["cpu_seconds"]
+                )
+                / result["metadata"]["config"]["samples"],
                 peak_mib=result["peak_rss_kib"] / 1024,
                 data_sha256=result["data_sha256"],
                 input_order=result["metadata"]["input_order"],
@@ -79,7 +84,8 @@ def main():
         assert len({r["data_sha256"] for r in timing}) == 1
         assert len({r["load"]["petta_runtime_commit"] for r in timing}) == 1
         assert all(r["input_order"] == "historical-fixed-order-repro" for r in timing)
-        assert all(r["load"]["admission_cpu_slots"] == 24 for r in timing)
+        assert len({r["load"]["protocol"] for r in timing}) == 1
+        assert all(r["load"]["admission_cpu_slots"] in (2, 24) for r in timing)
         assert all(r["config"] == timing[0]["config"] for r in timing)
     timing_groups = defaultdict(list)
     for row in timing:
@@ -186,6 +192,17 @@ def main():
         distractor_summary=summary,
         numeric_timing=timing,
         numeric_revision_ratio=ratio,
+        numeric_cpu_revision_ratio=(
+            timing[1]["active_cpu_seconds_per_step"]
+            / timing[0]["active_cpu_seconds_per_step"]
+            if len(timing) == 2
+            else None
+        ),
+        synchronization=(
+            json.loads((args.timing / "synchronization.json").read_text())
+            if (args.timing / "synchronization.json").exists()
+            else None
+        ),
         census=census,
     )
     (args.out / "summary.json").write_text(json.dumps(result, indent=2) + "\n")
@@ -204,13 +221,13 @@ def main():
         "",
         "Fewer than ten seeds is underpowered. Positive improvement means the shuffle lowered Brier.",
         "",
-        "| Timing case | Steps | Mining s/step | Total s/step | CPU/wall | Peak MiB |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| Timing case | Steps | Mining s/step | Total s/step | Active CPU s/step | CPU/wall | Peak MiB |",
+        "|---|---:|---:|---:|---:|---:|---:|",
     ]
     for row in timing:
         lines.append(
             f"| {row['case']} | {row['samples']} | {row['mining_seconds_per_step']:.3f} | "
-            f"{row['total_seconds_per_step']:.3f} | {row['cpu_to_wall']:.3f} | {row['peak_mib']:.1f} |"
+            f"{row['total_seconds_per_step']:.3f} | {row['active_cpu_seconds_per_step']:.3f} | {row['cpu_to_wall']:.3f} | {row['peak_mib']:.1f} |"
         )
     lines += [
         "",
