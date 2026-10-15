@@ -94,3 +94,26 @@ forms. Failure to recover an individual pair in the fixed-seed run is therefore
 a search/review outcome, not proof of an expressivity limit. The baseline binding
 run recovered the shared-variable rule, which validates that the benchmark does
 not categorically exclude that existing capability.
+
+
+### Final-review diagnoses
+
+`../review_diagnoses.py` extracts AND2 seed 2's exact pair proposal (step 1) and
+retirement (step 7), plus the identical lag prediction hashes in the two arms.
+The AND2 failure is review screening followed by permanent tried-rule exclusion,
+not failure to propose a pair. At retirement, the pair is .99875 and F1 .66637;
+F1's near-one value occurred earlier. The lag experiment is blocked by the
+“present first” candidate policy and does not distinguish the two ingestion arms.
+
+The old D100 harness always inserted signal predicates before distractors. With
+only the newest 24 true facts per constant considered, that was an ordering
+artefact. Production ingestion now shuffles each period deterministically from
+the seed. The finite 24-fact window remains a real capacity limit.
+
+`store_retention.py` intentionally reproduces the historical fixed-order D100
+seed 9 solely for a read-only store census at 64 and 256 steps.
+With `--deep-lags 12 --seed 1 --samples 409`, it profiles the historical deep-lag
+workload at 64 and 409 steps. It does not
+contribute to prediction scores. The census uses SWI predicate clause counts and
+allocated predicate bytes without enumerating row terms or invoking GC. These
+bytes explain store retention but are not an exact decomposition of process RSS.

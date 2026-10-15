@@ -104,9 +104,9 @@ def main():
                 )
                 world_path = p.parent / "world.json"
                 if world_path.exists():
-                    item["petta_commit"] = json.loads(world_path.read_text()).get(
-                        "petta_commit"
-                    )
+                    metadata = json.loads(world_path.read_text())
+                    item["petta_commit"] = metadata.get("petta_commit")
+                    item["input_order"] = metadata.get("input_order")
                 failures.append(item)
         text, checks = report(results, failures)
         (a.path / "report.md").write_text(text)

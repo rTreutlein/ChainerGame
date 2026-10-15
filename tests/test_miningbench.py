@@ -710,6 +710,22 @@ class ReviewRegressionTest(unittest.TestCase):
                 )
                 self.assertEqual(accepted["status"], "PASS")
 
+    def test_input_order_cohorts_remain_separate_for_one_runtime(self):
+        from miningbench.report import separate_runtime_cohorts
+
+        original = {"metadata": {"system": "petta", "petta_commit": "171b2820"}}
+        shuffled = {
+            "metadata": dict(original["metadata"], input_order="seeded-per-period-v1")
+        }
+        failure = dict(shuffled["metadata"], level="distractors", returncode=124)
+        rows, failures = separate_runtime_cohorts([original, shuffled], [failure])
+        self.assertEqual(
+            [row["metadata"]["system"] for row in rows], ["petta", "petta+shuffled"]
+        )
+        self.assertEqual(failures[0]["system"], "petta+shuffled")
+        self.assertEqual(shuffled["metadata"]["system"], "petta")
+        self.assertEqual(separate_runtime_cohorts(rows, failures), (rows, failures))
+
     def test_input_shuffle_is_seeded_and_does_not_starve_signal(self):
         from miningbench.petta import Petta, parse
 
