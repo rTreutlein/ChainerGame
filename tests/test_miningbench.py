@@ -722,3 +722,50 @@ class ReviewRegressionTest(unittest.TestCase):
             self.assertEqual(
                 any("close3 " in row for row in adapter.h.added), link_first
             )
+
+    def test_powered_sweep_uses_measured_peak_and_sweep_priority(self):
+        import importlib.util
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        script = Path(__file__).parents[1] / "benchmarks/mining/powered_sweep.py"
+        spec = importlib.util.spec_from_file_location("powered_sweep", script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            label = "mining-petta-distractors-single"
+            peaks = root / "peaks.json"
+            peaks.write_text(json.dumps({label: {"observed_peak_mib": 7234.5}}))
+            tasks = root / "tasks.json"
+            tasks.write_text(json.dumps([["distractors", "single", 7, "petta"]]))
+            arguments = [
+                str(script),
+                "--evidence",
+                str(root / "evidence"),
+                "--out",
+                str(root / "out"),
+                "--peaks",
+                str(peaks),
+                "--tasks-file",
+                str(tasks),
+            ]
+            with (
+                patch("sys.argv", arguments),
+                patch.dict(
+                    os.environ, {"MININGBENCH_CAPPED": "1", "BENCH_PRIORITY": "normal"}
+                ),
+                patch.object(
+                    module.subprocess, "run", return_value=SimpleNamespace(returncode=0)
+                ) as launch,
+            ):
+                module.main()
+            command = launch.call_args.args[0]
+            self.assertEqual(command[command.index("--label") + 1], label)
+            self.assertEqual(command[command.index("--peak-mb") + 1], "8682")
+            self.assertEqual(command[command.index("--priority") + 1], "sweep")
+            self.assertEqual(launch.call_args.kwargs["env"]["BENCH_PRIORITY"], "sweep")
+            self.assertEqual(
+                json.loads((root / "out/tasks.json").read_text()),
+                [["distractors", "single", 7, "petta"]],
+            )

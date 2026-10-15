@@ -6,7 +6,9 @@ Child waiting for admission does not consume its execution timeout.
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -32,16 +34,37 @@ def main():
             "distractors",
         ],
     )
-    parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--seconds", type=int, default=600)
     parser.add_argument("--stress-seconds", type=int, default=1800)
-    parser.add_argument("--stress-peak-mb", type=int, default=6000)
+    parser.add_argument(
+        "--peaks",
+        type=Path,
+        required=True,
+        help="Measured per-label RSS profiles; reservations add a 20%% margin",
+    )
+    parser.add_argument(
+        "--tasks-file",
+        type=Path,
+        help="Explicit [level, kind, seed, system] rows to resume",
+    )
     parser.add_argument("--required-petta-commit")
     parser.add_argument("--keep-timeouts", action="store_true")
     parser.add_argument("--keep-resource-failures", action="store_true")
     args = parser.parse_args()
     if not os.environ.get("MININGBENCH_CAPPED"):
         parser.error("launch the coordinator through capped with MININGBENCH_CAPPED=1")
+    if args.required_petta_commit:
+        spec = importlib.util.find_spec("pettachainer")
+        runtime = Path(spec.origin).parents[1]
+        actual = subprocess.check_output(
+            ["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True
+        ).strip()
+        if actual != args.required_petta_commit:
+            parser.error(
+                f"runtime pin mismatch: expected {args.required_petta_commit}, found {actual}"
+            )
+    peaks = json.loads(args.peaks.read_text())
     args.out.mkdir(parents=True, exist_ok=False)
     done = set()
     for path in args.evidence.rglob("result.json"):
@@ -89,15 +112,26 @@ def main():
                         status["system"],
                     )
                 )
-    tasks = [
-        (level, kind, seed, system)
-        for level in args.levels
-        for kind in args.kinds
-        for seed in range(1, 11)
-        for system in ("petta", "petta-link-first")
-        if (level, kind, seed, system) not in done
-    ]
+    requested = (
+        json.loads(args.tasks_file.read_text())
+        if args.tasks_file
+        else [
+            (level, kind, seed, system)
+            for level in args.levels
+            for kind in args.kinds
+            for seed in range(1, 11)
+            for system in ("petta", "petta-link-first")
+        ]
+    )
+    tasks = [tuple(task) for task in requested if tuple(task) not in done]
+    for level, kind, seed, system in tasks:
+        label = f"mining-{system}-{level}-{kind}"
+        if label not in peaks or not peaks[label]["observed_peak_mib"] > 0:
+            parser.error(f"missing positive measured peak for {label}")
     (args.out / "tasks.json").write_text(json.dumps(tasks, indent=2) + "\n")
+    (args.out / "admission-profiles.json").write_text(
+        json.dumps(peaks, indent=2) + "\n"
+    )
 
     def execute(task):
         level, kind, seed, system = task
@@ -107,12 +141,8 @@ def main():
             level in ("targets", "distractors", "long", "deep_lags")
             or kind == "numeric"
         )
-        if kind == "numeric":
-            peak_mb = 15000
-        elif kind == "binding":
-            peak_mb = max(6000, args.stress_peak_mb) if stress else 3000
-        else:
-            peak_mb = args.stress_peak_mb if stress else 1500
+        label = f"mining-{system}-{level}-{kind}"
+        peak_mb = math.ceil(1.2 * peaks[label]["observed_peak_mib"])
         timeout_seconds = args.stress_seconds if stress else args.seconds
         command = [
             sys.executable,
@@ -161,15 +191,18 @@ def main():
             "--peak-mb",
             str(peak_mb),
             "--label",
-            f"mining-{system}-{level}-{kind}",
+            label,
+            "--priority",
+            "sweep",
             "timeout",
             "--kill-after=10",
             str(timeout_seconds),
             *command,
         ]
+        child_environment = dict(os.environ, BENCH_PRIORITY="sweep")
         with (out / "process.log").open("w") as log:
             status = subprocess.run(
-                command, stdout=log, stderr=subprocess.STDOUT
+                command, stdout=log, stderr=subprocess.STDOUT, env=child_environment
             ).returncode
         record = {
             "level": level,
@@ -178,6 +211,9 @@ def main():
             "kinds": [kind],
             "returncode": status,
             "admission_peak_mb": peak_mb,
+            "admission_label": label,
+            "observed_peak_mib": peaks[label]["observed_peak_mib"],
+            "priority": "sweep",
             "timeout_seconds": timeout_seconds,
             "result": str(out / "result.json"),
         }

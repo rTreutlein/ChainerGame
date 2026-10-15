@@ -267,32 +267,33 @@ export TMPDIR="$PWD/.scratch"
  benchmarks/mining/powered_sweep.py \
  --evidence /nexus/Dev/OpenCog/bench/results/mining-bench/NEW-REFERENCE \
  --out /nexus/Dev/OpenCog/bench/results/mining-bench/NEW-LIVE \
- --levels base --jobs 2
+ --levels base --jobs 1 \
+ --peaks /nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-plan/measured-peaks.json
 ```
 
-Choose fresh output directories. The live coordinator admits each child through
-`capped` separately, reserving 15 GB for a numeric attempt, at least 6 GB for binding stress,
-3 GB for ordinary binding, and 1.5 GB for other ordinary runs. Other stress attempts
-default to 6 GB; `--stress-peak-mb` adjusts that reservation from measured peaks.
-The early resized cohorts used 3.5 GB after four deep-lag timeout attempts logged
-peaks below 2.4 GiB. After the reboot, ordinary stress reservations increased to
-5 GB because three-target runs exceeded 4 GiB. Execution limits and seeds are unchanged. Admission waiting
-does not consume the execution timeout. Numeric attempts use one worker so a
-second queued 15 GB reservation cannot block smaller jobs behind it. The
-remaining difficulty grid uses eight waiting workers after completing strength
-and noise; each child still needs its own one-slot capped admission.
-`--keep-timeouts` reuses completed timeout attempts. `--keep-resource-failures`
-also reuses exit-137 or exit-250 attempts whose retained log explicitly reports memory
-allocation failure. Interrupted attempts are recorded separately and rerun in
-fresh directories.
+Choose fresh output directories. Each child has the stable label
+`mining-{system}-{level}-{kind}` and explicit sweep priority, including
+`BENCH_PRIORITY=sweep`. The coordinator now requires a `--peaks` JSON file keyed
+by those labels. Each entry records `observed_peak_mib` and its source; admission
+reserves `ceil(1.2 * observed_peak_mib)` MiB. There are no fixed numeric, binding,
+or stress reservations. Censored peaks are lower bounds, so the source and
+completion flag remain in the saved admission profile. The daemon also learns
+measured peaks under the stable label.
 
-The fixed-runtime cohort subsequently required larger reservations: its first
-deep-lag attempt reached 15.1 GiB of logged RSS before an allocation failure.
-Deep-lag and numeric attempts each use one worker and a 15 GB reservation.
-Remaining 256-step stress attempts use 10 GB, including binding, because the
-observed deep-lag history already exceeded 5 GB before 256 steps. Interrupted
-attempts from the reservation changes retain their logs and explicit reasons;
-they are rerun with identical worlds and execution timeouts.
+`--tasks-file` accepts explicit `[level, kind, seed, system]` rows, preventing a
+small follow-up from restarting the full grid. The default is one worker.
+`--required-petta-commit` checks the actual import path's commit before launching
+children, as well as filtering reusable results. Admission waiting does not
+consume the execution timeout. `--keep-timeouts` and
+`--keep-resource-failures` reuse terminal evidence only for the requested runtime;
+resource failures require an explicit allocation-failure message. Interrupted
+attempts retain their logs and are not silently treated as timeouts.
+
+Earlier cohorts used fixed declarations (up to 15 GB) and larger worker queues;
+those historical settings remain recorded in their raw status files. The
+171b2820 follow-up permits at most two coordinators, one worker each, at sweep
+priority. Its declared peaks come from the maximum saved RSS for each matching
+label, plus the stated margin, until new measurements justify a replacement.
 
 Master was `4e6b059b` when the powered experiment started. It advanced to
 `6ffb1404` during the resumed sweep, changing implication-query semantics without
