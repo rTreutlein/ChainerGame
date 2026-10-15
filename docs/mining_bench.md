@@ -195,7 +195,10 @@ cannot satisfy the new contexts. General shared-variable rules can.
 Cost includes input ingestion and feedback/review; prediction query time is also
 reported separately through total latency. A least-squares positive trend greater
 than half the mean cost over a 1024-step stream fails the empirical constant-cost
-screen. Timing does not prove asymptotic complexity. RSS includes the evaluator
+screen. Rule-type fits are averaged within each seed before the bootstrap, rather
+than selecting the noisiest maximum. A known-constant 35-microsecond series with
+seeded jitter passes the same predicate, and the actual constant-work reference
+learners calibrate this screen against measured timing noise. Timing does not prove asymptotic complexity. RSS includes the evaluator
 and engine; wall-clock and RSS are inherently not reproducible from a seed.
 PeTTa work counters cover submitted atoms, requested query allowance, and returned
 review rows; internal candidate updates remain null. They must not be presented
@@ -239,8 +242,18 @@ fixtures passed through real scoring functions:
   easier completed streams. Superseded interrupted attempts remain in the audit
   but do not invalidate a subsequently completed identical case.
 
+These are **six reusable negative-control families**, repeated across gates;
+the oracle-versus-oracle gap (`x-x`) and zero-skill difference (`1-error/error`)
+are identity constructions. They test threshold sensitivity, not system behaviour.
+Positive controls also exercise each family: independently interpreted truth,
+oracle versus population prediction, no exported XOR rules, deliberately degraded
+oracle predictions, noisy constant work, and full-stream consumption. The
+constructed degradation control demonstrates passability, not that every real
+system must degrade on every knob. Plain 1024-step completion and 100-distractor,
+lag-12 completion are now separate gates.
+
 Tests execute every generated acceptance gate on its broken values and require
-FAIL. `acceptance.json` includes the fixture, measured evidence, threshold, and
+FAIL, and execute its passing control and require PASS. `acceptance.json` includes the fixture, measured evidence, threshold, and
 whether the deliberately broken arm was rejected. These are gate-sensitivity
 checks, not evidence that every difficulty must make every actual learner worse.
 Some robust systems, or systems already at chance, legitimately fail a universal
@@ -346,8 +359,22 @@ predicates were also invalid. The miner can propose positive pairs and shared
 entity variables; grounded numeric transitions must receive behavioural credit.
 Actual limits to test are higher-order conjunction proposals, mixed-polarity XOR,
 multiple-link temporal conjunctions, numeric formula discovery, relevance-directed
-budget allocation, and runtime retention/cost. The two ingestion arms separate
-link availability from those language limits.
+budget allocation, and runtime retention/cost. The two ingestion arms **separate
+nothing in the saved lag experiment**: seed 1 predictions have identical SHA-256
+`fad0dba30642565bc9f49f9bec587339fd2f5534679a1473dfab959bf3e53303`.
+The miner's “present first” policy suppresses cross-link candidates whenever a
+live same-period hypothesis already concludes the target. Consistent ingestion
+order alone cannot expose the candidate-language difference in this workload.
+
+The corrected AND2 recall of .20 is a **review/retirement defect, not a proposal
+gap**. In seed 2, `F0 AND F1 -> T` (`hypothesis-3`) is proposed at zero-based step
+1 and dropped at step 7, and the tried-rule store prevents re-proposal. At that
+review the pair reads .9987529 on about four effective observations, versus
+F1's .6663679 on about six. Their .3324 difference falls below the two-standard-
+error threshold (about .471), so the general rule screens off the correct pair.
+F1 read .9975 earlier at step 2; it did **not** read .998 at retirement. Raw
+[verdicts and hashes](/nexus/Dev/OpenCog/bench/results/mining-bench/review4-diagnoses.json)
+retain this distinction. No backend policy is changed here.
 
 ## Report from saved evidence, before the 171b2820 rerun
 
@@ -383,22 +410,22 @@ not in the live plan, although all ten types have powered reference results.
 | Deep lag 12, 100 distractors, 1024 | Single | 0 / 0 | Unmeasured |
 | New-entity holdout | Binding | 10 / 2 | Powered / underpowered |
 
-The primary acceptance set (reference systems plus 7925f8d5) has **42 PASS,
-5 FAIL, 6 UNMEASURED**. All **101/101** checks across all historical runtime
-cohorts reject their deliberately broken controls. The strength and noise gates
-are now demonstrably passable: both PeTTa arms pass them with ten paired seeds.
-The constant-cost screen remains unmeasured for PeTTa because deep-lag streams
-are censored. Three reference cost screens and two live long-completion screens
-fail; these outcomes were not tuned away.
+The original snapshot's acceptance counts are superseded by the corrected gates
+below. Its three reference cost failures were selection-of-the-maximum artefacts;
+its two PeTTa “long” failures were deep-lag stress timeouts mislabeled as plain
+long streams. Strength and noise remain passable with ten paired seeds. The old
+“101/101” and later “117/117” counts repeated six fixture families; they were
+never that many independent discrimination experiments.
 
 The numeric task is now winnable in its observed language: behavioural matching
 credits correct grounded transitions, and the oracle has zero probability
-error. No completed live numeric stream supports a learned-rule conclusion.
+error. No completed **256-step base** live numeric stream supports a learned-rule conclusion.
 The period-eight shortcut is gone; the widened finite domain remains eventually
 memorizable. Corrected recall credits AND2 and OR discoveries without allowing
 weak singles to absorb them. Mixed-polarity, higher-arity and mixed-lag recovery
-remains poor in the powered base data. Both ingestion arms and the fixed upstream
-late-link repro distinguish those results from the old ordering defect.
+remains poor in the powered base data. The ingestion arms produce identical lag predictions; the fixed upstream
+late-link repro alone does not establish that this benchmark separates ordering
+from proposal policy.
 
 The full suite passed on 7925f8d5: **188 passed, 25 skipped, 13 subtests passed**.
 All **440** independently executed base/long prefixes match exactly. Intermediate
@@ -407,7 +434,7 @@ recovery and PeTTa checkpoint recovery use the corrected matcher.
 
 ## Powered results
 
-The [full results table](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-final/report.md) contains systems × rule types × difficulty, paired differences, weak-association calibration, costs, learning curves and censored attempts.
+The [historical full results table](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-final/report.md) contains systems × rule types × difficulty, paired differences, weak-association calibration, costs, learning curves and censored attempts.
 
 There are 4451 completed runs in this report. Historical interrupted attempts remain in the audit; completed replacements determine coverage. PeTTa commits: 171b2820744ff778cadba32213654fe7002f0281, 4e6b059be39537d2c7c8a28e5dc807fb4f3a83c9, 7925f8d588b6aba5b868e7518c55f6e1249c0464.
 
@@ -532,63 +559,93 @@ dedicated directed-design probes and primary acceptance conclusions are unchange
 
 The widened stochastic trajectory removes the eight-context shortcut. Its finite 198-context domain remains eventually memorizable.
 
-| Acceptance screen | Result | Rejects broken control |
-|---|---|---|
-| oracle independent truth | PASS | True |
-| oracle beats marginal: and2 | PASS | True |
-| oracle beats marginal: and3 | PASS | True |
-| oracle beats marginal: and4 | PASS | True |
-| oracle beats marginal: binding | PASS | True |
-| oracle beats marginal: lag | PASS | True |
-| oracle beats marginal: negation | PASS | True |
-| oracle beats marginal: numeric | PASS | True |
-| oracle beats marginal: or | PASS | True |
-| oracle beats marginal: xor | PASS | True |
-| marginal XOR recovery fails | PASS | True |
-| budgeted: harder distractors | PASS | True |
-| budgeted: harder strength | PASS | True |
-| budgeted: harder observation_noise | PASS | True |
-| budgeted: harder samples | PASS | True |
-| budgeted: harder drift | PASS | True |
-| budgeted: harder targets | PASS | True |
-| budgeted: fitted constant-cost screen | FAIL | True |
-| budgeted: long-stream completion | PASS | True |
-| budgeted-flat: harder distractors | PASS | True |
-| budgeted-flat: harder strength | PASS | True |
-| budgeted-flat: harder observation_noise | PASS | True |
-| budgeted-flat: harder samples | PASS | True |
-| budgeted-flat: harder drift | PASS | True |
-| budgeted-flat: harder targets | PASS | True |
-| budgeted-flat: fitted constant-cost screen | FAIL | True |
-| budgeted-flat: long-stream completion | PASS | True |
-| marginal: harder distractors | PASS | True |
-| marginal: harder strength | PASS | True |
-| marginal: harder observation_noise | PASS | True |
-| marginal: harder samples | PASS | True |
-| marginal: harder drift | PASS | True |
-| marginal: harder targets | PASS | True |
-| marginal: fitted constant-cost screen | FAIL | True |
-| marginal: long-stream completion | PASS | True |
-| oracle: fitted constant-cost screen | PASS | True |
-| oracle: long-stream completion | PASS | True |
-| petta-link-first@7925f8d5: harder distractors | UNMEASURED | True |
-| petta-link-first@7925f8d5: harder strength | PASS | True |
-| petta-link-first@7925f8d5: harder observation_noise | PASS | True |
-| petta-link-first@7925f8d5: harder samples | PASS | True |
-| petta-link-first@7925f8d5: harder drift | PASS | True |
-| petta-link-first@7925f8d5: harder targets | UNMEASURED | True |
-| petta-link-first@7925f8d5: fitted constant-cost screen | UNMEASURED | True |
-| petta-link-first@7925f8d5: long-stream completion | FAIL | True |
-| petta@7925f8d5: harder distractors | UNMEASURED | True |
-| petta@7925f8d5: harder strength | PASS | True |
-| petta@7925f8d5: harder observation_noise | PASS | True |
-| petta@7925f8d5: harder samples | PASS | True |
-| petta@7925f8d5: harder drift | PASS | True |
-| petta@7925f8d5: harder targets | UNMEASURED | True |
-| petta@7925f8d5: fitted constant-cost screen | UNMEASURED | True |
-| petta@7925f8d5: long-stream completion | FAIL | True |
+| Acceptance screen | Result | Rejects failing control | Passing control passes |
+|---|---|---|---|
+| oracle independent truth | PASS | True | True |
+| oracle beats marginal: and2 | PASS | True | True |
+| oracle beats marginal: and3 | PASS | True | True |
+| oracle beats marginal: and4 | PASS | True | True |
+| oracle beats marginal: binding | PASS | True | True |
+| oracle beats marginal: lag | PASS | True | True |
+| oracle beats marginal: negation | PASS | True | True |
+| oracle beats marginal: numeric | PASS | True | True |
+| oracle beats marginal: or | PASS | True | True |
+| oracle beats marginal: xor | PASS | True | True |
+| marginal XOR recovery fails | PASS | True | True |
+| budgeted: harder distractors | PASS | True | True |
+| budgeted: harder strength | PASS | True | True |
+| budgeted: harder observation_noise | PASS | True | True |
+| budgeted: harder samples | PASS | True | True |
+| budgeted: harder drift | PASS | True | True |
+| budgeted: harder targets | PASS | True | True |
+| budgeted: fitted constant-cost screen | PASS | True | True |
+| budgeted: plain long-stream completion | PASS | True | True |
+| budgeted: deep-lag 100-distractor completion | PASS | True | True |
+| budgeted-flat: harder distractors | PASS | True | True |
+| budgeted-flat: harder strength | PASS | True | True |
+| budgeted-flat: harder observation_noise | PASS | True | True |
+| budgeted-flat: harder samples | PASS | True | True |
+| budgeted-flat: harder drift | PASS | True | True |
+| budgeted-flat: harder targets | PASS | True | True |
+| budgeted-flat: fitted constant-cost screen | PASS | True | True |
+| budgeted-flat: plain long-stream completion | PASS | True | True |
+| budgeted-flat: deep-lag 100-distractor completion | PASS | True | True |
+| marginal: harder distractors | PASS | True | True |
+| marginal: harder strength | PASS | True | True |
+| marginal: harder observation_noise | PASS | True | True |
+| marginal: harder samples | PASS | True | True |
+| marginal: harder drift | PASS | True | True |
+| marginal: harder targets | PASS | True | True |
+| marginal: fitted constant-cost screen | PASS | True | True |
+| marginal: plain long-stream completion | PASS | True | True |
+| marginal: deep-lag 100-distractor completion | PASS | True | True |
+| oracle: fitted constant-cost screen | PASS | True | True |
+| oracle: plain long-stream completion | PASS | True | True |
+| oracle: deep-lag 100-distractor completion | PASS | True | True |
+| petta-link-first@7925f8d5: harder distractors | UNMEASURED | True | True |
+| petta-link-first@7925f8d5: harder strength | PASS | True | True |
+| petta-link-first@7925f8d5: harder observation_noise | PASS | True | True |
+| petta-link-first@7925f8d5: harder samples | PASS | True | True |
+| petta-link-first@7925f8d5: harder drift | PASS | True | True |
+| petta-link-first@7925f8d5: harder targets | UNMEASURED | True | True |
+| petta-link-first@7925f8d5: fitted constant-cost screen | UNMEASURED | True | True |
+| petta-link-first@7925f8d5: plain long-stream completion | PASS | True | True |
+| petta-link-first@7925f8d5: deep-lag 100-distractor completion | UNMEASURED | True | True |
+| petta@7925f8d5: harder distractors | UNMEASURED | True | True |
+| petta@7925f8d5: harder strength | PASS | True | True |
+| petta@7925f8d5: harder observation_noise | PASS | True | True |
+| petta@7925f8d5: harder samples | PASS | True | True |
+| petta@7925f8d5: harder drift | PASS | True | True |
+| petta@7925f8d5: harder targets | UNMEASURED | True | True |
+| petta@7925f8d5: fitted constant-cost screen | UNMEASURED | True | True |
+| petta@7925f8d5: plain long-stream completion | PASS | True | True |
+| petta@7925f8d5: deep-lag 100-distractor completion | UNMEASURED | True | True |
 
-All 117 of 117 generated screens reject their broken controls. Actual gate outcomes across all historical cohorts: {'PASS': 45, 'FAIL': 12, 'UNMEASURED': 60}. The primary table above covers the reference systems and 7925f8d5: {'PASS': 42, 'FAIL': 5, 'UNMEASURED': 6}. See [acceptance evidence](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-final/acceptance.json) for thresholds, paired intervals and control values.
+The corrected primary set has **51 PASS, 0 FAIL, 8 UNMEASURED**. These are
+reference-system and 7925f8d5 gates; the powered base prediction and recovery
+tables above are unchanged. The historical 117/117 claim counted six repeated
+negative-control families, including two algebraic identity constructions.
+Positive fixtures now pass the same predicates for all six families. Their
+repetition across gates is not additional experimental power.
+
+Reference mean cost-growth estimates [95% seed bootstrap CI] are budgeted
+**.0099 [−.0077, .0296]**, budgeted-flat **.0470 [.0056, .0926]**, and marginal
+**−.0160 [−.0643, .0475]**. All pass the unchanged .5 threshold after averaging
+types within each seed. A noisy constant-mean 35µs fixture passes, while a
+linear-history-work fixture fails. Selecting the maximum over types had caused
+the earlier false positives.
+
+Both PeTTa arms completed **10/10 plain 1024-step streams**. Their mean fitted
+growth is **−.0072 [−.0672, .0620]** (link-last) and **.0500 [−.0227, .1312]**
+(link-first), a useful positive result. A universal constant-cost claim remains
+unmeasured because the distinct 100-distractor/deep-lag cohorts are censored.
+Neither those timeouts nor their incomplete seed count now fail the plain
+long-stream completion gate. The four reference systems also completed ten
+directed deep-lag streams each; their distinct `directed_deep_lags` experiment
+label is correctly recognized by the deep-lag completion screen.
+
+The regenerated full report and complete gate evidence are linked in the final
+review follow-up below.
 
 ![Learning curves](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-final/learning_curves.svg)
 
@@ -613,6 +670,10 @@ All 11 selected attempts are terminal: **6 completed, 5 timed out, 0 other failu
 |---|---|---:|---|---|---|
 | petta-link-first@171b2820 | distractors / single | 3 | 0.2786 [0.2778, 0.2797] | 0.0000 [0.0000, 0.0000] | underpowered |
 | petta@171b2820 | distractors / single | 3 | 0.2786 [0.2778, 0.2797] | 0.0000 [0.0000, 0.0000] | underpowered |
+
+These **fixed-order distractor scores are invalid as neutral distractor tests**.
+Signals were inserted first and systematically excluded by the newest-24-true-facts
+window. They remain historical artefact evidence, not the corrected shuffle result.
 
 The intervals describe the available completed seeds only. Timeout-dependent selection and fewer than ten seeds preclude a powered performance claim.
 
@@ -667,16 +728,148 @@ The [machine-readable comparison](/nexus/Dev/OpenCog/bench/results/mining-bench/
 
 These are individual same-seed measurements, not confidence intervals on a population memory reduction. Peaks for failed runs are lower bounds and omit any increase during the unfinished step. Timings were not measured side by side at identical machine load. The revision comparison includes other upstream changes, notably refined rule truth/live-instance tallies (`7f7ea3d9`), so changed predictions and timing cannot be attributed exclusively to memory retirement.
 
-### Validation and remaining limits
+### Historical validation and remaining limits
 
-The fresh [complete results table](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-final/report.md) retains all runtime cohorts separately. Across all generated historical and new screens, 117/117 reject deliberately broken systems; actual outcomes are {'PASS': 45, 'FAIL': 12, 'UNMEASURED': 60}. The powered reference/7925f8d5 conclusions above remain unchanged. New-runtime gates without ten paired seeds remain UNMEASURED, and incomplete long streams cannot pass the completion screen.
+The historical [complete results table](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-final/report.md) retains all runtime cohorts separately. The historical aggregate repeated six controls across 117 screens; actual outcomes are {'PASS': 45, 'FAIL': 12, 'UNMEASURED': 60}. The powered base scores remain unchanged; the cost and completion gate conclusions are corrected below. New-runtime gates without ten paired seeds remain UNMEASURED, and incomplete long streams cannot pass the completion screen.
 
 The final ChainerGame suite on 171b2820 passed: **190 passed, 25 skipped, 13 subtests passed**, with mining live tests enabled. See the [test log](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-suite-final.log). The independent 440-prefix reproducibility audit remains valid because no generator or learner code changed in this follow-up.
 
-The benchmark is usable with explicit missing cells. It does not establish constant per-step PeTTa cost, full numeric recovery, ten-seed deep-lag scaling, or complete coverage of every internal directed-miner design choice. Those are remaining measurements or capabilities, not passing results.
+The benchmark is usable with explicit missing cells and the corrections below. It does not establish constant per-step PeTTa cost, full numeric recovery, ten-seed deep-lag scaling, or complete coverage of every internal directed-miner design choice. Those are remaining measurements or capabilities, not passing results.
 
-All benchmark, test, audit and report processes started for this follow-up have
-exited. The final process check found no remaining mining jobs.
+All processes from that historical follow-up had exited before the final-review
+experiments below began.
+
+## Final review follow-up
+
+The powered base table is unchanged. Its Markdown SHA-256 remains
+`0280b046d03223db17fbde9465d5527f54e38cbcfa8c0bc01d0ddb8fde0403ed`.
+The [regenerated full report](/nexus/Dev/OpenCog/bench/results/mining-bench/review4-report/report.md)
+contains 4457 completed runs, including the six new shuffled distractor runs.
+Its provenance independently verifies that all 760 frozen base result rows are
+unchanged. Diagnostic numeric and historical-order census probes remain separate
+from the powered table.
+
+### Input order and the distractor artefact
+
+`Petta.add_inputs` sorts the input mapping and then shuffles it with an independent
+seed-and-period RNG channel. The initial history uses the same policy. The policy
+is recorded as `seeded-per-period-v1`; resume and report logic keep it separate
+from historical fixed-order evidence. World inputs, outcomes and exact
+probabilities are identical to the paired old runs. No proof or miner rule is
+filtered or repaired.
+
+| Arm on 171b2820, D100 single, 256 steps | Seeds | Brier [95% CI] | Recall [95% CI] | Precision [95% CI] | Power |
+|---|---:|---|---|---|---|
+| petta, shuffled | 3 | .1179 [.1089, .1253] | 1 [1, 1] | .556 [.333, 1] | underpowered |
+| petta-link-first, shuffled | 3 | .1179 [.1089, .1253] | 1 [1, 1] | .556 [.333, 1] | underpowered |
+| either arm, historical fixed order | 3 | .2786 [.2778, .2797] | 0 [0, 0] | 0 [0, 0] | ordering artefact |
+
+The arms have identical predictions for these seeds; they are three independent
+seeds, not six. All three shuffled streams recover the planted rule. Two also
+retain spurious sufficient rules, so this is not perfect recovery. The paired
+improvement and all per-cell resource measurements are in the final experiment
+summary linked below. The new maximum RSS is about 5442 MiB, versus 6429–7633 MiB
+in the same fixed-order cells.
+
+The newest-24-true-facts window remains a real candidate-access limit. In the
+shuffled input rows, F0 falls within that window on 62/131, 50/122 and 61/126
+periods when it is true (seeds 8, 9, 10). These are input-order opportunities,
+not internal work counters: target facts and other miner state also affect its
+view. Fixed order gave the signal no such opportunity. Historical D100 and
+deep-lag performance must therefore not be used as neutral signal-selection
+measurements; their measured resource use still describes those workloads.
+
+### Gates and corrected miner diagnoses
+
+The corrected primary acceptance set is **51 PASS, 0 FAIL, 8 UNMEASURED**.
+Across all historical and new runtime/order cohorts it is **56 PASS, 7 FAIL,
+86 UNMEASURED**. The seven residual failures belong to historical cohorts; they
+are not a failure of the three corrected reference cost screens. The full report
+names every gate and retains its interval, power and control evidence.
+
+Each of the 149 screens rejects its negative fixture and accepts its positive
+fixture. This reuses **six control families**, not 149 independent experiments.
+The historical 117/117 statement likewise repeated six negative families; two
+were identity constructions (`x-x` and zero normalized skill). These checks show
+that each gate predicate can pass and fail; they do not prove every scientific
+acceptance criterion is complete. In particular, a positive cost fixture is a
+known-constant noisy 35µs learner, and the three actual reference learners pass
+with the unchanged growth threshold after mean aggregation over types per seed.
+
+The [lifecycle and lag audit](/nexus/Dev/OpenCog/bench/results/mining-bench/review4-diagnoses-final.json)
+finds the exact AND2 pair in **all ten seeds of both arms**; eight are retired and
+two survive. Thus final recall .20 is a **review/retirement defect**, not missing
+pair proposals. Seed 2 proposes the pair at step 1 and drops it at step 7. At the
+drop, the pair reads .99875 and F1 reads .66637 on roughly four versus six
+observations; their difference is inside the two-standard-error review band.
+F1's earlier near-one estimate is evidence of the small-sample problem, but it
+is not its value at the drop. The tried set prevents the dropped pair from being
+proposed again.
+
+The lag seed-1 prediction hashes are byte-identical between the two arms
+(`fad0dba30642565bc9f49f9bec587339fd2f5534679a1473dfab959bf3e53303`).
+The miner's **present-first** policy suppresses cross-link proposals once a
+same-period hypothesis concludes the target. In this experiment the second arm
+separates nothing; it is not evidence that either link ingestion order solves
+the lag problem. The positive long-stream result remains: both arms completed
+10/10 plain 1024-step streams, with fitted mean growth near zero as reported
+above. Deep-lag D100 censoring is a distinct completion gate.
+
+### Numeric feasibility and timing
+
+A live width-8, seed-1, 32-step probe on 171b2820 completed with Brier **.1090**,
+behavioural recall **22/54 = .4074**, and precision **22/31 = .7097**. It used
+shuffled inputs. This is one short feasibility diagnostic, not a powered
+numeric base cell; all 256-step numeric base coverage remains incomplete.
+Its mean mining time was 19.226 seconds per step under shared-pool load and is
+not compared to the reserved-pool timing experiment.
+
+The probe also exposes an adapter limit: variable-output numeric rules are not
+exported as categorical predictions. Of thirteen such raw verdict entries,
+twelve are dropped; the only kept one has strength .5, below the .9 recovery
+threshold. It therefore does not change this probe's sufficient-rule recall,
+but its association calibration is omitted. This export limitation must not be
+misreported as proof that PeTTa cannot propose variable numeric outputs. General
+arithmetic formula discovery is still unshown.
+
+The matched timing experiment uses fresh processes, width 32, seed 1, 64 steps,
+budget 40, the same historical input order, the same shared interpreter and
+PeTTa VM, and full-pool CPU reservations at sweep priority. Historical ordering
+is explicit only in diagnostic repros; production ingestion remains shuffled.
+Its results are recorded separately below when both revisions finish.
+
+### Memory census and validation
+
+Read-only censuses use SWI `predicate_property(number_of_clauses/size)` at two
+history lengths. They do not materialize rows, invoke GC, or modify stores.
+The census itself is outside the mining timer. Predicate allocation estimates
+are not an exact partition of process RSS.
+
+The historical-order D100 seed-9 reproduction reaches **7633.6 MiB** at 256
+steps, matching the earlier roughly 7629 MiB peak. At 64 versus 256 steps,
+skeleton allocation grows from **667.6 to 4060.3 MiB**, out of **892.5 to
+5090.6 MiB** across measured dynamic predicates. The four requested hypothesis
+stores together remain below 1 MiB: `hm_seen` has 35→29 rows, `hm_period`
+2520→2520, `hm_outcomes` 1→1, and `hm_tried` 171→292. At 256, the largest stores
+include `&sk_row` (307463 rows, 801.6 MiB), `&sk_wait` (225608, 536.8 MiB),
+`&sk_latest` (283140, 346.0 MiB), and `sk_search_clause` (616274, 292.8 MiB).
+The retained skeleton workload, rather than those four miner stores, dominates
+the measured allocation. Two points do not establish an asymptotic bound.
+
+The historical-order deep-lag reproduction also completed its requested 409
+steps: RSS grows from **1222.4 MiB at 64** to **11619.0 MiB at 409**, closely
+reproducing the old 11617.9 MiB measurement. Dynamic predicate allocation grows
+from **816.2 to 7718.8 MiB**, of which skeleton stores hold **622.3 to
+6146.1 MiB**. The four miner stores again total less than 1 MiB: seen 4→6 rows,
+period 2520→2520, outcomes 1→1, tried 146→291. This identifies the dominant
+retained stores without attributing every byte of RSS or modifying the engine.
+
+The complete ChainerGame suite passed with mining live tests enabled on the
+pinned 171b2820 runtime: **192 passed, 25 skipped, 15 subtests passed**
+([log](/nexus/Dev/OpenCog/bench/results/mining-bench/review4-suite-verified.log)).
+Focused tests cover seeded ordering, mean cost aggregation, positive and negative
+controls, completion separation and runtime/order cohort preservation. No upstream
+PeTTaChainer files were modified.
 
 ## Commits
 
@@ -685,4 +878,8 @@ exited. The final process check found no remaining mining jobs.
 - `649dbce`: measured admission profiles, stable labels, explicit sweep priority and runtime-pin checks.
 - `0872431`: matched-history memory comparison and seed-clustered ancillary confidence intervals.
 - `5e19173`: qualify missing input-log verification and retain matched-prefix processing time.
-- The final documentation commit and complete branch history are in [the commit record](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-commits.txt). No push or merge was performed.
+- `55b9b57`: deterministic input order, calibrated cost and completion screens, positive controls and census.
+- `a660b8f`: reproducible review diagnostics and separate shuffled failure cohorts.
+- `0bc753b`: directed completion labels and matched numeric timing inputs.
+- `8d4c8bd`: complete report provenance and all-seed AND2 retirement audit.
+- The earlier documentation commit and branch history are in [the commit record](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-commits.txt). No push or merge was performed.

@@ -98,7 +98,8 @@ not categorically exclude that existing capability.
 
 ### Final-review diagnoses
 
-`../review_diagnoses.py` extracts AND2 seed 2's exact pair proposal (step 1) and
+`../review_diagnoses.py` audits the exact AND2 pair in all ten seeds of both arms
+(all propose it, eight retire it), including seed 2's proposal (step 1) and
 retirement (step 7), plus the identical lag prediction hashes in the two arms.
 The AND2 failure is review screening followed by permanent tried-rule exclusion,
 not failure to propose a pair. At retirement, the pair is .99875 and F1 .66637;
@@ -117,3 +118,12 @@ workload at 64 and 409 steps. It does not
 contribute to prediction scores. The census uses SWI predicate clause counts and
 allocated predicate bytes without enumerating row terms or invoking GC. These
 bytes explain store retention but are not an exact decomposition of process RSS.
+
+`../numeric_review.py` keeps width-8 feasibility separate from the width-32,
+seed-1, 64-step timing pair on 7925f8d5 and 171b2820. Timing uses identical
+historical input ordering, fresh processes and full-pool CPU admission at sweep
+priority; the narrow probe uses shuffled inputs. No backend repair is applied.
+Raw numeric verdicts can include variable-output rules that the categorical
+export adapter does not support. In the completed narrow probe the only kept
+such rule has strength .5, below the .9 sufficiency threshold; its association
+calibration is omitted. Do not infer a miner language gap from that export limit.
