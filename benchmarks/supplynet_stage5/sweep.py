@@ -16,7 +16,8 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = Path("/nexus/Dev/OpenCog/bench/results/supplynet-stage5/review-fixes")
-PETTA = "/nexus/Dev/OpenCog/NL2PLN_Project/PeTTaChainer/.venv/bin/python"
+CHAINER_REPO = Path(os.environ.get("PETTACHAINER_REPO", "/nexus/Dev/OpenCog/NL2PLN_Project/PeTTaChainer"))
+PETTA = os.environ.get("CHAINER_PY", str(CHAINER_REPO / ".venv/bin/python"))
 MM2_PYTHON = os.environ.get("MM2_CHAINER_PYTHON", "/nexus/Dev/OpenCog/NL2PLN_Project/mm2-chainer/.venv/bin/python")
 CAPPED = "/nexus/Dev/OpenCog/bench/capped"
 
@@ -55,7 +56,12 @@ def main():
     for path in sorted((ROOT/"src/supplynet").glob("*.py")):
         digest.update(path.name.encode()+path.read_bytes())
     source = digest.hexdigest()
-    provenance = {"source_sha256": source, "chainer_commit": subprocess.check_output(["git", "-C", "/nexus/Dev/OpenCog/NL2PLN_Project/PeTTaChainer", "rev-parse", "HEAD"], text=True).strip(),
+    chainer_digest = hashlib.sha256()
+    for path in sorted((CHAINER_REPO / "pettachainer").rglob("*")):
+        if path.suffix in (".py", ".metta", ".pl"):
+            chainer_digest.update(str(path.relative_to(CHAINER_REPO)).encode() + path.read_bytes())
+    chainer_source = chainer_digest.hexdigest()
+    provenance = {"source_sha256": source, "chainer_source_sha256": chainer_source, "chainer_commit": subprocess.check_output(["git", "-C", str(CHAINER_REPO), "rev-parse", "HEAD"], text=True).strip(),
                   "game_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                   "group": args.group, "jobs": args.jobs, "case_pattern": args.case_pattern, "exclude_case_pattern": args.exclude_case_pattern, "started": time.time()}
     (OUT/f"manifest-{args.group}.json").write_text(json.dumps(provenance, indent=2)+"\n")
@@ -63,7 +69,7 @@ def main():
     def run(job):
         name, python, arguments = job
         cli = [python, "-m", "supplynet.cli", "run", "--stage", "5", "--rounds", "30", "--problog-timeout", "15", "--stream", *arguments]
-        fingerprint = {"source_sha256": source, "command": cli, "chainer_commit": provenance["chainer_commit"]}
+        fingerprint = {"source_sha256": source, "chainer_source_sha256": chainer_source, "command": cli, "chainer_commit": provenance["chainer_commit"]}
         status_path = OUT/f"{name}.status.json"
         if (OUT/f"{name}.json").exists() and status_path.exists():
             old = json.loads(status_path.read_text())
@@ -72,7 +78,7 @@ def main():
                 return
         env = {**os.environ, "PYTHONPATH": str(ROOT/"src")+":"+str(ROOT/"benchmarks/supplynet_stage5/scratch/deps"), "PYTHONDONTWRITEBYTECODE": "1", "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"}
         env.pop("DISPLAY", None)
-        command = [CAPPED, "--slots", "1", "--peak-mb", "1024", "bash", "-c", 'ulimit -v 16000000; exec timeout --kill-after=10s 3600 "$@"', "stage5", *cli]
+        command = [CAPPED, "--priority", "normal", "--slots", "1", "--peak-mb", "1024", "bash", "-c", 'ulimit -v 16000000; exec timeout --kill-after=10s 3600 "$@"', "stage5", *cli]
         started = time.perf_counter()
         with (OUT/f"{name}.jsonl").open("w") as stdout, (OUT/f"{name}.err").open("w") as stderr:
             process = subprocess.run(command, cwd=ROOT, env=env, stdout=stdout, stderr=stderr)

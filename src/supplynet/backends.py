@@ -205,7 +205,7 @@ class PeTTaChainerBackend:
             self._handler.set_rule_change_hazard(change_hazard)
         if mined:
             self._handler.set_hypothesis_mining(*mined)
-        self.rule_truths: dict[str, list[float]] = {}  # learned rule's review -> its CTV
+        self.rule_truths: dict[str, list[float]] = {}  # review -> positive STV [strength, confidence]
         self.hypotheses: dict[str, str] = {}  # mined: live hypothesis name -> its implication
         self.dropped = 0
         self.review_seconds = 0.0
@@ -251,8 +251,8 @@ class PeTTaChainerBackend:
     def _record(self, goals: list[str], answers) -> None:
         for goal, root_answers in zip(goals, answers, strict=True):
             for answer in root_answers:
-                if answer.tv[0] == "CTV":
-                    self.rule_truths[goal] = [round(value, 4) for branch in answer.tv[1:] for value in branch[1:]]
+                if answer.tv[0] == "STV":
+                    self.rule_truths[goal] = [round(value, 4) for value in answer.tv[1:]]
 
     def _review(self) -> None:
         for goal in self.reviews:

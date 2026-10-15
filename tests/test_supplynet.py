@@ -2,7 +2,7 @@ import itertools
 import os
 import random
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 from dataclasses import replace
 from types import SimpleNamespace
 import json
@@ -238,8 +238,7 @@ class LookaheadTests(unittest.TestCase):
                     self.assertAlmostEqual(value,exact[self.model.first[a],self.model.second[b]],places=6)
 
     @unittest.skipUnless(os.environ.get('SUPPLYNET_LIVE_PETTACHAINER')=='1','set SUPPLYNET_LIVE_PETTACHAINER=1')
-    @unittest.expectedFailure
-    def test_live_expected_gap_shared_mine_carry_positive_not_alias(self):
+    def test_live_shared_mine_carry_positive_not_alias(self):
         from pettachainer import PeTTaChainer
         c = PeTTaChainer()
         for head in ('Fuel','Operational'):
@@ -253,7 +252,7 @@ class LookaheadTests(unittest.TestCase):
         rows = c.query_many_refs([
             '(: $p (And (Fuel later) (Operational mine later)) $tv)',
         ],steps=400)
-        self.assertTrue(rows[0])  # Expected gap: shared ancestor/Not alias.
+        self.assertTrue(rows[0])  # P(Not D now, Not D later) = 0.5 * (1 - 0.08).
         self.assertAlmostEqual(float(rows[0][0].tv[1]),.46,places=6)
 
     @unittest.skipUnless(os.environ.get('SUPPLYNET_LIVE_PROBLOG')=='1','set SUPPLYNET_LIVE_PROBLOG=1')
@@ -715,7 +714,7 @@ class GameTests(unittest.TestCase):
         semantic, chainer = metta.rules(network, rates), metta.rules(network, rates, positive_actions=True)
         self.assertIn("(: fuelled (Implication (Or (StockedFuel $t) (FuelArrived $t)) (Fuelled power-plant $t)) (CTV (STV 1 1) (STV 0 1)))", semantic)
         self.assertIn(
-            "(: (no_inverse runs-mine) (Implication (And (Producing power-plant $t) (Not (Degraded mine $t)) (InService mine $t)) "
+            "(: runs-mine (Implication (And (Producing power-plant $t) (Not (Degraded mine $t)) (InService mine $t)) "
             "(Producing mine $t)) (CTV (STV 1 1) (STV 0 1)))",
             chainer,
         )
@@ -761,6 +760,37 @@ class GameTests(unittest.TestCase):
             summary = run_game(GameConfig(seed=7, rounds=3, budget=50, stage=stage), backend)
             self.assertEqual(summary["coverage"], 1.0)
 
+    def test_pettachainer_records_review_stvs_and_refreshes_after_resolution(self):
+        handler = SimpleNamespace(
+            set_evidence_confidence_k=Mock(), set_rule_refinement=Mock(),
+            add_atoms_no_check=Mock(), query_many_refs=Mock(),
+        )
+        module = SimpleNamespace(PeTTaChainer=lambda: handler)
+        with patch("supplynet.backends.importlib.import_module", return_value=module):
+            backend = PeTTaChainerBackend(learned=True, review_steps=123)
+        network, rates = generate_network(random.Random(2), 1, 1), stage_rates(1)
+        backend.begin(network, rates, [])
+        self.assertTrue(backend.reviews)
+        observation = Observation("t1", None, {}, {})
+        handler.query_many_refs.side_effect = lambda goals, steps: [
+            [SimpleNamespace(tv=("STV", 0.123456, 0.234567))] for _ in goals
+        ]
+        backend.beliefs(observation, [], budget=50)
+        self.assertEqual(handler.query_many_refs.call_args_list,
+                         [call([goal], steps=123) for goal in backend.reviews])
+        self.assertEqual(backend.summary()["rule_truths"],
+                         {goal: [0.1235, 0.2346] for goal in backend.reviews})
+
+        backend.resolve(sample_period(network, rates, random.Random(3), "t1", []), observation)
+        handler.query_many_refs.reset_mock()
+        handler.query_many_refs.side_effect = lambda goals, steps: [
+            [SimpleNamespace(tv=("STV", 0.345678, 0.456789))] for _ in goals
+        ]
+        backend.beliefs(Observation("t2", "t1", {}, {}), [], budget=50)
+        handler.query_many_refs.assert_called_once_with(backend.reviews, steps=0)
+        self.assertEqual(backend.summary()["rule_truths"],
+                         {goal: [0.3457, 0.4568] for goal in backend.reviews})
+
     @unittest.skipUnless(os.environ.get("SUPPLYNET_LIVE_PETTACHAINER") == "1", "set SUPPLYNET_LIVE_PETTACHAINER=1")
     def test_pettachainer_learns_every_rule(self):
         """With learned rules every rule's review folds its instances: no
@@ -770,6 +800,8 @@ class GameTests(unittest.TestCase):
         summary = run_game(GameConfig(seed=1, rounds=2, budget=50, stage=3), backend)
         self.assertEqual(summary["coverage"], 1.0)
         self.assertEqual(len(summary["rule_truths"]), len(backend.reviews))
+        self.assertEqual(set(summary["rule_truths"]), set(backend.reviews))
+        self.assertTrue(all(len(truth) == 2 for truth in summary["rule_truths"].values()))
         self.assertFalse([goal for goal, truth in summary["rule_truths"].items() if truth[1] <= 0.02])
 
     @unittest.skipUnless(os.environ.get("SUPPLYNET_LIVE_PETTACHAINER") == "1", "set SUPPLYNET_LIVE_PETTACHAINER=1")

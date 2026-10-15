@@ -9,9 +9,10 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 CHAINER_PY=${CHAINER_PY:-/nexus/Dev/OpenCog/NL2PLN_Project/PeTTaChainer/.venv/bin/python}
 PROBLOG_PY=${PROBLOG_PY:-/nexus/Dev/OpenCog/ChainerGame-problog/.venv-problog/bin/python}
 ROUNDS=${ROUNDS:-30}
+CASE_PATTERN=${CASE_PATTERN:-*}
 mkdir -p "$OUT"
 jobs_file=$(mktemp)
-add() { echo "$1|$2|$3" >> "$jobs_file"; }  # name | python | cli arguments
+add() { [[ "$1" == $CASE_PATTERN ]] && echo "$1|$2|$3" >> "$jobs_file" || true; }  # name | python | cli arguments
 for seed in 1 2 3 4; do
   for backend in reference greedy beam prior; do add "$backend-s$seed" python3 "--backend $backend --seed $seed"; done
   add "problog-s$seed" "$PROBLOG_PY" "--backend problog --seed $seed"
@@ -37,7 +38,7 @@ run() {
   [ -s "$OUT/$name.json" ] && return 0
   rounds="--rounds $ROUNDS"; [[ "$args" == *--rounds* ]] && rounds=""
   ( cd "$ROOT"; unset DISPLAY; ulimit -v 16000000
-    /nexus/Dev/OpenCog/bench/capped env PYTHONPATH=src "$py" -m supplynet.cli run --stage 4 $rounds $args < /dev/null \
+    /nexus/Dev/OpenCog/bench/capped --priority normal timeout --kill-after=10s 3600 env PYTHONPATH="src:benchmarks/supplynet_stage5/scratch/deps" "$py" -m supplynet.cli run --stage 4 $rounds $args < /dev/null \
       > "$OUT/$name.json.tmp" 2> "$OUT/$name.err" ) && mv "$OUT/$name.json.tmp" "$OUT/$name.json"
 }
 export -f run; export OUT ROOT ROUNDS

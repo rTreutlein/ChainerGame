@@ -19,6 +19,13 @@ hands every reasoner the rules' structure but not their rates. Each has to
 learn the rates from the labelled history: 30 periods before the first round,
 and each period of the game once it resolves.
 
+PeTTaChainer's public `RuleTruth` answers expose the positive branch as an
+STV. The run summary's `rule_truths` maps each review query to
+`[strength, confidence]` for that branch, rounded to four decimals. The
+chainer still learns and uses both CTV branches internally.
+`benchmarks/learned/rule_rates.py` compares the branches a run reports;
+negative-branch comparisons are available only in historical CTV summaries.
+
 ## What the reasoners get
 
 `--learned-rules` (stages 1–3; `src/supplynet/metta.py`, `rules(...,

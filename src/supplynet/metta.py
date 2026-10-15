@@ -80,11 +80,9 @@ def _cycle_rules(network: Network, positive_actions: bool = False) -> list[str]:
     stated or assumed in a period, so the two never give a view together.
     The semantic rules (ProbLog's) keep the ``Or`` and ``Not Repairing``.
 
-    WORKAROUND (gap 3) with ``positive_actions``: the production rules are
-    (no_inverse ...). Their antecedent completions make the degradations and
-    the repairs affected in every decision context, so each context derives
-    them again, and from the second context of a game on the chainer reaches
-    the production outcomes only at about twenty times the budget."""
+    Production remains invertible so failed output reports diagnose degradation.
+    Decision and choice rules retain their own no_inverse declarations.
+    """
     cell = network.cell
     if cell.alternate:
         arriving = f"(And (NextPeriod $p $t) (Producing {MINE} $p) (FuelVia $r $p) (Not (Blocked $r $p)))"
@@ -113,7 +111,7 @@ def _cycle_rules(network: Network, positive_actions: bool = False) -> list[str]:
         )
         for plant in cell.inputs
     ]
-    return [line.replace("(: ", "(: (no_inverse ", 1).replace(" (Implication", ") (Implication", 1) for line in lines] if positive_actions else lines
+    return lines
 
 
 def complete_predicates(network: Network) -> list[str]:
