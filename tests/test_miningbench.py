@@ -769,3 +769,25 @@ class ReviewRegressionTest(unittest.TestCase):
                 json.loads((root / "out/tasks.json").read_text()),
                 [["distractors", "single", 7, "petta"]],
             )
+
+    def test_memory_comparison_does_not_certify_missing_input_logs(self):
+        import importlib.util
+
+        script = Path(__file__).parents[1] / "benchmarks/mining/compare_memory.py"
+        spec = importlib.util.spec_from_file_location("compare_memory", script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            left, right = Path(directory) / "left", Path(directory) / "right"
+            left.mkdir()
+            right.mkdir()
+            (left / "samples.jsonl").write_text('{"distractor": 1}\n')
+            (right / "samples.jsonl").write_text(
+                '{"distractor": 1.0}\n{"distractor": 0}\n'
+            )
+            self.assertEqual(module.verified_input_prefix_length(left, right, 2), 1)
+            (left / "samples.jsonl").write_text("")
+            self.assertEqual(module.verified_input_prefix_length(left, right, 2), 0)
+            (left / "samples.jsonl").write_text('{"distractor": 0}\n')
+            with self.assertRaisesRegex(ValueError, "unequal saved input"):
+                module.verified_input_prefix_length(left, right, 2)

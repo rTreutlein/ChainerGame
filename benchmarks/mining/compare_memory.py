@@ -1,4 +1,4 @@
-"""Compare measured RSS on identical prefixes of completed or censored runs.
+"""Compare measured RSS at equal history lengths in same-config seeded runs.
 
 Coverage manifests select immutable prior attempts. Full-run peaks are reported
 separately from matched-history peaks: a short timeout is not a low-memory
@@ -7,7 +7,6 @@ powered estimates of an asymptotic memory bound.
 """
 
 import argparse
-import hashlib
 from itertools import islice
 import json
 from pathlib import Path
@@ -23,7 +22,13 @@ def read_run(directory):
             steps.append(
                 {
                     key: row[key]
-                    for key in ("rss_peak_kib", "predicted", "exact", "label")
+                    for key in (
+                        "rss_peak_kib",
+                        "predicted",
+                        "exact",
+                        "label",
+                        "mining_path_seconds",
+                    )
                 }
             )
     complete = status["returncode"] == 0
@@ -35,6 +40,7 @@ def read_run(directory):
     return {
         "path": str(directory),
         "runtime": metadata["petta_commit"],
+        "config": metadata["config"],
         "returncode": status["returncode"],
         "completed_steps": len(steps),
         "complete": complete,
@@ -43,12 +49,19 @@ def read_run(directory):
     }, steps
 
 
-def prefix_digest(directory, count):
-    digest = hashlib.sha256()
-    with (directory / "samples.jsonl").open("rb") as source:
-        for line in islice(source, count):
-            digest.update(line)
-    return digest.hexdigest()
+def verified_input_prefix_length(left, right, count):
+    # JSON spelling (for example 1 versus 1.0) is not a changed observation.
+    # Killed runs can lose buffered sample lines; report the verified length.
+    verified = 0
+    with (
+        (left / "samples.jsonl").open() as first,
+        (right / "samples.jsonl").open() as second,
+    ):
+        for a, b in zip(islice(first, count), islice(second, count)):
+            if json.loads(a) != json.loads(b):
+                raise ValueError(f"unequal saved input: {left} vs {right}")
+            verified += 1
+    return verified
 
 
 def main():
@@ -79,17 +92,19 @@ def main():
             prior = Path(selected[key]["path"])
             before, before_steps = read_run(prior)
             assert before["runtime"] == runtime, prior
+            if before["config"] != after["config"]:
+                raise ValueError(
+                    f"unequal generator configurations: {prior} vs {directory}"
+                )
             count = min(len(before_steps), len(after_steps))
             if not count:
                 continue
-            same_samples = prefix_digest(prior, count) == prefix_digest(
-                directory, count
-            )
+            verified_inputs = verified_input_prefix_length(prior, directory, count)
             same_truth = all(
                 left["exact"] == right["exact"] and left["label"] == right["label"]
                 for left, right in zip(before_steps[:count], after_steps[:count])
             )
-            if not same_samples or not same_truth:
+            if not same_truth:
                 raise ValueError(f"unequal generated prefix: {prior} vs {directory}")
             before_peak = before_steps[count - 1]["rss_peak_kib"] / 1024
             after_peak = after_steps[count - 1]["rss_peak_kib"] / 1024
@@ -97,7 +112,9 @@ def main():
                 {
                     "before": before,
                     "prefix_steps": count,
-                    "generated_prefix_identical": same_samples,
+                    "generator_config_identical": True,
+                    "input_log_verified_steps": verified_inputs,
+                    "full_input_log_verified": verified_inputs == count,
                     "prefix_truth_identical": same_truth,
                     "changed_prediction_steps": sum(
                         left["predicted"] != right["predicted"]
@@ -118,6 +135,12 @@ def main():
                     ),
                     "after_prefix_peak_mib": after_peak,
                     "prefix_peak_reduction": 1 - after_peak / before_peak,
+                    "before_prefix_mining_ms_per_step": 1000
+                    * sum(step["mining_path_seconds"] for step in before_steps[:count])
+                    / count,
+                    "after_prefix_mining_ms_per_step": 1000
+                    * sum(step["mining_path_seconds"] for step in after_steps[:count])
+                    / count,
                 }
             )
         rows.append(
@@ -155,7 +178,7 @@ def main():
         )
     lines += [
         "",
-        "Matched-history comparisons include identical generated inputs and outcomes. A positive reduction means lower RSS in the new runtime. The 4e6b059b comparison also includes the withdrawal fix; 7925f8d5 is the direct pre-memory-fix comparison.",
+        "Comparisons pair the same generator configuration and seed at equal completed-step counts; exact probabilities and outcomes match. Saved input prefixes are also checked where available. Killed runs can lose buffered sample logs, so the JSON states how many input rows were independently verified. A positive reduction means lower RSS. The 4e6b059b comparison also includes the withdrawal fix; 7925f8d5 is the direct pre-memory-fix comparison.",
         "",
         "| Level / kind | Seed | Arm | Before | Shared steps | Before MiB | After MiB | Reduction | Changed predictions |",
         "|---|---:|---|---|---:|---:|---:|---:|---:|",
