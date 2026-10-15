@@ -262,16 +262,21 @@ export TMPDIR="$PWD/.scratch"
  --systems oracle marginal --separate-kinds --levels base samples long \
  --samples 256 --seeds 1 2 3 4 5 6 7 8 9 10 --budget 40 --jobs 2
 
+PYTHONPATH="$PWD/.scratch/petta-171b2820:$PWD/src" \
 /nexus/Dev/OpenCog/bench/capped --slots 1 --peak-mb 128 \
  /nexus/Dev/OpenCog/NL2PLN_Project/PeTTaChainer/.venv/bin/python \
  benchmarks/mining/powered_sweep.py \
  --evidence /nexus/Dev/OpenCog/bench/results/mining-bench/NEW-REFERENCE \
  --out /nexus/Dev/OpenCog/bench/results/mining-bench/NEW-LIVE \
- --levels base --jobs 1 \
+ --jobs 1 --required-petta-commit 171b2820744ff778cadba32213654fe7002f0281 \
+ --tasks-file /nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-plan/numeric-tasks.json \
  --peaks /nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-plan/measured-peaks.json
 ```
 
-Choose fresh output directories. Each child has the stable label
+Choose fresh output directories. The live example uses the unmodified local
+checkout of `171b2820` at `.scratch/petta-171b2820` and the saved two-condition
+numeric manifest. A different workload needs measured profiles for its own
+labels. Each child has the stable label
 `mining-{system}-{level}-{kind}` and explicit sweep priority, including
 `BENCH_PRIORITY=sweep`. The coordinator now requires a `--peaks` JSON file keyed
 by those labels. Each entry records `observed_peak_mib` and its source; admission
@@ -297,15 +302,16 @@ label, plus the stated margin, until new measurements justify a replacement.
 
 Master was `4e6b059b` when the powered experiment started. It advanced to
 `6ffb1404` during the resumed sweep, changing implication-query semantics without
-landing the withdrawal fix. Remaining powered runs use an unmodified local clone
-at the original commit, selected through `PYTHONPATH` while keeping the shared
-interpreter. Separate single/AND2 runs and the prediction-read repro check the
-new master. Runtime commits and import paths are recorded per run; these cohorts
+landing the withdrawal fix. At that stage, remaining powered runs used an
+unmodified local clone at the original commit, selected through `PYTHONPATH`
+while keeping the shared interpreter. Separate single/AND2 runs and the
+prediction-read repro checked `6ffb1404`. Runtime commits and import paths are
+recorded per run; these cohorts
 are not pooled.
-All 40 new-master runs completed (single/AND2, both ingestion arms, ten seeds,
+All 40 `6ffb1404` runs completed (single/AND2, both ingestion arms, ten seeds,
 256 steps). Their predictions, exact probabilities, labels, scores, learned
 rules and recovery match the original runtime exactly. See the
-[separate current-master table](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-master-6ff/report.md)
+[separate 6ffb1404 table](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-master-6ff/report.md)
 and [per-run comparison](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-master-comparison.json).
 The full suite also passes on `6ffb1404`: 188 passed, 25 skipped and 13 subtests.
 The prediction-read repro still exposes the same seven withdrawn hypotheses.
@@ -315,7 +321,8 @@ and its expanded proofs contain no withdrawn hypotheses. The full suite also
 passes on that revision: 188 passed, 25 skipped, 13 subtests. The separate powered cohort used an unmodified clone of this revision and the
 shared interpreter. The coordinator stopped its remaining jobs after the CLI
 failure on 15 October. Its results remain separate from the original runtime.
-For long streams add `--levels long`; for the 100-distractor, lag-12 stress case
+For a full grid instead of an explicit manifest, omit `--tasks-file`. Choose
+`--levels long` for long streams; for the 100-distractor, lag-12 stress case
 use `--levels deep_lags --stress-seconds 3600`. For transfer use
 `--kinds binding --levels entity_holdout`. Report collection also uses capped.
 The suite uses `PYTHONPATH=src:.test-deps` with local pytest dependencies and the
@@ -348,6 +355,9 @@ This snapshot was written before starting new engine work. The stopped sweeps'
 recorded runtime is **7925f8d5**, not 4e6b059b. The earlier 4e6b059b cohort remains
 separate. The saved evidence contains 4445 completed runs across reference and
 live cohorts. No mining processes were running when this snapshot was assembled.
+The immutable [snapshot report](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-disk-final/report.md)
+and [coverage manifest](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-disk-coverage.json)
+remain available independently of the follow-up below.
 
 For the 7925f8d5 plan, 575 of 740 conditions completed; 73 timed out, one had a
 confirmed allocation failure, and 91 have no terminal comparable result
@@ -397,11 +407,11 @@ recovery and PeTTa checkpoint recovery use the corrected matcher.
 
 ## Powered results
 
-The [full results table](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-disk-final/report.md) contains systems × rule types × difficulty, paired differences, weak-association calibration, costs, learning curves and censored attempts.
+The [full results table](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-final/report.md) contains systems × rule types × difficulty, paired differences, weak-association calibration, costs, learning curves and censored attempts.
 
-There are 4445 completed runs in this report. Historical interrupted attempts remain in the audit; completed replacements determine coverage. PeTTa commits: 4e6b059be39537d2c7c8a28e5dc807fb4f3a83c9, 7925f8d588b6aba5b868e7518c55f6e1249c0464.
+There are 4451 completed runs in this report. Historical interrupted attempts remain in the audit; completed replacements determine coverage. PeTTa commits: 171b2820744ff778cadba32213654fe7002f0281, 4e6b059be39537d2c7c8a28e5dc807fb4f3a83c9, 7925f8d588b6aba5b868e7518c55f6e1249c0464.
 
-The current-runtime cohort covers 740 planned conditions: {'completed': 575, 'timeout': 73, 'unresolved': 91, 'memory_failure': 1}. Earlier runtime results remain separate in the full report; the concise tables below use 7925f8d5.
+The withdrawal-fix cohort covers 740 planned conditions: {'completed': 575, 'timeout': 73, 'unresolved': 91, 'memory_failure': 1}. Earlier runtime results remain separate in the full report; the concise tables below use 7925f8d5.
 
 Intervals below are 95% seed bootstrap intervals. An underpowered cell retains its actual n and cannot earn an acceptance pass. Oracle base probability Brier is zero and recovery is one for every type.
 
@@ -495,7 +505,10 @@ The fixed-budget comparison retains learned predictors, rotates candidate update
 | strength | 0.0000 [0.0000, 0.0000]; n=10 |
 | targets | 0.0128 [0.0111, 0.0146]; n=10 |
 
-These intervals cluster all rule types within each seed before resampling. The frozen raw report’s ancillary cross-type priority table counted 100 type/seed pairs; this correction restores ten independent seeds. The dedicated directed-design probes and all primary acceptance conclusions are unchanged.
+These ancillary contrasts average rule types within each seed before
+bootstrapping: ten types do not create one hundred independent seeds. The
+fresh report corrects the frozen snapshot's ancillary sample counts; the
+dedicated directed-design probes and primary acceptance conclusions are unchanged.
 
 | New-entity holdout cohort | Brier [95% CI] |
 |---|---|
@@ -575,10 +588,101 @@ The widened stochastic trajectory removes the eight-context shortcut. Its finite
 | petta@7925f8d5: fitted constant-cost screen | UNMEASURED | True |
 | petta@7925f8d5: long-stream completion | FAIL | True |
 
-All 101 of 101 generated screens reject their broken controls. Actual gate outcomes across all historical cohorts: {'PASS': 45, 'FAIL': 12, 'UNMEASURED': 44}. The primary table above covers the reference systems and 7925f8d5: {'PASS': 42, 'FAIL': 5, 'UNMEASURED': 6}. See [acceptance evidence](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-disk-final/acceptance.json) for thresholds, paired intervals and control values.
+All 117 of 117 generated screens reject their broken controls. Actual gate outcomes across all historical cohorts: {'PASS': 45, 'FAIL': 12, 'UNMEASURED': 60}. The primary table above covers the reference systems and 7925f8d5: {'PASS': 42, 'FAIL': 5, 'UNMEASURED': 6}. See [acceptance evidence](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-final/acceptance.json) for thresholds, paired intervals and control values.
 
-![Learning curves](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-disk-final/learning_curves.svg)
+![Learning curves](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-final/learning_curves.svg)
 
-Full ChainerGame suite: 188 passed, 25 skipped, 13 subtests passed, with mining live tests enabled. Independent reproducibility verification matched 440 base/long prefixes exactly. Timing and RSS remain machine-dependent.
+The figure shows base/long cohorts. The selective 171b2820 follow-up appears
+below at its own difficulty levels.
+
+The earlier 7925f8d5 ChainerGame suite: 188 passed, 25 skipped, 13 subtests passed, with mining live tests enabled. Independent reproducibility verification matched 440 base/long prefixes exactly. Timing and RSS remain machine-dependent.
 
 PeTTa stress censoring prevents a universal constant-cost claim. Partial timing excludes unfinished stalled steps. The withdrawal defect invalidated predictive reads on the original runtime. The unchanged repro confirms its repair on 7925f8d5, whose separately reported predictions use no harness workaround. Numeric formula discovery, higher-order or mixed-polarity conjunction proposals, multi-link conjunction mining, and an auditable relevance-directed total work budget remain separate capability limits.
+
+## Targeted follow-up on 171b2820
+
+The saved-evidence report was committed before these runs. The follow-up uses the unmodified PeTTaChainer commit `171b2820744ff778cadba32213654fe7002f0281`, through the shared interpreter, with the withdrawal and memory changes included. Its results are a separate cohort; none is pooled with 7925f8d5 to manufacture ten-seed power.
+
+Only eleven conditions without completed 7925f8d5 streams were selected: numeric seed 1 in both arms; 100-distractor single-literal link-first seed 7 and both arms for seeds 8–10; and deep-lag single-literal seed 1 in both arms. At most two one-worker sweeps ran concurrently. Children used stable labels, explicit sweep priority, measured reservations plus 20%, and 1800-second limits (3600 seconds for deep lags).
+
+All 11 selected attempts are terminal: **6 completed, 5 timed out, 0 other failures**. The [completion audit](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-completion.json) verifies the exact task set, runtime, priority, labels and measured admission profiles.
+
+**Every new statistical cell is underpowered.** Numeric and deep-lag partials have no full-stream prediction or recovery score. The missing numeric, higher-arity 100-distractor, three-target and link-first entity-holdout coverage in the frozen table remains incomplete; these selective runs do not close that matrix.
+
+| System | Level / kind | Completed seeds | Probability Brier [95% bootstrap CI] | Recovery recall [95% bootstrap CI] | Power |
+|---|---|---:|---|---|---|
+| petta-link-first@171b2820 | distractors / single | 3 | 0.2786 [0.2778, 0.2797] | 0.0000 [0.0000, 0.0000] | underpowered |
+| petta@171b2820 | distractors / single | 3 | 0.2786 [0.2778, 0.2797] | 0.0000 [0.0000, 0.0000] | underpowered |
+
+The intervals describe the available completed seeds only. Timeout-dependent selection and fewer than ten seeds preclude a powered performance claim.
+
+### Per-cell resource evidence
+
+Per-cell measurements; no population confidence interval is claimed. Failed runs retain only lower bounds on full-run peak RSS.
+
+| Level / kind | Seed | Arm | Runtime | Completed steps | Complete | Peak MiB |
+|---|---:|---|---|---:|---|---:|
+| deep_lags / single | 1 | petta | 171b2820 | 409 | False | 11617.9+ |
+| deep_lags / single | 1 | petta-link-first | 171b2820 | 438 | False | 12877.7+ |
+| distractors / single | 10 | petta | 171b2820 | 256 | True | 7507.2 |
+| distractors / single | 8 | petta | 171b2820 | 256 | True | 6442.5 |
+| distractors / single | 9 | petta | 171b2820 | 256 | True | 7629.3 |
+| distractors / single | 10 | petta-link-first | 171b2820 | 256 | True | 7511.6 |
+| distractors / single | 7 | petta-link-first | 171b2820 | 230 | False | 7175.2+ |
+| distractors / single | 8 | petta-link-first | 171b2820 | 256 | True | 6428.5 |
+| distractors / single | 9 | petta-link-first | 171b2820 | 256 | True | 7633.3 |
+| base / numeric | 1 | petta | 171b2820 | 64 | False | 4287.1+ |
+| base / numeric | 1 | petta-link-first | 171b2820 | 64 | False | 4250.6+ |
+
+Comparisons pair the same generator configuration and seed at equal completed-step counts; exact probabilities and outcomes match. Saved input prefixes are also checked where available. Killed runs can lose buffered sample logs, so the JSON states how many input rows were independently verified. A positive reduction means lower RSS. The 4e6b059b comparison also includes the withdrawal fix; 7925f8d5 is the direct pre-memory-fix comparison.
+
+| Level / kind | Seed | Arm | Before | Shared steps | Before MiB | After MiB | Reduction | Changed predictions |
+|---|---:|---|---|---:|---:|---:|---:|---:|
+| deep_lags / single | 1 | petta | 4e6b059b | 97 | 2303.8 | 1872.8 | 18.7% | 92 |
+| deep_lags / single | 1 | petta | 7925f8d5 | 409 | 12615.0 | 11617.9 | 7.9% | 268 |
+| deep_lags / single | 1 | petta-link-first | 4e6b059b | 97 | 2299.4 | 1870.9 | 18.6% | 92 |
+| deep_lags / single | 1 | petta-link-first | 7925f8d5 | 373 | 10833.5 | 9918.2 | 8.4% | 232 |
+| distractors / single | 10 | petta | 4e6b059b | 68 | 2030.0 | 1516.8 | 25.3% | 63 |
+| distractors / single | 8 | petta | 4e6b059b | 111 | 2518.1 | 2193.5 | 12.9% | 96 |
+| distractors / single | 9 | petta | 4e6b059b | 76 | 2191.1 | 1803.0 | 17.7% | 64 |
+| distractors / single | 10 | petta-link-first | 4e6b059b | 70 | 2188.7 | 1613.1 | 26.3% | 65 |
+| distractors / single | 7 | petta-link-first | 4e6b059b | 68 | 2181.8 | 1743.8 | 20.1% | 59 |
+| distractors / single | 8 | petta-link-first | 4e6b059b | 113 | 2571.5 | 2235.6 | 13.1% | 98 |
+| distractors / single | 9 | petta-link-first | 4e6b059b | 76 | 2202.3 | 1814.1 | 17.6% | 64 |
+| base / numeric | 1 | petta | 4e6b059b | 64 | 5745.4 | 4287.1 | 25.4% | 62 |
+| base / numeric | 1 | petta | 7925f8d5 | 64 | 4620.9 | 4287.1 | 7.2% | 60 |
+| base / numeric | 1 | petta-link-first | 4e6b059b | 64 | 5846.5 | 4250.6 | 27.3% | 62 |
+| base / numeric | 1 | petta-link-first | 7925f8d5 | 64 | 4547.1 | 4250.6 | 6.5% | 60 |
+
+Matched-history reductions range from **12.9–27.3% versus 4e6b059b** and
+**6.5–8.4% versus 7925f8d5**. These workloads do not confirm a 40% reduction.
+Numeric processing was slower in the new attempts, despite lower recorded RSS:
+
+| Numeric arm, seed 1 | Shared steps | 7925f8d5 mining ms/step | 171b2820 mining ms/step |
+|---|---:|---:|---:|
+| petta | 64 | 5423.7 | 21799.1 |
+| petta-link-first | 64 | 3622.6 | 19927.9 |
+
+The [machine-readable comparison](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-memory.json) also reports matched-prefix mining time and input-log verification lengths. Original killed attempts sometimes lost buffered sample logs: identical generator configuration, seed, exact probabilities and labels were verified for every compared step, but only available raw input prefixes can be independently checked.
+
+These are individual same-seed measurements, not confidence intervals on a population memory reduction. Peaks for failed runs are lower bounds and omit any increase during the unfinished step. Timings were not measured side by side at identical machine load. The revision comparison includes other upstream changes, notably refined rule truth/live-instance tallies (`7f7ea3d9`), so changed predictions and timing cannot be attributed exclusively to memory retirement.
+
+### Validation and remaining limits
+
+The fresh [complete results table](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-final/report.md) retains all runtime cohorts separately. Across all generated historical and new screens, 117/117 reject deliberately broken systems; actual outcomes are {'PASS': 45, 'FAIL': 12, 'UNMEASURED': 60}. The powered reference/7925f8d5 conclusions above remain unchanged. New-runtime gates without ten paired seeds remain UNMEASURED, and incomplete long streams cannot pass the completion screen.
+
+The final ChainerGame suite on 171b2820 passed: **190 passed, 25 skipped, 13 subtests passed**, with mining live tests enabled. See the [test log](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-suite-final.log). The independent 440-prefix reproducibility audit remains valid because no generator or learner code changed in this follow-up.
+
+The benchmark is usable with explicit missing cells. It does not establish constant per-step PeTTa cost, full numeric recovery, ten-seed deep-lag scaling, or complete coverage of every internal directed-miner design choice. Those are remaining measurements or capabilities, not passing results.
+
+All benchmark, test, audit and report processes started for this follow-up have
+exited. The final process check found no remaining mining jobs.
+
+## Commits
+
+- `ebc5afa` through `31a8e38`: reviewer corrections, behavioural probes, immutable evidence replay and powered cohorts.
+- `12827e0`: saved-evidence report, committed before the selective follow-up.
+- `649dbce`: measured admission profiles, stable labels, explicit sweep priority and runtime-pin checks.
+- `0872431`: matched-history memory comparison and seed-clustered ancillary confidence intervals.
+- `5e19173`: qualify missing input-log verification and retain matched-prefix processing time.
+- The final documentation commit and complete branch history are in [the commit record](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v3-171-commits.txt). No push or merge was performed.
