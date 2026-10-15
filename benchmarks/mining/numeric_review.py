@@ -9,6 +9,7 @@ fix. The narrow feasibility probe uses the corrected shuffle. Run via capped.
 """
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -21,8 +22,47 @@ ROOT = Path(__file__).resolve().parents[2]
 CAPPED = "/nexus/Dev/OpenCog/bench/capped"
 
 
+def runtime_identity(wrapper_path, runtime_path):
+    """Hash the installed VM; never mistake an enclosing venv repo for its source."""
+    root = Path(runtime_path).resolve()
+    files = {}
+    digest = hashlib.sha256()
+    paths = [
+        path
+        for folder in ("src", "lib", "python")
+        for path in (root / folder).rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
+    ]
+    native = root / "mork_ffi/target/release/libmork_ffi.so"
+    if native.is_file():
+        paths.append(native)
+    for path in sorted(paths):
+        relative = path.relative_to(root).as_posix()
+        content = path.read_bytes()
+        digest.update(relative.encode() + b"\0" + content)
+        files[relative] = hashlib.sha256(content).hexdigest()
+    top = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    commit = None
+    if top and Path(top).resolve() == root:
+        commit = subprocess.check_output(
+            ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
+        ).strip()
+    return {
+        "path": str(root),
+        "commit": commit,
+        "sha256": digest.hexdigest(),
+        "files": files,
+        "wrapper_path": str(Path(wrapper_path).resolve()),
+        "wrapper_sha256": hashlib.sha256(Path(wrapper_path).read_bytes()).hexdigest(),
+    }
+
+
 def worker(args):
-    from miningbench.runner import run, revision
+    from miningbench.runner import run
     import petta
     from miningbench.world import Config
 
@@ -32,6 +72,7 @@ def worker(args):
 
         Petta.add_inputs = legacy_inputs
         Petta.input_order = "historical-fixed-order-repro"
+    runtime_before = runtime_identity(petta.__file__, petta._resolve_petta_path())
     cpu_start = time.process_time()
     wall_start = time.perf_counter()
     load_start = os.getloadavg()
@@ -48,6 +89,8 @@ def worker(args):
     )
     result["metadata"]["level"] = f"numeric_probe_width{args.width}"
     (args.out / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+    runtime_after = runtime_identity(petta.__file__, petta._resolve_petta_path())
+    assert runtime_before == runtime_after
     (args.out / "load.json").write_text(
         json.dumps(
             {
@@ -61,8 +104,7 @@ def worker(args):
                     ["python3", "/nexus/Dev/OpenCog/bench/admission.py", "status"],
                     text=True,
                 ),
-                "petta_runtime_path": petta.__file__,
-                "petta_runtime_commit": revision(Path(petta.__file__).parent),
+                "runtime_identity": runtime_before,
                 "protocol": (
                     "full-pool CPU reservation; fresh process"
                     if args.slots == 24

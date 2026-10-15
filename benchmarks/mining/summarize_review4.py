@@ -56,6 +56,10 @@ def main():
         }
         for system, rows in groups.items()
     }
+    correction_path = args.timing / "runtime_provenance_correction.json"
+    runtime_correction = (
+        json.loads(correction_path.read_text()) if correction_path.exists() else None
+    )
     timing = []
     for path in sorted(args.timing.glob("paired-*/result.json")):
         result = json.loads(path.read_text())
@@ -78,11 +82,21 @@ def main():
                 input_order=result["metadata"]["input_order"],
                 config=result["metadata"]["config"],
                 load=load,
+                runtime_identity=load.get("runtime_identity")
+                or (
+                    runtime_correction["runtime_identity"]
+                    if runtime_correction
+                    else None
+                ),
             )
         )
     if timing:
         assert len({r["data_sha256"] for r in timing}) == 1
-        assert len({r["load"]["petta_runtime_commit"] for r in timing}) == 1
+        assert all(r["runtime_identity"] for r in timing), (
+            "Actual VM identity is missing"
+        )
+        assert len({r["runtime_identity"]["sha256"] for r in timing}) == 1
+        assert len({r["runtime_identity"]["wrapper_sha256"] for r in timing}) == 1
         assert all(r["input_order"] == "historical-fixed-order-repro" for r in timing)
         assert len({r["load"]["protocol"] for r in timing}) == 1
         assert all(r["load"]["admission_cpu_slots"] in (2, 24) for r in timing)
@@ -191,6 +205,7 @@ def main():
         distractor_cells=paired,
         distractor_summary=summary,
         numeric_timing=timing,
+        runtime_provenance_correction=runtime_correction,
         numeric_revision_ratio=ratio,
         numeric_cpu_revision_ratio=(
             timing[1]["active_cpu_seconds_per_step"]
