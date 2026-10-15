@@ -311,9 +311,9 @@ The prediction-read repro still exposes the same seven withdrawn hypotheses.
 After that check, master advanced to `7925f8d5`, including the withdrawal and
 late-link replay fix. The unchanged repro now predicts .99985 versus .00016,
 and its expanded proofs contain no withdrawn hypotheses. The full suite also
-passes on that revision: 188 passed, 25 skipped, 13 subtests. A separate powered
-cohort is running from an unmodified clone of this revision, using the shared
-interpreter. Its results will remain separate from the original runtime.
+passes on that revision: 188 passed, 25 skipped, 13 subtests. The separate powered cohort used an unmodified clone of this revision and the
+shared interpreter. The coordinator stopped its remaining jobs after the CLI
+failure on 15 October. Its results remain separate from the original runtime.
 For long streams add `--levels long`; for the 100-distractor, lag-12 stress case
 use `--levels deep_lags --stress-seconds 3600`. For transfer use
 `--kinds binding --levels entity_holdout`. Report collection also uses capped.
@@ -341,35 +341,83 @@ multiple-link temporal conjunctions, numeric formula discovery, relevance-direct
 budget allocation, and runtime retention/cost. The two ingestion arms separate
 link availability from those language limits.
 
+## Report from saved evidence, before the 171b2820 rerun
+
+This snapshot was written before starting new engine work. The stopped sweeps'
+recorded runtime is **7925f8d5**, not 4e6b059b. The earlier 4e6b059b cohort remains
+separate. The saved evidence contains 4445 completed runs across reference and
+live cohorts. No mining processes were running when this snapshot was assembled.
+
+For the 7925f8d5 plan, 575 of 740 conditions completed; 73 timed out, one had a
+confirmed allocation failure, and 91 have no terminal comparable result
+(including interrupted and unstarted conditions). No partial stream is scored
+as a complete prediction experiment.
+
+**Powered** means ten completed seeds per arm; **underpowered** means fewer than
+ten. Counts below are link-last / link-first. Other type/level combinations were
+not in the live plan, although all ten types have powered reference results.
+
+| Live level | Kind(s) | Completed seeds | Power |
+|---|---|---|---|
+| Base, 256 | All except numeric | 10 / 10 each | Powered |
+| Base, 256 | Numeric | 0 / 0 | Unmeasured |
+| Samples 64; strength .7; noise .2; drift | Single, AND2, XOR, binding | 10 / 10 each | Powered |
+| Three targets | Single | 6 / 8 | Underpowered |
+| Three targets | AND2 | 6 / 6 | Underpowered |
+| Three targets | XOR | 2 / 2 | Underpowered |
+| Three targets | Binding | 0 / 0 | Unmeasured |
+| 100 distractors | Single | 7 / 6 | Underpowered |
+| 100 distractors | AND2, XOR, binding | 0 / 0 each | Unmeasured |
+| Long, 1024 | Single | 10 / 10 | Powered |
+| Deep lag 12, 100 distractors, 1024 | Single | 0 / 0 | Unmeasured |
+| New-entity holdout | Binding | 10 / 2 | Powered / underpowered |
+
+The primary acceptance set (reference systems plus 7925f8d5) has **42 PASS,
+5 FAIL, 6 UNMEASURED**. All **101/101** checks across all historical runtime
+cohorts reject their deliberately broken controls. The strength and noise gates
+are now demonstrably passable: both PeTTa arms pass them with ten paired seeds.
+The constant-cost screen remains unmeasured for PeTTa because deep-lag streams
+are censored. Three reference cost screens and two live long-completion screens
+fail; these outcomes were not tuned away.
+
+The numeric task is now winnable in its observed language: behavioural matching
+credits correct grounded transitions, and the oracle has zero probability
+error. No completed live numeric stream supports a learned-rule conclusion.
+The period-eight shortcut is gone; the widened finite domain remains eventually
+memorizable. Corrected recall credits AND2 and OR discoveries without allowing
+weak singles to absorb them. Mixed-polarity, higher-arity and mixed-lag recovery
+remains poor in the powered base data. Both ingestion arms and the fixed upstream
+late-link repro distinguish those results from the old ordering defect.
+
+The full suite passed on 7925f8d5: **188 passed, 25 skipped, 13 subtests passed**.
+All **440** independently executed base/long prefixes match exactly. Intermediate
+reference recall without saved rule snapshots is explicitly historical; final
+recovery and PeTTa checkpoint recovery use the corrected matcher.
+
 ## Powered results
 
-The [full results table](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-reference-powered/report.md) contains systems × rule types × difficulty, paired differences, weak-association calibration, costs, learning curves and censored attempts.
+The [full results table](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-disk-final/report.md) contains systems × rule types × difficulty, paired differences, weak-association calibration, costs, learning curves and censored attempts.
 
-There are 3870 completed runs in this report. Historical interrupted attempts remain in the audit; completed replacements determine coverage. PeTTa commits: 4e6b059be39537d2c7c8a28e5dc807fb4f3a83c9.
+There are 4445 completed runs in this report. Historical interrupted attempts remain in the audit; completed replacements determine coverage. PeTTa commits: 4e6b059be39537d2c7c8a28e5dc807fb4f3a83c9, 7925f8d588b6aba5b868e7518c55f6e1249c0464.
 
-This is an interim evidence snapshot. The original-runtime cohort is now fully
-attempted: 530 completed streams, 209 timeouts and one reproducible allocation
-failure among 740 planned live conditions. The updated-runtime cohort is still
-running. The complete original-runtime audit is in
-[review-v2-final](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-final/report.md),
-with [unique-condition coverage](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-live-coverage.json).
+The current-runtime cohort covers 740 planned conditions: {'completed': 575, 'timeout': 73, 'unresolved': 91, 'memory_failure': 1}. Earlier runtime results remain separate in the full report; the concise tables below use 7925f8d5.
 
 Intervals below are 95% seed bootstrap intervals. An underpowered cell retains its actual n and cannot earn an acceptance pass. Oracle base probability Brier is zero and recovery is one for every type.
 
-| Type | Marginal base Brier [95% CI] | petta base Brier [95% CI] | petta-link-first base Brier [95% CI] |
+| Type | Marginal base Brier [95% CI] | petta-link-first@7925f8d5 base Brier [95% CI] | petta@7925f8d5 base Brier [95% CI] |
 |---|---|---|---|
-| and2 | 0.1296 [0.1243, 0.1356]; n=10 | 0.1742 [0.1634, 0.1851]; n=10 | 0.1742 [0.1634, 0.1851]; n=10 |
-| and3 | 0.1025 [0.0944, 0.1109]; n=10 | 0.0872 [0.0820, 0.0924]; n=10 | 0.0872 [0.0820, 0.0924]; n=10 |
-| and4 | 0.0639 [0.0546, 0.0731]; n=10 | 0.0426 [0.0374, 0.0473]; n=10 | 0.0426 [0.0374, 0.0473]; n=10 |
-| binding | 0.1984 [0.1917, 0.2052]; n=10 | 0.1863 [0.1790, 0.1943]; n=10 | 0.1866 [0.1791, 0.1948]; n=10 |
-| lag | 0.0983 [0.0922, 0.1040]; n=10 | 0.1078 [0.0998, 0.1161]; n=10 | 0.1078 [0.0998, 0.1161]; n=10 |
-| negation | 0.1293 [0.1253, 0.1338]; n=10 | 0.1754 [0.1704, 0.1812]; n=10 | 0.1754 [0.1704, 0.1812]; n=10 |
+| and2 | 0.1296 [0.1243, 0.1356]; n=10 | 0.0428 [0.0288, 0.0636]; n=10 | 0.0428 [0.0288, 0.0636]; n=10 |
+| and3 | 0.1025 [0.0944, 0.1109]; n=10 | 0.0917 [0.0448, 0.1502]; n=10 | 0.0917 [0.0448, 0.1502]; n=10 |
+| and4 | 0.0639 [0.0546, 0.0731]; n=10 | 0.1161 [0.0648, 0.1715]; n=10 | 0.1161 [0.0648, 0.1715]; n=10 |
+| binding | 0.1984 [0.1917, 0.2052]; n=10 | 0.1917 [0.1817, 0.2037]; n=10 | 0.1911 [0.1816, 0.2022]; n=10 |
+| lag | 0.0983 [0.0922, 0.1040]; n=10 | 0.1695 [0.1319, 0.2091]; n=10 | 0.1695 [0.1319, 0.2091]; n=10 |
+| negation | 0.1293 [0.1253, 0.1338]; n=10 | 0.1288 [0.1218, 0.1354]; n=10 | 0.1288 [0.1218, 0.1354]; n=10 |
 | numeric | 0.0295 [0.0295, 0.0296]; n=10 | no completed stream | no completed stream |
-| or | 0.2182 [0.2105, 0.2275]; n=10 | 0.1897 [0.1741, 0.2050]; n=10 | 0.1897 [0.1741, 0.2050]; n=10 |
-| single | 0.0032 [0.0032, 0.0032]; n=10 | 0.2526 [0.2497, 0.2551]; n=10 | 0.2526 [0.2497, 0.2551]; n=10 |
-| xor | 0.2677 [0.2656, 0.2700]; n=10 | 0.2516 [0.2491, 0.2544]; n=10 | 0.2516 [0.2491, 0.2544]; n=10 |
+| or | 0.2182 [0.2105, 0.2275]; n=10 | 0.1429 [0.1117, 0.1726]; n=10 | 0.1429 [0.1117, 0.1726]; n=10 |
+| single | 0.0032 [0.0032, 0.0032]; n=10 | 0.0261 [0.0230, 0.0298]; n=10 | 0.0261 [0.0230, 0.0298]; n=10 |
+| xor | 0.2677 [0.2656, 0.2700]; n=10 | 0.2021 [0.1813, 0.2276]; n=10 | 0.2021 [0.1813, 0.2276]; n=10 |
 
-| Type | petta base recall [95% CI] | petta-link-first base recall [95% CI] |
+| Type | petta-link-first@7925f8d5 base recall [95% CI] | petta@7925f8d5 base recall [95% CI] |
 |---|---|---|
 | and2 | 0.2000 [0.0000, 0.5000]; n=10 | 0.2000 [0.0000, 0.5000]; n=10 |
 | and3 | 0.0000 [0.0000, 0.0000]; n=10 | 0.0000 [0.0000, 0.0000]; n=10 |
@@ -381,6 +429,23 @@ Intervals below are 95% seed bootstrap intervals. An underpowered cell retains i
 | or | 0.3500 [0.1500, 0.5500]; n=10 | 0.3500 [0.1500, 0.5500]; n=10 |
 | single | 1.0000 [1.0000, 1.0000]; n=10 | 1.0000 [1.0000, 1.0000]; n=10 |
 | xor | 0.0000 [0.0000, 0.0000]; n=10 | 0.0000 [0.0000, 0.0000]; n=10 |
+
+All 180 base comparisons between the original and fixed runtimes have identical generated data and outcomes. For the link-last arm, Brier improvement (old minus fixed) is 0.2265 [0.2225, 0.2309] for single literals and 0.1314 [0.1040, 0.1549] for AND2, but -0.0735 [-0.1284, -0.0200] for AND4. Fixing invalid proof reuse does not uniformly improve prediction. See the [paired runtime comparison](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-792-base-comparison.json).
+
+Current-runtime completion is assessed per planned condition, including all ten seeds in each arm. Timeouts and confirmed allocation failures retain partial cost and RSS evidence, not full-stream prediction scores.
+
+| Live difficulty | Completed | Timeout | Allocation failure | Unresolved |
+|---|---:|---:|---:|---:|
+| base | 180 | 9 | 0 | 11 |
+| samples | 80 | 0 | 0 | 0 |
+| strength | 80 | 0 | 0 | 0 |
+| observation_noise | 80 | 0 | 0 | 0 |
+| drift | 80 | 0 | 0 | 0 |
+| targets | 30 | 50 | 0 | 0 |
+| distractors | 13 | 0 | 0 | 67 |
+| long | 20 | 0 | 0 | 0 |
+| deep_lags | 0 | 6 | 1 | 13 |
+| entity_holdout | 12 | 8 | 0 | 0 |
 
 Difficulty comparisons use paired normalized-skill loss (base minus harder), averaged within seed over the same fully paired rule types. Incomplete type cohorts are excluded and listed in the full acceptance table. The full table states individual type coverage; the live matrix is not a complete factorial experiment.
 
@@ -404,14 +469,14 @@ Difficulty comparisons use paired normalized-skill loss (base minus harder), ave
 | marginal | samples | all ten | 0.1220 [0.0990, 0.1489]; n=10 | PASS |
 | marginal | drift | all ten | 0.1046 [0.0996, 0.1093]; n=10 | PASS |
 | marginal | targets | all ten | 0.0182 [0.0133, 0.0234]; n=10 | PASS |
-| petta | strength | and2; binding; single; xor | 0.0078 [-0.0061, 0.0222]; n=10 | FAIL |
-| petta | observation_noise | and2; binding; single; xor | 0.0357 [0.0150, 0.0579]; n=10 | PASS |
-| petta | samples | and2; binding; single; xor | 0.0577 [0.0479, 0.0692]; n=10 | PASS |
-| petta | drift | and2; binding; single; xor | -0.0038 [-0.0244, 0.0107]; n=10 | FAIL |
-| petta-link-first | strength | and2; binding; single; xor | 0.0081 [-0.0060, 0.0226]; n=10 | FAIL |
-| petta-link-first | observation_noise | and2; binding; single; xor | 0.0312 [0.0083, 0.0557]; n=10 | FAIL |
-| petta-link-first | samples | and2; binding; single; xor | 0.0584 [0.0491, 0.0697]; n=10 | PASS |
-| petta-link-first | drift | and2; binding; single; xor | -0.0040 [-0.0247, 0.0101]; n=10 | FAIL |
+| petta-link-first@7925f8d5 | strength | and2; binding; single; xor | 0.1728 [0.1280, 0.2201]; n=10 | PASS |
+| petta-link-first@7925f8d5 | observation_noise | and2; binding; single; xor | 0.2770 [0.1758, 0.3809]; n=10 | PASS |
+| petta-link-first@7925f8d5 | samples | and2; binding; single; xor | 0.1832 [0.1657, 0.2028]; n=10 | PASS |
+| petta-link-first@7925f8d5 | drift | and2; binding; single; xor | 0.2618 [0.2420, 0.2806]; n=10 | PASS |
+| petta@7925f8d5 | strength | and2; binding; single; xor | 0.1711 [0.1246, 0.2233]; n=10 | PASS |
+| petta@7925f8d5 | observation_noise | and2; binding; single; xor | 0.2778 [0.1759, 0.3833]; n=10 | PASS |
+| petta@7925f8d5 | samples | and2; binding; single; xor | 0.1841 [0.1674, 0.2030]; n=10 | PASS |
+| petta@7925f8d5 | drift | and2; binding; single; xor | 0.2619 [0.2424, 0.2804]; n=10 | PASS |
 
 The fixed-budget comparison retains learned predictors, rotates candidate updates, and uses a shared seeded feature order. Earlier fixed-prefix and batch-only-prediction results are superseded.
 
@@ -441,7 +506,8 @@ The fixed-budget comparison retains learned predictors, rotates candidate update
 | ('oracle', ('binding',), 1) | 0.0000 [0.0000, 0.0000]; n=10 |
 | ('oracle', ('binding',), 3) | 0.0000 [0.0000, 0.0000]; n=10 |
 | ('oracle', ('single',), 3) | 0.0000 [0.0000, 0.0000]; n=10 |
-| ('petta', ('binding',), 1) | 0.1828 [0.1695, 0.1973]; n=10 |
+| ('petta-link-first@7925f8d5', ('binding',), 1) | 0.2025 [0.1833, 0.2217]; n=2 |
+| ('petta@7925f8d5', ('binding',), 1) | 0.1939 [0.1747, 0.2163]; n=10 |
 
 | Numeric exact-context memorizer | Brier [95% CI] |
 |---|---|
@@ -489,27 +555,27 @@ The widened stochastic trajectory removes the eight-context shortcut. Its finite
 | marginal: long-stream completion | PASS | True |
 | oracle: fitted constant-cost screen | PASS | True |
 | oracle: long-stream completion | PASS | True |
-| petta: harder distractors | UNMEASURED | True |
-| petta: harder strength | FAIL | True |
-| petta: harder observation_noise | PASS | True |
-| petta: harder samples | PASS | True |
-| petta: harder drift | FAIL | True |
-| petta: harder targets | UNMEASURED | True |
-| petta: fitted constant-cost screen | UNMEASURED | True |
-| petta: long-stream completion | FAIL | True |
-| petta-link-first: harder distractors | UNMEASURED | True |
-| petta-link-first: harder strength | FAIL | True |
-| petta-link-first: harder observation_noise | FAIL | True |
-| petta-link-first: harder samples | PASS | True |
-| petta-link-first: harder drift | FAIL | True |
-| petta-link-first: harder targets | UNMEASURED | True |
-| petta-link-first: fitted constant-cost screen | UNMEASURED | True |
-| petta-link-first: long-stream completion | FAIL | True |
+| petta-link-first@7925f8d5: harder distractors | UNMEASURED | True |
+| petta-link-first@7925f8d5: harder strength | PASS | True |
+| petta-link-first@7925f8d5: harder observation_noise | PASS | True |
+| petta-link-first@7925f8d5: harder samples | PASS | True |
+| petta-link-first@7925f8d5: harder drift | PASS | True |
+| petta-link-first@7925f8d5: harder targets | UNMEASURED | True |
+| petta-link-first@7925f8d5: fitted constant-cost screen | UNMEASURED | True |
+| petta-link-first@7925f8d5: long-stream completion | FAIL | True |
+| petta@7925f8d5: harder distractors | UNMEASURED | True |
+| petta@7925f8d5: harder strength | PASS | True |
+| petta@7925f8d5: harder observation_noise | PASS | True |
+| petta@7925f8d5: harder samples | PASS | True |
+| petta@7925f8d5: harder drift | PASS | True |
+| petta@7925f8d5: harder targets | UNMEASURED | True |
+| petta@7925f8d5: fitted constant-cost screen | UNMEASURED | True |
+| petta@7925f8d5: long-stream completion | FAIL | True |
 
-All 53 of 53 generated screens reject their broken controls. Actual gate outcomes: {'PASS': 37, 'FAIL': 10, 'UNMEASURED': 6}. See [acceptance evidence](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-reference-powered/acceptance.json) for thresholds, paired intervals and control values.
+All 101 of 101 generated screens reject their broken controls. Actual gate outcomes across all historical cohorts: {'PASS': 45, 'FAIL': 12, 'UNMEASURED': 44}. The primary table above covers the reference systems and 7925f8d5: {'PASS': 42, 'FAIL': 5, 'UNMEASURED': 6}. See [acceptance evidence](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-disk-final/acceptance.json) for thresholds, paired intervals and control values.
 
-![Learning curves](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-reference-powered/learning_curves.svg)
+![Learning curves](/nexus/Dev/OpenCog/bench/results/mining-bench/review-v2-disk-final/learning_curves.svg)
 
-Full ChainerGame suite: 188 passed, 25 skipped, 13 subtests passed, with mining live tests enabled. Independent reproducibility verification matched 420 base/long prefixes exactly. Timing and RSS remain machine-dependent.
+Full ChainerGame suite: 188 passed, 25 skipped, 13 subtests passed, with mining live tests enabled. Independent reproducibility verification matched 440 base/long prefixes exactly. Timing and RSS remain machine-dependent.
 
-PeTTa stress censoring prevents a universal constant-cost claim. Partial timing excludes unfinished stalled steps. The current upstream withdrawal bug invalidates predictive reads even where learned rules recover correctly; no harness workaround was applied. Numeric formula discovery, higher-order or mixed-polarity conjunction proposals, multi-link conjunction mining, and an auditable relevance-directed total work budget remain separate capability limits.
+PeTTa stress censoring prevents a universal constant-cost claim. Partial timing excludes unfinished stalled steps. The withdrawal defect invalidated predictive reads on the original runtime. The unchanged repro confirms its repair on 7925f8d5, whose separately reported predictions use no harness workaround. Numeric formula discovery, higher-order or mixed-polarity conjunction proposals, multi-link conjunction mining, and an auditable relevance-directed total work budget remain separate capability limits.
