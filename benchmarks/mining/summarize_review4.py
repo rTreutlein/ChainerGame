@@ -2,9 +2,11 @@
 
 import argparse
 from collections import defaultdict
+import hashlib
 import json
 from pathlib import Path
 import statistics
+import subprocess
 from miningbench.report import interval, formatted
 from miningbench.world import Config, World, rng_for
 
@@ -68,11 +70,17 @@ def main():
                 cpu_to_wall=load["cpu_seconds"] / load["wall_seconds"],
                 peak_mib=result["peak_rss_kib"] / 1024,
                 data_sha256=result["data_sha256"],
+                input_order=result["metadata"]["input_order"],
+                config=result["metadata"]["config"],
                 load=load,
             )
         )
     if timing:
         assert len({r["data_sha256"] for r in timing}) == 1
+        assert len({r["load"]["petta_runtime_commit"] for r in timing}) == 1
+        assert all(r["input_order"] == "historical-fixed-order-repro" for r in timing)
+        assert all(r["load"]["admission_cpu_slots"] == 24 for r in timing)
+        assert all(r["config"] == timing[0]["config"] for r in timing)
     timing_groups = defaultdict(list)
     for row in timing:
         timing_groups[row["commit"][:8]].append(row["mining_seconds_per_step"])
@@ -166,6 +174,12 @@ def main():
             check[filename + "_verified_rows"] = min(len(before), len(after))
         retention_checks.append(check)
     result = dict(
+        analysis_commit=subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[2],
+            text=True,
+        ).strip(),
+        analysis_script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         retention_prefix_checks=retention_checks,
         input_tail_opportunities=opportunities,
         distractor_cells=paired,

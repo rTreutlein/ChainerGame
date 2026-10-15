@@ -797,7 +797,7 @@ known-constant noisy 35µs learner, and the three actual reference learners pass
 with the unchanged growth threshold after mean aggregation over types per seed.
 
 The [lifecycle and lag audit](/nexus/Dev/OpenCog/bench/results/mining-bench/review4-diagnoses-final.json)
-finds the exact AND2 pair in **all ten seeds of both arms**; eight are retired and
+finds the exact AND2 pair in **all ten seeds of both 7925f8d5 arms**; eight are retired and
 two survive. Thus final recall .20 is a **review/retirement defect**, not missing
 pair proposals. Seed 2 proposes the pair at step 1 and drops it at step 7. At the
 drop, the pair reads .99875 and F1 reads .66637 on roughly four versus six
