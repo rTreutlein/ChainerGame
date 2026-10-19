@@ -58,8 +58,11 @@ def raw_facts(reports: tuple[Report, ...], name: str, k: float) -> list[str]:
     ]
 
 
-def trust_implication(source: str) -> str:
-    return f"(Implication (Claims {source} (Up $n $t)) (Up $n $t))"
+def trust_implication(source: str, claimed: bool = True) -> str:
+    """``claimed`` false: the negated antecedent, whose implication is the
+    rule's negative branch."""
+    claim = f"(Claims {source} (Up $n $t))"
+    return f"(Implication {claim if claimed else f'(Not {claim})'} (Up $n $t))"
 
 
 def trust_rules(world: World, prior: float = 0.5, confidence: float = 0.02) -> list[str]:

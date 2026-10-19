@@ -126,13 +126,15 @@ rules' views.
 ### PLN, stated trust (`pln-stated`): learned once, stated as given
 
 The same claims, but each source's CTV is learned once, from the initial 30
-rounds, by an implication query `(: $prf (Implication (Claims s4 (Up $n $t))
-(Up $n $t)) $tv)` in a KB of its own, and stated as a given rate at
+rounds, by two implication queries in a KB of its own, `(: $prf (Implication
+(Claims s4 (Up $n $t)) (Up $n $t)) $tv)` for the positive branch and the same
+with `(Not (Claims s4 (Up $n $t)))` for the negative one (implication queries
+answer STVs since PeTTaChainer f514193d), and stated as a given rate at
 confidence 1 before the history is added:
 
     (: trust-s4 (Implication (Claims s4 (Up $n $t)) (Up $n $t)) (CTV (STV 0.0667 1) (STV 0.9917 1)))
 
-A source with no labelled claim gets no rule. This is how SupplyNet and
+A source without an answer for both branches gets no rule. This is how SupplyNet and
 CombiNet hand the chainer rates (certain CTVs). It is the encoding that works
 around two chainer problems (see "Chainer problems"): views of one rule on
 different claims are treated as overlapping evidence unless the rule is

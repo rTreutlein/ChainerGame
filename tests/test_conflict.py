@@ -215,6 +215,33 @@ def _pettachainer_path() -> str | None:
     return path if path and Path(path, "pettachainer").is_dir() and shutil.which("swipl") else None
 
 
+class StatedTrustTests(unittest.TestCase):
+    def test_learned_ctv_reads_both_implication_judgments(self):
+        """pln-stated states the positive judgment and the judgment of the
+        negated antecedent as one CTV; implication queries answer STVs."""
+        from conflict.backends import PeTTaChainerBackend
+
+        answers = {
+            "(: $prf (Implication (Claims s1 (Up $n $t)) (Up $n $t)) $tv)": "(: p (Implication (Claims s1 (Up $_0 $_1)) (Up $_0 $_1)) (STV 0.9 0.8))",
+            "(: $prf (Implication (Not (Claims s1 (Up $n $t))) (Up $n $t)) $tv)": "(: p (Implication (Not (Claims s1 (Up $_0 $_1))) (Up $_0 $_1)) (STV 0.2 0.7))",
+        }
+
+        class Learner:
+            def add_atoms_no_check(self, statements):
+                pass
+
+            def query_many(self, goals, steps, timeout_sec):
+                return [[answers[goal]] if goal in answers else [] for goal in goals]
+
+        backend = PeTTaChainerBackend.__new__(PeTTaChainerBackend)
+        backend._handler, backend.review_steps, backend.trust = Learner(), 20, {}
+        backend.counters = {"review_seconds": 0.0}
+        world = generate_world(random.Random(1), Size(1, 0, 2))
+        day = Round("h1", {"c1": True}, (Report("s1", "c1", True, 1), Report("s2", "c1", False, 1)))
+        self.assertEqual(backend._learn_trust(world, [day]), ["(: trust-s1 (Implication (Claims s1 (Up $n $t)) (Up $n $t)) (CTV (STV 0.9 1) (STV 0.2 1)))"])
+        self.assertEqual(backend.trust, {"s1": [0.9, 0.8, 0.2, 0.7]})
+
+
 @unittest.skipUnless(_pettachainer_path(), "set PETTACHAINER_PYTHONPATH to a PeTTaChainer checkout and run in its venv")
 class PeTTaChainerTests(unittest.TestCase):
     def test_encodings_answer(self):

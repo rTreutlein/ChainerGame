@@ -206,25 +206,25 @@ class PeTTaChainerBackend:
         return self._claims(day)
 
     def _learn_trust(self, world: World, history: list[Round]) -> list[str]:
-        """Each source's CTV from an implication query over the labelled claims,
-        in a KB of its own, stated as a given rate (confidence 1). Stated
-        before the history, so the history's outcomes score the combination
-        modes; at a confidence below 1 two applications of one rule to
-        different claims share the rule's evidence, and the merge keeps only
-        the more confident."""
+        """Each source's CTV from two implication queries over the labelled
+        claims, in a KB of its own, stated as a given rate (confidence 1).
+        An implication query answers the positive judgment as an STV, so the
+        rule's negative branch is the judgment of its negated antecedent
+        (PeTTaChainer ``docs/metta/API.md``). Stated before the history, so
+        the history's outcomes score the combination modes; at a confidence
+        below 1 two applications of one rule to different claims share the
+        rule's evidence, and the merge keeps only the more confident."""
         learner = type(self._handler)()
-        statements = [line for day in history for line in metta.claims(day.reports, day.name) + metta.labels(day)]
-        learner.add_atoms_no_check(statements)
+        learner.add_atoms_no_check([line for day in history for line in metta.claims(day.reports, day.name) + metta.labels(day)])
         rules = []
         for source in world.sources:
             started = time.perf_counter()
-            (proofs,) = learner.query_many([f"(: $prf {metta.trust_implication(source.name)} $tv)"], steps=self.review_steps, timeout_sec=0)
+            goals = [f"(: $prf {metta.trust_implication(source.name, claimed)} $tv)" for claimed in (True, False)]
+            up, down = (strongest(proofs) for proofs in learner.query_many(goals, steps=self.review_steps, timeout_sec=0))
             self.counters["review_seconds"] += time.perf_counter() - started
-            match = _ctv_re.search(proofs[0]) if proofs else None
-            if match:  # a source with no labelled claims gets no rule: its claims are ignored
-                tv = [float(v) for v in match.groups()]
-                self.trust[source.name] = [round(v, 4) for v in tv]
-                rules.append(f"(: trust-{source.name} {metta.trust_implication(source.name)} (CTV (STV {tv[0]:.6g} 1) (STV {tv[2]:.6g} 1)))")
+            if up and down:  # a source without labelled claims of both polarities gets no rule: its claims are ignored
+                self.trust[source.name] = [round(v, 4) for v in (*up, *down)]
+                rules.append(f"(: trust-{source.name} {metta.trust_implication(source.name)} (CTV (STV {up[0]:.6g} 1) (STV {down[0]:.6g} 1)))")
         return rules
 
     def _count_trust(self, world: World, history: list[Round]) -> list[str]:
