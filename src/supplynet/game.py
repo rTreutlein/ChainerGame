@@ -36,6 +36,7 @@ class GameConfig:
     cycle: str = "timed"  # stage 3: "timed" or "untimed"; stage 4 is timed
     plants: int = 2  # stages 3 and 4
     values: Values = field(default_factory=Values)  # stage 4
+    report_confidence: float = 1.0  # stages 3 and 4: the evidence weight production reports are stated with (world.Observation)
 
 
 def stage_rates(stage: int) -> Rates:
@@ -107,7 +108,7 @@ def run_game(config: GameConfig, backend, rates: Rates | None = None, on_round=N
     history = []
     for index in range(config.history):
         period = next_period(f"h{index + 1}")
-        observation = observe(network, period, rng, 1.0, {(s, period.name): late for s, late in period.late.items()}, reported())
+        observation = observe(network, period, rng, 1.0, {(s, period.name): late for s, late in period.late.items()}, reported(), config.report_confidence)
         knowledge.observe(observation)
         if decisions:
             knowledge.act(period.name, period.action(cell))
@@ -129,7 +130,7 @@ def run_game(config: GameConfig, backend, rates: Rates | None = None, on_round=N
             if now - route.transit >= first
             for shipment in route.shipments
         }
-        observation = observe(network, period, rng, config.inspect_rate, arrivals, reported())
+        observation = observe(network, period, rng, config.inspect_rate, arrivals, reported(), config.report_confidence)
         knowledge.observe(observation)
         posterior = {
             key: p
@@ -198,7 +199,7 @@ def run_game(config: GameConfig, backend, rates: Rates | None = None, on_round=N
         "type": "run-summary",
         "backend": backend.name,
         "stage": config.stage,
-        **({"cycle": cycle, "sites": len(cell.sites)} if cell else {}),
+        **({"cycle": cycle, "sites": len(cell.sites), "report_confidence": config.report_confidence} if cell else {}),
         "seed": config.seed,
         "budget": config.budget,
         "regions": len(network.regions),

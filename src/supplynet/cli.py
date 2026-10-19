@@ -48,6 +48,8 @@ def main(argv=None):
     run.add_argument("--history", type=int, help="labelled periods before the first round (default 30; scale 20)")
     run.add_argument("--rounds", type=int, help="default 20; scale 10")
     run.add_argument("--inspect-rate", type=float, default=0.25, help="stages 1-3")
+    run.add_argument("--report-confidence", type=float, default=1.0,
+                     help="stages 3 and 4: the confidence production reports are stated with; they stay true (world.Observation)")
     run.add_argument("--budget", type=int, help="one expansion budget per round (default 100; scale: --steps-per-query)")
     run.add_argument("--evidence-k", type=float, default=5)
     run.add_argument("--pettachainer-path", default=os.environ.get("PETTACHAINER_PYTHONPATH"))
@@ -79,6 +81,8 @@ def main(argv=None):
         parser.error("--backend greedy and --backend beam need --stage 4 or 5")
     if args.backend in ("myopic", "exact-pairs") and args.stage != "5":
         parser.error("--backend myopic and --backend exact-pairs need --stage 5")
+    if args.report_confidence != 1 and (args.stage not in ("3", "4") or not 0 < args.report_confidence < 1):
+        parser.error("--report-confidence below 1 needs --stage 3 or 4 and a confidence in (0, 1)")
     if args.proposer == "open" and args.stage != "5":
         parser.error("--proposer open needs --stage 5")
     on_round = (lambda record: print(json.dumps(record), flush=True)) if args.stream else None
@@ -145,6 +149,7 @@ def main(argv=None):
         args.cycle,
         2 if args.plants is None else args.plants,
         Values(capacity=args.capacity),
+        args.report_confidence,
     )
     print(json.dumps({**run_game(config, backend, on_round=on_round), "learned_rules": learned}), flush=True)
 

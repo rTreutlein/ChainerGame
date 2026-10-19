@@ -540,6 +540,24 @@ sequences).
   powered exactly when the power plant produces. Observations add
   `(StockedFuel t)`, `(InputArrived plant t)`, inspected `(Degraded site t)`
   and the reported `(Producing site t-1)` as certain facts.
+- **Soft reports** (`--report-confidence c`, stages 3 and 4, default 1). The
+  production reports, the history's included, are stated as
+  `(Producing site t-1) (STV 0|1 c)`. They stay true: in PeTTaChainer's STV
+  semantics (`docs/metta/runtime_design_assumptions.md`, "A certain truth
+  value ..."; `docs/metta/fuzzing.md`, "confidence is evidence weight") the
+  strength of a fact is its observed value and its confidence the weight of
+  that evidence, not a chance that the report is wrong. So the exact
+  reference is unchanged: a report is a 0/1 factor at every `c`, which is how
+  PeTTaChainer's own oracle for soft reports reads them
+  (`tests/test_deep_conditioning.py`, `exact_t8`, matched to 1e-8 with
+  reports at 0.9), and a small KB answers the same strength at c = 0.5, 0.9,
+  0.99 and 1. What changes is the chainer's work: a fact below confidence 1
+  is no longer absorbing and counts as shared evidence, so the joins over
+  reports condition (PeTTaChainer #81). With c = 1 every SupplyNet fact is
+  binary-certain and no benchmark batch conditions. Unreliable reports
+  (design item 6), which are sometimes false, are a different setting: their
+  noise would have to be stated in the strength, and the exact reference
+  would read them as noisy factors.
 
 
 ## Stage 3 results

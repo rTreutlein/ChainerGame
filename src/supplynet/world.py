@@ -283,7 +283,13 @@ class Observation:
     degradation, the fuel stock, the plants' inputs, and the previous
     period's production, reported at its end. With decisions the stock is
     part of the period's action, not observed (None): the action is told
-    apart (``Knowledge.act``)."""
+    apart (``Knowledge.act``).
+
+    Reports are true. ``report_confidence`` is the evidence weight they are
+    stated with (PeTTaChainer's ``(STV v c)``: strength the observed value,
+    confidence the weight of its evidence, not a chance that it is wrong),
+    so it leaves the exact posterior unchanged; below 1 the chainer counts a
+    report as shared evidence and conditions on it."""
 
     period: str
     previous: str | None
@@ -293,6 +299,7 @@ class Observation:
     stocked: bool | None = None
     inputs: dict[str, bool] = field(default_factory=dict)
     reported: dict[str, bool] = field(default_factory=dict)  # the previous period's production
+    report_confidence: float = 1.0
 
 
 REGION_NAMES = ("north", "south", "east", "west", "central", "coast")
@@ -389,16 +396,18 @@ def enact(network: Network, period: Period, previous: Period | None, action: Act
 
 
 def observe(
-    network: Network, period: Period, rng: random.Random, inspect_rate: float, late: dict, reported: dict | None = None
+    network: Network, period: Period, rng: random.Random, inspect_rate: float, late: dict, reported: dict | None = None,
+    report_confidence: float = 1.0,
 ) -> Observation:
     """The period's observation; ``reported`` is the previous period's
-    production (none before the first period)."""
+    production (none before the first period), stated at
+    ``report_confidence``."""
     inspected = {route.name: period.blocked[route.name] for route in network.routes if rng.random() < inspect_rate}
     if network.cell is None:
         return Observation(period.name, period.previous, late, inspected)
     degraded = {site: period.degraded[site] for site in network.cell.sites if rng.random() < inspect_rate}
     stocked = None if network.cell.alternate else period.stocked
-    return Observation(period.name, period.previous, late, inspected, degraded, stocked, period.inputs, reported or {})
+    return Observation(period.name, period.previous, late, inspected, degraded, stocked, period.inputs, reported or {}, report_confidence)
 
 
 class Knowledge:
@@ -420,7 +429,10 @@ class Knowledge:
     reads the previous state through one bit. The state carried into the
     window is the resolved period's, or before any period the stationary
     probabilities, independent per variable, from which the chains' onset
-    gives the stationary distribution. ``rates`` are read when the posterior
+    gives the stationary distribution. A report is an observation at any
+    ``Observation.report_confidence``: its confidence weighs its evidence and
+    does not make it noisy, as PeTTaChainer reads a fact ``(STV 0|1 c)``
+    (its test_deep_conditioning ``exact_t8``). ``rates`` are read when the posterior
     is computed, so they may be replaced between rounds."""
 
     def __init__(self, network: Network, rates: NodeRates):

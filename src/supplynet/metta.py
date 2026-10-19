@@ -11,8 +11,8 @@ def _number(value: float) -> str:
     return f"{value:.6g}"
 
 
-def _tv(value: bool) -> str:
-    return f"(STV {1 if value else 0} 1)"
+def _tv(value: bool, confidence: float = 1) -> str:
+    return f"(STV {1 if value else 0} {_number(confidence)})"
 
 
 PRIOR = "(CTV (STV 0.5 0.02) (STV 0.5 0.02))"  # a learned rule's weak prior on both branches
@@ -137,7 +137,7 @@ def observation_facts(observation: Observation) -> list[str]:
     """The period's link to its predecessor, the lateness of the shipments
     arriving now (keyed by departure period), and the inspected routes; with a
     cell also the inspected sites, the fuel stock, the plants' inputs, and the
-    previous period's production."""
+    previous period's production, at the observation's report confidence."""
     period, previous = observation.period, observation.previous
     lines = [f"(: next-{period} (NextPeriod {previous} {period}) (STV 1 1))"] if previous else []
     lines += [f"(: late-{shipment}-{departure} (Late {shipment} {departure}) {_tv(value)})" for (shipment, departure), value in observation.late.items()]
@@ -146,7 +146,7 @@ def observation_facts(observation: Observation) -> list[str]:
     if observation.stocked is not None:
         lines.append(f"(: stocked-{period} (StockedFuel {period}) {_tv(observation.stocked)})")
     lines += [f"(: input-{plant}-{period} (InputArrived {plant} {period}) {_tv(value)})" for plant, value in observation.inputs.items()]
-    lines += [f"(: producing-{site}-{previous} (Producing {site} {previous}) {_tv(value)})" for site, value in observation.reported.items()]
+    lines += [f"(: producing-{site}-{previous} (Producing {site} {previous}) {_tv(value, observation.report_confidence)})" for site, value in observation.reported.items()]
     return lines
 
 

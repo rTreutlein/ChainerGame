@@ -707,6 +707,9 @@ class GameTests(unittest.TestCase):
                 "(: producing-mine-t2 (Producing mine t2) (STV 0 1))",
             ],
         )
+        soft = Observation("t3", "t2", {}, {}, {"mine": True}, False, {}, {"mine": False}, report_confidence=0.9)
+        self.assertEqual(metta.observation_facts(soft)[1:], ["(: degraded-mine-t3 (Degraded mine t3) (STV 1 1))", "(: stocked-t3 (StockedFuel t3) (STV 0 1))",
+                                                            "(: producing-mine-t2 (Producing mine t2) (STV 0 0.9))"])
 
     def test_decision_statements(self):
         network = decision_network()
