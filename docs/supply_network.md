@@ -821,12 +821,16 @@ search of what their assumptions leave unchanged.
    the world) fixed it and its MeTTa test passed with `verify.sh`; it was not
    kept, since PeTTaChainer is frozen (`repro/assuming_complete.patch`).
    *Workaround* (labelled in `metta._cycle_rules`): the chainer's rules read
-   only positive action facts, one per branch. A site runs while `(InService
-   site t)`; the power plant is fuelled by `StockedFuel → Fuelled` and
-   `(And (Unstocked $t) (FuelArrived $t)) → Fuelled`, exactly one of the two
-   facts stated or assumed per period, so the two rules never give a view
-   together. ProbLog and the reference keep the semantic rules (`Or`, `Not
-   Repairing`).
+   only positive action facts. A site runs while `(InService site t)`;
+   ProbLog and the reference keep `Not Repairing`. The fuel workaround is
+   gone since PeTTaChainer master read unstated complete statements false in
+   `Assuming` contexts: every reasoner has the semantic `(Or (StockedFuel $t)
+   (FuelArrived $t)) → Fuelled`, and the chainer declares `StockedFuel`
+   complete. The former `StockedFuel → Fuelled` and `(And (Unstocked $t)
+   (FuelArrived $t)) → Fuelled` rules, as STV sufficient causes, left each
+   rule's negative branch unknown, (STV 0.5 0): an unstocked context with no
+   fuel sent produced at 0.43, and an uncertain fuel block inflated the
+   power plant's output by +0.1 (PeTTaChainer #121).
 2. **`Not` of an unstated complete statement has no answer outside a rule
    concluding a complete predicate** (`repro/not_complete.py`; by design per
    `complete_predicates.md`, but the root case `(Not (R t1))` has no answer

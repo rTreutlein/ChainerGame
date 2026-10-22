@@ -716,7 +716,9 @@ class GameTests(unittest.TestCase):
         network = decision_network()
         rates = stage_rates(4)
         semantic, chainer = metta.rules(network, rates), metta.rules(network, rates, positive_actions=True)
-        self.assertIn("(: fuelled (Implication (Or (StockedFuel $t) (FuelArrived $t)) (Fuelled power-plant $t)) (CTV (STV 1 1) (STV 0 1)))", semantic)
+        fuelled = "(: fuelled (Implication (Or (StockedFuel $t) (FuelArrived $t)) (Fuelled power-plant $t)) (CTV (STV 1 1) (STV 0 1)))"
+        self.assertIn(fuelled, semantic)
+        self.assertIn(fuelled, chainer)
         self.assertIn(
             "(: runs-mine (Implication (And (Producing power-plant $t) (Not (Degraded mine $t)) (InService mine $t)) "
             "(Producing mine $t)) (CTV (STV 1 1) (STV 0 1)))",
@@ -727,13 +729,13 @@ class GameTests(unittest.TestCase):
             "(CTV (STV 0.75 1) (STV 0.08 1)))",
             chainer,
         )
-        self.assertEqual(metta.positive_only_predicates(network), ["FuelVia", "StockedFuel", "Unstocked"])
+        self.assertEqual(metta.positive_only_predicates(network), ["FuelVia"])
+        self.assertEqual(metta.complete_predicates(network), ["Producing", "Fuelled", "FuelArrived", "StockedFuel"])
         action = Action(reroute=True, repairs=(MINE,))
         self.assertEqual(
             metta.action_facts(network, "t3", action),
             [
                 "(: via-t3 (FuelVia ra t3) (STV 1 1))",
-                "(: unstocked-t3 (Unstocked t3) (STV 1 1))",
                 "(: repairing-mine-t3 (Repairing mine t3) (STV 1 1))",
                 "(: repairing-power-plant-t3 (Repairing power-plant t3) (STV 0 1))",
                 "(: repairing-plant-a-t3 (Repairing plant-a t3) (STV 0 1))",
@@ -743,7 +745,7 @@ class GameTests(unittest.TestCase):
         )
         self.assertEqual(
             metta.decision_query(network, "t3", action),
-            "(: $prf (Assuming (And (FuelVia ra t3) (Unstocked t3) (Repairing mine t3) (InService power-plant t3) (InService plant-a t3)) "
+            "(: $prf (Assuming (And (FuelVia ra t3) (Repairing mine t3) (InService power-plant t3) (InService plant-a t3)) "
             "(Outcome t3 $o $v)) $tv)",
         )
 

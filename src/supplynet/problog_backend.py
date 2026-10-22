@@ -366,7 +366,7 @@ class ProblogBackend:
 
     def act(self, period: str, action: Action) -> None:
         """The action's statements as facts (the chainer's encoding of them;
-        ``InService`` and ``Unstocked`` are read by no rule here)."""
+        ``InService`` is read by no rule here)."""
         self._add(metta.action_facts(self.network, period, action))
 
     def decide(self, problem: Problem, budget: int) -> Action:

@@ -69,16 +69,19 @@ def _cycle_rules(network: Network, positive_actions: bool = False) -> list[str]:
     decisions the fuel leaves over the route the period's ``FuelVia`` names,
     and a site under repair does not run.
 
+    The fuel rule is the semantic ``Or`` for every reasoner. With decisions,
+    ``StockedFuel`` is stated (or assumed) exactly when the period is
+    stocked, so the chainer reads it as a complete predicate
+    (``complete_predicates``): an unstocked period's or decision context's
+    stock reads false, and the plant is fuelled exactly when the fuel
+    arrives. Two sufficient causes as separate STV rules would leave each
+    rule's negative branch unknown, (STV 0.5 0), and inflate fuelling
+    whenever the arriving fuel is uncertain or absent (PeTTaChainer #121).
+
     WORKAROUND (PeTTaChainer master 2307ca50, docs/supply_network.md, "Stage
-    4 as built", gap 1) with ``positive_actions``: in an ``Assuming``
-    context the chainer never reads an unstated complete statement as false,
-    so a decision that does not assume a repair or a stock leaves every rule
-    reading it without an answer. The chainer's rules therefore read only
-    positive action facts, one for each branch: a site runs while
-    ``(InService site t)``, and the power plant is fuelled by one rule per
-    stock state, ``StockedFuel`` or ``Unstocked``, exactly one of which is
-    stated or assumed in a period, so the two never give a view together.
-    The semantic rules (ProbLog's) keep the ``Or`` and ``Not Repairing``.
+    4 as built", gap 1) with ``positive_actions``: the chainer's rules read
+    a site's service as the positive fact ``(InService site t)``. The
+    semantic rules (ProbLog's) keep ``Not Repairing``.
 
     Production remains invertible so failed output reports diagnose degradation.
     Decision and choice rules retain their own no_inverse declarations.
@@ -92,14 +95,11 @@ def _cycle_rules(network: Network, positive_actions: bool = False) -> list[str]:
         arriving = f"(And (Producing {MINE} $t) (Not (Blocked {cell.fuel_route.name} $t)))"
     if positive_actions:
         repairing = lambda site: f" (InService {site} $t)"  # noqa: E731
-        fuelled = [f"(: fuelled-by-stock (Implication (StockedFuel $t) (Fuelled {POWER} $t)) (STV 1 1))",
-                   f"(: fuelled-by-mine (Implication (And (Unstocked $t) (FuelArrived $t)) (Fuelled {POWER} $t)) (STV 1 1))"]
     else:
         repairing = (lambda site: f" (Not (Repairing {site} $t))") if cell.alternate else (lambda site: "")
-        fuelled = [_certain("fuelled", "(Or (StockedFuel $t) (FuelArrived $t))", f"(Fuelled {POWER} $t)")]
     lines = [
         _certain("fuel-arrives", arriving, "(FuelArrived $t)"),
-        *fuelled,
+        _certain("fuelled", "(Or (StockedFuel $t) (FuelArrived $t))", f"(Fuelled {POWER} $t)"),
         _certain(f"runs-{POWER}", f"(And (Fuelled {POWER} $t) (Not (Degraded {POWER} $t)){repairing(POWER)})", f"(Producing {POWER} $t)"),
         _certain(f"runs-{MINE}", f"(And (Producing {POWER} $t) (Not (Degraded {MINE} $t)){repairing(MINE)})", f"(Producing {MINE} $t)"),
     ]
@@ -118,20 +118,24 @@ def complete_predicates(network: Network) -> list[str]:
     """The predicates whose rules are every way they become true: with a cell,
     production, fuelling and the fuel's arrival. The untimed loop's least
     fixed point is then what the chainer reads (nothing runs without stock);
-    the timed cell's rules are as complete, and acyclic within a period."""
-    return ["Producing", "Fuelled", "FuelArrived"] if network.cell else []
+    the timed cell's rules are as complete, and acyclic within a period.
+    With decisions also ``StockedFuel``, which no rule concludes and
+    ``action_facts`` states exactly when true: unstated, it is false."""
+    if not network.cell:
+        return []
+    return ["Producing", "Fuelled", "FuelArrived", *(["StockedFuel"] if decides(network) else [])]
 
 
 def positive_only_predicates(network: Network) -> list[str]:
-    """With decisions, the predicates ``action_facts`` states only when true:
-    the route the fuel left on and the stock state. Undeclared, their stored
-    instances would be the chainer's sample of their population, a rate near
-    1, so an absent instance, such as ``(FuelVia r1 t)`` for a route the fuel
-    did not take, would read as almost certainly true; an antecedent
-    completion of the fuel rule would then read the period's predicted fuel
-    arrival as evidence about that route's block (PeTTaChainer #119). Stage
-    5 declares the same three (``lookahead_worker``)."""
-    return ["FuelVia", "StockedFuel", "Unstocked"] if decides(network) else []
+    """With decisions, the route the fuel left on, which ``action_facts``
+    states only when true. Undeclared, its stored instances would be the
+    chainer's sample of its population, a rate near 1, so an absent
+    instance, such as ``(FuelVia r1 t)`` for a route the fuel did not take,
+    would read as almost certainly true; an antecedent completion of the
+    fuel rule would then read the period's predicted fuel arrival as
+    evidence about that route's block (PeTTaChainer #119). The stock state
+    is complete instead (``complete_predicates``)."""
+    return ["FuelVia"] if decides(network) else []
 
 
 def predicate_times(network: Network) -> dict[str, tuple[int, int]]:
@@ -164,12 +168,12 @@ def observation_facts(observation: Observation) -> list[str]:
 
 def action_facts(network: Network, period: str, action: Action) -> list[str]:
     """A taken action as the chainer's facts (``rules`` with
-    ``positive_actions``): the route the fuel left on, the stock state as
-    ``StockedFuel`` or ``Unstocked``, every site's repair, true or false, and
-    ``InService`` for each site not repaired."""
+    ``positive_actions``): the route the fuel left on, ``StockedFuel`` if it
+    stocks, every site's repair, true or false, and ``InService`` for each
+    site not repaired."""
     return [
         f"(: via-{period} (FuelVia {action.via(network.cell)} {period}) (STV 1 1))",
-        f"(: stocked-{period} (StockedFuel {period}) (STV 1 1))" if action.stock else f"(: unstocked-{period} (Unstocked {period}) (STV 1 1))",
+        *([f"(: stocked-{period} (StockedFuel {period}) (STV 1 1))"] if action.stock else []),
         *(f"(: repairing-{site}-{period} (Repairing {site} {period}) {_tv(site in action.repairs)})" for site in network.cell.sites),
         *(f"(: in-service-{site}-{period} (InService {site} {period}) (STV 1 1))" for site in network.cell.sites if site not in action.repairs),
     ]
@@ -204,7 +208,7 @@ def decision_rules(network: Network, values) -> list[str]:
 def decision_query(network: Network, period: str, action: Action) -> str:
     """The ``Assuming`` query of one joint action's outcomes, assuming what
     ``action_facts`` would state, its true facts only."""
-    facts = [f"(FuelVia {action.via(network.cell)} {period})", f"({'StockedFuel' if action.stock else 'Unstocked'} {period})"]
+    facts = [f"(FuelVia {action.via(network.cell)} {period})", *([f"(StockedFuel {period})"] if action.stock else [])]
     facts += [f"(Repairing {site} {period})" for site in action.repairs]
     facts += [f"(InService {site} {period})" for site in network.cell.sites if site not in action.repairs]
     return f"(: $prf (Assuming (And {' '.join(facts)}) (Outcome {period} $o $v)) $tv)"
