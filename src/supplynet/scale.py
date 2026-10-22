@@ -312,6 +312,10 @@ def complete_predicates(network: Network) -> list[str]:
     return []
 
 
+def positive_only_predicates(network: Network) -> list[str]:
+    return []
+
+
 def observation_facts(observation: Observation) -> list[str]:
     period, previous = observation.period, observation.previous
     lines = [f"(: next-{period} (NextPeriod {previous} {period}) (STV 1 1))"] if previous else []

@@ -179,8 +179,9 @@ class PeTTaChainerBackend:
 
     ``module`` names the chainer's Python API: "pettachainer", or
     "mm2_chainer.petta" for the MM2 chainer (``--backend mm2``), which
-    implements the same calls but not every setting; a complete-predicate
-    declaration it lacks is recorded in ``unsupported`` and skipped."""
+    implements the same calls but not every setting; a complete-predicate or
+    positive-only declaration it lacks is recorded in ``unsupported`` and
+    skipped."""
 
     def __init__(self, python_path: str | None = None, evidence_k: float = 5, statements=metta, learned: bool = False, review_steps: int = 200,
                  mined: tuple[int, int] | None = None, change_hazard: float | None = None, proposer: str = "extend", beam: int = 2,
@@ -219,6 +220,11 @@ class PeTTaChainerBackend:
                 self._handler.set_complete_predicate(head)
             else:
                 self.unsupported.append(f"set_complete_predicate {head}")
+        for head in self.statements.positive_only_predicates(network):
+            if hasattr(self._handler, "set_positive_only_predicate"):
+                self._handler.set_positive_only_predicate(head)
+            else:
+                self.unsupported.append(f"set_positive_only_predicate {head}")
         decided = {"positive_actions": True} if decides(network) else {}
         rules = self.statements.rules(network, rates, learned=True, **decided) if self.learned else self.statements.rules(network, rates, **decided)
         self.reviews = [goal for goal in map(self.statements.review, rules) if goal] if self.learned else []

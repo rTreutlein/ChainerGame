@@ -696,6 +696,7 @@ class GameTests(unittest.TestCase):
         )
         self.assertEqual(metta.complete_predicates(cell_network("untimed")), ["Producing", "Fuelled", "FuelArrived"])
         self.assertEqual(metta.complete_predicates(cell_network("timed")), ["Producing", "Fuelled", "FuelArrived"])
+        self.assertEqual(metta.positive_only_predicates(cell_network("timed")), [])
         observation = Observation("t3", "t2", {}, {}, {"mine": True}, False, {"plant-a": True}, {"mine": False})
         self.assertEqual(
             metta.observation_facts(observation),
@@ -726,6 +727,7 @@ class GameTests(unittest.TestCase):
             "(CTV (STV 0.75 1) (STV 0.08 1)))",
             chainer,
         )
+        self.assertEqual(metta.positive_only_predicates(network), ["FuelVia", "StockedFuel", "Unstocked"])
         action = Action(reroute=True, repairs=(MINE,))
         self.assertEqual(
             metta.action_facts(network, "t3", action),

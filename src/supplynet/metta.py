@@ -4,7 +4,7 @@ periods as facts, a period's observations, and belief queries."""
 
 from __future__ import annotations
 
-from .world import MINE, POWER, Action, Key, Network, Observation, Period, Rates
+from .world import MINE, POWER, Action, Key, Network, Observation, Period, Rates, decides
 
 
 def _number(value: float) -> str:
@@ -120,6 +120,18 @@ def complete_predicates(network: Network) -> list[str]:
     fixed point is then what the chainer reads (nothing runs without stock);
     the timed cell's rules are as complete, and acyclic within a period."""
     return ["Producing", "Fuelled", "FuelArrived"] if network.cell else []
+
+
+def positive_only_predicates(network: Network) -> list[str]:
+    """With decisions, the predicates ``action_facts`` states only when true:
+    the route the fuel left on and the stock state. Undeclared, their stored
+    instances would be the chainer's sample of their population, a rate near
+    1, so an absent instance, such as ``(FuelVia r1 t)`` for a route the fuel
+    did not take, would read as almost certainly true; an antecedent
+    completion of the fuel rule would then read the period's predicted fuel
+    arrival as evidence about that route's block (PeTTaChainer #119). Stage
+    5 declares the same three (``lookahead_worker``)."""
+    return ["FuelVia", "StockedFuel", "Unstocked"] if decides(network) else []
 
 
 def predicate_times(network: Network) -> dict[str, tuple[int, int]]:
