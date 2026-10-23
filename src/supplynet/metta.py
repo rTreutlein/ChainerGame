@@ -127,15 +127,17 @@ def complete_predicates(network: Network) -> list[str]:
 
 
 def positive_only_predicates(network: Network) -> list[str]:
-    """With decisions, the route the fuel left on, which ``action_facts``
-    states only when true. Undeclared, its stored instances would be the
-    chainer's sample of its population, a rate near 1, so an absent
-    instance, such as ``(FuelVia r1 t)`` for a route the fuel did not take,
-    would read as almost certainly true; an antecedent completion of the
-    fuel rule would then read the period's predicted fuel arrival as
-    evidence about that route's block (PeTTaChainer #119). The stock state
-    is complete instead (``complete_predicates``)."""
-    return ["FuelVia"] if decides(network) else []
+    """With decisions, the route the fuel left on and the sites in service,
+    which ``action_facts`` states only when true. Undeclared, their stored
+    instances would be the chainer's sample of their population, a rate near
+    1, so an absent instance, such as ``(FuelVia r1 t)`` for a route the fuel
+    did not take, would read as almost certainly true; an antecedent
+    completion of the fuel rule would then read the period's predicted fuel
+    arrival as evidence about that route's block (PeTTaChainer #119), and a
+    completion of a production rule would read an unstated
+    ``(InService site t)`` at that population prior. The stock state is
+    complete instead (``complete_predicates``)."""
+    return ["FuelVia", "InService"] if decides(network) else []
 
 
 def predicate_times(network: Network) -> dict[str, tuple[int, int]]:

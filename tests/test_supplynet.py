@@ -729,7 +729,7 @@ class GameTests(unittest.TestCase):
             "(CTV (STV 0.75 1) (STV 0.08 1)))",
             chainer,
         )
-        self.assertEqual(metta.positive_only_predicates(network), ["FuelVia"])
+        self.assertEqual(metta.positive_only_predicates(network), ["FuelVia", "InService"])
         self.assertEqual(metta.complete_predicates(network), ["Producing", "Fuelled", "FuelArrived", "StockedFuel"])
         action = Action(reroute=True, repairs=(MINE,))
         self.assertEqual(
