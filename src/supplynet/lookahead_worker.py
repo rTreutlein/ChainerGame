@@ -47,7 +47,8 @@ def statements(net,rates,marginals,fuel,values,params,decision):
         lines.append(f'(: (no_inverse {name}) (Implication {body} {head}) {tv})')
     for kind,s,p in marginals: fact(f'belief-{kind}-{s}',f'({kind} {s} now)',p)
     fact('incoming','(FuelArrived now)',fuel)
-    # Positive sufficient causes avoid contradictory negative branches.
+    # Positive sufficient causes avoid contradictory negative branches. Their
+    # heads are complete, so a cause whose condition fails derives nothing.
     rule('fuel-stock','(StockedFuel $t)',f'(Fuelled power-plant $t)',positive=True)
     rule('fuel-mine','(And (Unstocked $t) (FuelArrived $t))','(Fuelled power-plant $t)',positive=True)
     rule('purchased-fuel','(And (Purchased now) (FuelVia $r now) (Not (Blocked $r now)))','(FuelArrived later)',positive=True)
@@ -126,7 +127,10 @@ def decide(payload):
     c = importlib.import_module(module).PeTTaChainer()
     clock = c.timing() if hasattr(c,'timing') else None
     c.set_evidence_confidence_k(5)
-    for head in ('Producing','Fuelled','FuelArrived','Repairing','InService','Operational'):
+    # Each head a positive rule concludes is complete: its rules are every way it
+    # holds. An open head would read a failed cause as unknown, (STV 0.5 0),
+    # and count half a stock cost (PeTTaChainer #126).
+    for head in ('Producing','Fuelled','FuelArrived','Repairing','InService','Operational','Outcome'):
         if hasattr(c,'set_complete_predicate'): c.set_complete_predicate(head)
         else: unsupported.append('set_complete_predicate '+head)
     for head in ('InputArrived','FuelVia','StockedFuel','Unstocked','Purchased','NoPurchase','PlanRepair','NoRepair','Guard'):
