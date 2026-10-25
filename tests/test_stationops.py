@@ -591,8 +591,8 @@ class BenchmarkTests(unittest.TestCase):
             Handler.instances[0].queries,
             [
                 [
-                    "(: $prf (Inheritance (PressureAlarm old thermal-loop-pump) "
-                    "(SealLeak old thermal-loop-pump)) $tv)"
+                    "(: $prf (Inheritance PressureAlarm-old-thermal-loop-pump "
+                    "SealLeak-old-thermal-loop-pump) $tv)"
                 ]
             ],
         )
@@ -683,8 +683,8 @@ class BenchmarkTests(unittest.TestCase):
         )
         self.assertEqual(
             induced._incident_query(graph_incident),
-            "(Inheritance (PressureAlarm old thermal-loop-pump) "
-            "(SealLeak old thermal-loop-pump))",
+            "(Inheritance PressureAlarm-old-thermal-loop-pump "
+            "SealLeak-old-thermal-loop-pump)",
         )
 
     def test_pettachainer_graph_query_uses_local_problem_evidence(self):
@@ -849,7 +849,7 @@ class BenchmarkTests(unittest.TestCase):
                 "(: initial (A) (STV 1 1))",
                 "(: leak-shift-01-M01 (SealLeak old pump shift-01-M01) (STV 0 1))",
                 "(: state-leak-shift-01-M01 (Member shift-01-M01 "
-                "(SealLeak old pump)) (STV 0 1))",
+                "SealLeak-old-pump) (STV 0 1))",
             )),
         )
         self.assertIn(
@@ -858,7 +858,7 @@ class BenchmarkTests(unittest.TestCase):
         )
         self.assertEqual(
             backend._handler.forwarded,
-            ["(Member shift-01-M01 (SealLeak old pump))"],
+            ["(Member shift-01-M01 SealLeak-old-pump)"],
         )
 
     def test_pettachainer_unavailable_error_is_actionable(self):

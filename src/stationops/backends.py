@@ -19,6 +19,7 @@ from .actions import (
     reference_action_proposals,
 )
 from .config import Config
+from .metta import concept
 from .models import Belief, HistoryCase, Incident
 from .oracle import empirical_feature_priors, posterior
 from .shortfall import (
@@ -602,8 +603,8 @@ class MM2Backend:
         ):
             observation = "PressureAlarm" if incident.alarm else "PressureNormal"
             return (
-                f"(Inheritance ({observation} {incident.cohort} {incident.equipment_type}) "
-                f"(SealLeak {incident.cohort} {incident.equipment_type}))"
+                f"(Inheritance {concept(observation, incident)} "
+                f"{concept('SealLeak', incident)})"
             )
         fields = f"{incident.cohort} "
         if incident.equipment_type is not None:
@@ -1051,9 +1052,8 @@ class PeTTaChainerBackend:
             ):
                 observation = "PressureAlarm" if incident.alarm else "PressureNormal"
                 goal = (
-                    f"(Inheritance ({observation} {incident.cohort} "
-                    f"{incident.equipment_type}) "
-                    f"(SealLeak {incident.cohort} {incident.equipment_type}))"
+                    f"(Inheritance {concept(observation, incident)} "
+                    f"{concept('SealLeak', incident)})"
                 )
             else:
                 fields = f"{incident.cohort} "

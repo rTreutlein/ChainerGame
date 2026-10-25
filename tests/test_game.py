@@ -145,12 +145,12 @@ class GameSessionTests(unittest.TestCase):
         resolved = session.history[0]
         self.assertIn(
             f"(Member {resolved.id} "
-            f"(EquipmentState {resolved.cohort} {resolved.equipment_type}))",
+            f"EquipmentState-{resolved.cohort}-{resolved.equipment_type})",
             source,
         )
         self.assertIn(
             f"(Member {resolved.id} "
-            f"(SealLeak {resolved.cohort} {resolved.equipment_type}))",
+            f"SealLeak-{resolved.cohort}-{resolved.equipment_type})",
             source,
         )
         propagated = next(
@@ -476,7 +476,7 @@ class GameSessionTests(unittest.TestCase):
         source = session.logic_statements()
         self.assertIn(
             "(BiImplication (Member (ModuleState shift-01 M03) "
-            "(SealLeak old power-converter)) (LocalProblem shift-01 M03 "
+            "SealLeak-old-power-converter) (LocalProblem shift-01 M03 "
             "old power-converter shift-01-M03))",
             source,
         )

@@ -149,10 +149,10 @@ The dashboard shows the corresponding calibrated, partial, or uncharacterized
 sensor label, including exactly those numeric rates that the logic receives.
 
 Every resolved case is also encoded as one individual, a member of its group's
-concepts, for example `(Member shift-03-M04 (SealLeak new thermal-loop-pump))`
+concepts, for example `(Member shift-03-M04 SealLeak-new-thermal-loop-pump)`
 and a corresponding `PressureAlarm` or `PressureNormal` membership. Each case
 counts once in the concepts' member folds, which answer queries such as
-`(Inheritance (PressureNormal new thermal-loop-pump) (SealLeak new thermal-loop-pump))`. False labels use
+`(Inheritance PressureNormal-new-thermal-loop-pump SealLeak-new-thermal-loop-pump)`. False labels use
 complemented-strength positive facts (`STV 0 1`); absence remains unknown.
 Initial graph snapshots additionally contain an explicit `Problem` label for
 total local-or-upstream unavailability; later partial inspections do not invent
@@ -192,7 +192,7 @@ The minimal MM2 induction probe can be run directly:
 ```sh
 /path/to/mm2-chainer query --kb stationLearningKb --steps 1 \
   --add examples/inductive_sensor_statements.metta \
-  '(Inheritance (PressureAlarm old coolant-pump) (SealLeak old coolant-pump))'
+  '(Inheritance PressureAlarm-old-coolant-pump SealLeak-old-coolant-pump)'
 ```
 
 The standard controller first queries every visible incident with the same

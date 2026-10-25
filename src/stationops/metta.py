@@ -21,8 +21,13 @@ def _group_suffix(group: tuple[str, str | None]) -> str:
     return "-".join(field for field in group if field is not None)
 
 
-def _concept(name: str, group: tuple[str, str | None]) -> str:
-    return f"({name} {' '.join(field for field in group if field is not None)})"
+def concept(name: str, item: HistoryCase | Incident) -> str:
+    """The symbol naming the class ``name`` of the item's group.
+
+    A class is a symbol, distinct from the arity-3 predicate ``name`` that
+    states the same property of one unit.
+    """
+    return f"{name}-{_group_suffix(_group(item))}"
 
 
 def _number(value: float) -> str:
@@ -157,19 +162,17 @@ def generate_statements(
         if temporal is None and case.equipment_type is not None:
             # A resolved case is one individual, so it is a Member of each
             # group concept and counts once in the concepts' member folds.
-            group = _group(case)
-            equipment_concept = _concept("EquipmentState", group)
-            leak_concept = _concept("SealLeak", group)
-            alarm_concept = _concept("PressureAlarm", group)
-            normal_concept = _concept("PressureNormal", group)
             lines.extend((
                 f"(: state-equipment-{case.id} "
-                f"(Member {case.id} {equipment_concept}) (STV 1 1))",
-                f"(: state-leak-{case.id} (Member {case.id} {leak_concept}) "
+                f"(Member {case.id} {concept('EquipmentState', case)}) (STV 1 1))",
+                f"(: state-leak-{case.id} "
+                f"(Member {case.id} {concept('SealLeak', case)}) "
                 f"(STV {1 if case.leak else 0} 1))",
-                f"(: state-alarm-{case.id} (Member {case.id} {alarm_concept}) "
+                f"(: state-alarm-{case.id} "
+                f"(Member {case.id} {concept('PressureAlarm', case)}) "
                 f"(STV {1 if case.alarm else 0} 1))",
-                f"(: state-normal-{case.id} (Member {case.id} {normal_concept}) "
+                f"(: state-normal-{case.id} "
+                f"(Member {case.id} {concept('PressureNormal', case)}) "
                 f"(STV {0 if case.alarm else 1} 1))",
             ))
 
@@ -309,7 +312,7 @@ def generate_dependency_statements(
     def local_cause_atom(item: Incident) -> str:
         return (
             f"(Member (ModuleState {context} {item.module_id}) "
-            f"(SealLeak {item.cohort} {item.equipment_type}))"
+            f"{concept('SealLeak', item)})"
         )
 
     def problem_atom(item: Incident) -> str:
@@ -331,7 +334,7 @@ def generate_dependency_statements(
         lines.append(
             f"(: current-equipment-state-{item.id} "
             f"(Member (ModuleState {context} {item.module_id}) "
-            f"{_concept('EquipmentState', _group(item))}) (STV 1 1))"
+            f"{concept('EquipmentState', item)}) (STV 1 1))"
         )
         lines.append(
             f"(: local-problem-{item.id} "
